@@ -41,6 +41,7 @@ from chart.test_secure_config import SECRET_ENV, run_script
 pytestmark = pytest.mark.skipif(shutil.which("helm") is None, reason="needs helm")
 
 FILTER = "com.googlesource.gerrit.plugins.saml.SamlWebFilter"
+MODULE = "com.googlesource.gerrit.plugins.saml.Module"
 PASSWORD_ENV = ("GERRIT_SAML_KEYSTORE_PASSWORD", "GERRIT_SAML_PRIVATE_KEY_PASSWORD")
 SECRET_KEYS = [
     "samlKeystore.jks",
@@ -118,6 +119,51 @@ def test_enabled_config_matches_golden(tmp_path: Path, source: str) -> None:
     if os.environ.get("UPDATE_GOLDEN"):
         golden.write_text(GOLDEN_HEADER + config, encoding="utf-8")
     assert config == read_golden(golden)
+
+
+@pytest.mark.xfail(strict=True, reason="installModule not yet rendered")
+@pytest.mark.parametrize("source", sorted(SOURCES))
+def test_enabled_installs_the_module(tmp_path: Path, source: str) -> None:
+    config = gerrit_config(render(tmp_path, saml_values(source)))
+    gerrit = config.split("[gerrit]\n", 1)[1].split("\n[", 1)[0]
+    assert f"\tinstallModule = {MODULE}" in gerrit.splitlines()
+    assert "httpdisplaynameheader" not in config.lower()
+
+
+@pytest.mark.xfail(strict=True, reason="header not yet refused")
+@pytest.mark.parametrize(
+    "values",
+    [
+        {"auth": {"httpDisplaynameHeader": "X-Name"}},
+        {"auth": {"httpdisplaynameheader": "X-Name"}},
+        {"gerrit": {"extraConfig": "[auth]\n\thttpDisplayNameHeader = X-Name\n"}},
+        {"gerrit": {"extraConfig": "[auth] httpDisplaynameHeader = X-Name\n"}},
+    ],
+)
+def test_display_name_header_is_refused(tmp_path: Path, values: dict[str, Any]) -> None:
+    merged = saml_values("url")
+    for key, value in values.items():
+        merged.setdefault(key, {}).update(value)
+    path = tmp_path / "values.yaml"
+    path.write_text(yaml.safe_dump(merged), encoding="utf-8")
+    proc = run_helm("-f", str(path))
+    assert proc.returncode != 0
+    assert "httpDisplaynameHeader is not compatible with SAML" in proc.stderr
+
+
+def test_display_name_header_is_kept_without_saml(tmp_path: Path) -> None:
+    values = {"auth": {"httpDisplaynameHeader": "X-Name"}}
+    assert "\thttpDisplaynameHeader = X-Name\n" in gerrit_config(
+        render(tmp_path, values)
+    )
+
+
+@pytest.mark.xfail(strict=True, reason="maxAuthLifetimeAttr not yet removed")
+def test_max_auth_lifetime_attr_is_not_a_key() -> None:
+    files = [p for d in (CHART, GOLDEN) for p in d.rglob("*") if p.is_file()]
+    assert files
+    named = [p for p in files if b"maxAuthLifetimeAttr" in p.read_bytes()]
+    assert named == []
 
 
 def test_enabled_overrides_auth_type(tmp_path: Path) -> None:
@@ -222,6 +268,18 @@ def test_enabled_adds_the_library_once(tmp_path: Path) -> None:
         ("https://idp.example.org/metadata", set()),
         ("https://idp.example.org:8443/metadata", {8443}),
         ("http://idp.example.org/metadata", {80}),
+        ("https://idp.example.org?metadata=1", set()),
+        ("http://idp.example.org#metadata", {80}),
+        pytest.param(
+            "https://idp.example.org:8443?metadata=1",
+            {8443},
+            marks=pytest.mark.xfail(strict=True, reason="port parsed past ?"),
+        ),
+        pytest.param(
+            "http://idp.example.org:8080#metadata",
+            {8080},
+            marks=pytest.mark.xfail(strict=True, reason="port parsed past #"),
+        ),
     ],
 )
 def test_egress_reaches_the_metadata_url(

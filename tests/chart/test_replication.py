@@ -235,6 +235,25 @@ def test_no_key_secret_mounts_known_hosts_only(tmp_path: Path) -> None:
         ("ssh://git@git.example.org:2222/${name}.git", 2222),
         ("http://git.example.org/${name}.git", 80),
         ("git://git.example.org/${name}.git", 9418),
+        ("git@github.com:org/${name}.git?ref=x", 22),
+        ("ssh://git@git.example.org?ref=x", 22),
+        ("http://git.example.org#frag", 80),
+        ("git://git.example.org?ref=x", 9418),
+        pytest.param(
+            "ssh://git@git.example.org:2222?ref=x",
+            2222,
+            marks=pytest.mark.xfail(strict=True, reason="port parsed past ?"),
+        ),
+        pytest.param(
+            "http://git.example.org:8080#frag",
+            8080,
+            marks=pytest.mark.xfail(strict=True, reason="port parsed past #"),
+        ),
+        pytest.param(
+            "https://git.example.org:9443?ref=x",
+            9443,
+            marks=pytest.mark.xfail(strict=True, reason="port parsed past ?"),
+        ),
     ],
 )
 def test_egress_reaches_each_remote(tmp_path: Path, url: str, port: int) -> None:
