@@ -22,6 +22,13 @@ git config -f "$tmp" auth.registerEmailPrivateKey \
 if [ -n "${GERRIT_SMTP_PASS:-}" ]; then
   git config -f "$tmp" sendemail.smtpPass "$GERRIT_SMTP_PASS"
 fi
+if [ -n "${GERRIT_SAML_KEYSTORE_PASSWORD:-}" ]; then
+  git config -f "$tmp" saml.keystorePassword "$GERRIT_SAML_KEYSTORE_PASSWORD"
+fi
+if [ -n "${GERRIT_SAML_PRIVATE_KEY_PASSWORD:-}" ]; then
+  git config -f "$tmp" saml.privateKeyPassword \
+    "$GERRIT_SAML_PRIVATE_KEY_PASSWORD"
+fi
 mv -f "$tmp" "$secure"
 
 echo "Wrote $secure"

@@ -55,8 +55,6 @@ SAML_ATTRS: dict[str, Any] = {
     "firstNameAttr": None,
     "lastNameAttr": "",
 }
-# SAML support lands in the next commit
-pending = pytest.mark.xfail(strict=True, reason="SAML support not implemented")
 SOURCES: dict[str, dict[str, Any]] = {
     "url": {"metadataUrl": "https://idp.example.org/app/sso/saml/metadata"},
     "secret": {"metadataFromSecret": True},
@@ -113,7 +111,6 @@ def test_disabled_renders_none_of_it(tmp_path: Path) -> None:
     assert egress_ports(docs) == {53, 443}
 
 
-@pending
 @pytest.mark.parametrize("source", sorted(SOURCES))
 def test_enabled_config_matches_golden(tmp_path: Path, source: str) -> None:
     config = gerrit_config(render(tmp_path, saml_values(source)))
@@ -123,7 +120,6 @@ def test_enabled_config_matches_golden(tmp_path: Path, source: str) -> None:
     assert config == read_golden(golden)
 
 
-@pending
 def test_enabled_overrides_auth_type(tmp_path: Path) -> None:
     values = saml_values("url")
     values["auth"]["type"] = "LDAP"
@@ -133,7 +129,6 @@ def test_enabled_overrides_auth_type(tmp_path: Path) -> None:
     assert f"\tfilterClass = {FILTER}\n" in config
 
 
-@pending
 def test_entity_id_may_be_set(tmp_path: Path) -> None:
     values = saml_values("url", serviceProviderEntityId="urn:example:gerrit")
     path = tmp_path / "gerrit.config"
@@ -147,7 +142,6 @@ def test_entity_id_may_be_set(tmp_path: Path) -> None:
     assert read.stdout == "urn:example:gerrit\n"
 
 
-@pending
 @pytest.mark.parametrize(
     ("source", "files"),
     [
@@ -183,7 +177,6 @@ def test_secret_is_mounted_read_only_into_etc(
     ]
 
 
-@pending
 def test_chart_creates_an_empty_secret(tmp_path: Path) -> None:
     secret = find(render(tmp_path, saml_values("url")), "Secret", "gerrit-saml")
     assert secret is not None
@@ -192,7 +185,6 @@ def test_chart_creates_an_empty_secret(tmp_path: Path) -> None:
     assert annotations["helm.sh/resource-policy"] == "keep"
 
 
-@pending
 def test_existing_secret_is_used(tmp_path: Path) -> None:
     docs = render(tmp_path, saml_values("secret", existingSecret="sso"))
     assert find(docs, "Secret", "gerrit-saml") is None
@@ -213,7 +205,6 @@ def test_existing_secret_is_used(tmp_path: Path) -> None:
     }
 
 
-@pending
 def test_enabled_adds_the_library_once(tmp_path: Path) -> None:
     values: dict[str, Any] = {
         **saml_values("url"),
@@ -229,8 +220,8 @@ def test_enabled_adds_the_library_once(tmp_path: Path) -> None:
     ("url", "ports"),
     [
         ("https://idp.example.org/metadata", set()),
-        pytest.param("https://idp.example.org:8443/metadata", {8443}, marks=pending),
-        pytest.param("http://idp.example.org/metadata", {80}, marks=pending),
+        ("https://idp.example.org:8443/metadata", {8443}),
+        ("http://idp.example.org/metadata", {80}),
     ],
 )
 def test_egress_reaches_the_metadata_url(
@@ -244,7 +235,6 @@ def test_metadata_from_secret_needs_no_egress(tmp_path: Path) -> None:
     assert egress_ports(render(tmp_path, saml_values("secret"))) == {53, 443}
 
 
-@pending
 @pytest.mark.parametrize(
     ("saml", "message"),
     [
@@ -290,7 +280,6 @@ def site(tmp_path: Path) -> Path:
     return tmp_path
 
 
-@pending
 def test_passwords_land_in_private_secure_config(site: Path) -> None:
     env = {
         **SECRET_ENV,

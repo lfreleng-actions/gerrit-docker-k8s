@@ -26,9 +26,10 @@ volume holds state only.
 | `ConfigMap` `<fullname>-known-hosts` | SSH host keys of the replication remotes; with `replication.enabled`, see [Replication](#replication) |
 | `Secret` `<fullname>-admin`       | Admin credential placeholder; not consumed yet                 |
 | `Secret` `<fullname>-secure-config` | Values `render-config.sh` writes to `etc/secure.config`; see the Secret contract |
+| `Secret` `<fullname>-saml`        | SAML keystore, its passwords and the IdP metadata, created empty; with `auth.saml.enabled` and no `auth.saml.existingSecret`, see [SAML](#saml) |
 | `CronJob` `<fullname>-git-gc`, `NetworkPolicy` `<fullname>-git-gc-deny` | With `gc.cronJob.enabled`; see [Garbage collection](#garbage-collection) |
 | `Deployment`, `ConfigMap` and `NetworkPolicy` `<fullname>-toolbox` | With `toolbox.enabled`, at zero replicas; see [Admin toolbox](#admin-toolbox) |
-| `NetworkPolicy` (two)             | Default deny; allow ingress to 8080 (from `networkPolicy.ingressNamespaceSelector` when set) and 29418, egress to DNS, HTTPS and, with mail configured, the SMTP relay's port, and with replication enabled, each remote's port |
+| `NetworkPolicy` (two)             | Default deny; allow ingress to 8080 (from `networkPolicy.ingressNamespaceSelector` when set) and 29418, egress to DNS, HTTPS and, with mail configured, the SMTP relay's port, with replication enabled, each remote's port, and with `auth.saml.metadataUrl`, its port |
 
 The Secrets carry `helm.sh/resource-policy: keep` and
 `argocd.argoproj.io/sync-options: Prune=false,Delete=false`, so they
@@ -55,6 +56,9 @@ secure-config Secret.
 | `secrets.secureConfig.existingSecret` | `smtpPass`                | No       | `sendemail.smtpPass` in `secure.config`       |
 | `replication.sshKeySecret`            | `id_ed25519` or `id_rsa`  | For SSH remotes | Mounted in `/var/gerrit/.ssh` with mode `0400` |
 | `replication.sshKeySecret`            | `known_hosts`             | No       | Mounted in `/var/gerrit/.ssh` with mode `0400` |
+| `auth.saml.existingSecret`            | `samlKeystore.jks`        | With SAML | Mounted read-only at `etc/samlKeystore.jks` |
+| `auth.saml.existingSecret`            | `keystore-password`, `private-key-password` | With SAML | `saml.keystorePassword` and `saml.privateKeyPassword` in `secure.config` |
+| `auth.saml.existingSecret`            | `idp-metadata.xml`        | With `metadataFromSecret` | Mounted read-only at `etc/saml-idp-metadata.xml` |
 | `toolbox.existingSecret`              | `ssh-privatekey`          | No       | Mounted in the admin toolbox at `/etc/gerrit-toolbox/ssh/id` with mode `0400` |
 
 The generated `<fullname>-secure-config` Secret carries a random
@@ -69,8 +73,8 @@ empty or absent optional key leaves its entry out of `secure.config`.
    volume the `gerrit` user (UID 1001) does not own.
 2. `site-init` copies `gerrit.war` and `gerrit.sh` from the image,
    replaces the site's plugin and library jars with those named in
-   `pluginCatalogue`, plus `replication` with `replication.enabled`,
-   and copies the rendered `gerrit.config`, `jgit.config`,
+   `pluginCatalogue`, plus `replication` with `replication.enabled`
+   and the `saml` library with `auth.saml.enabled`, and copies the rendered `gerrit.config`, `jgit.config`,
    `notedb.config` and `replication.config` over the site's own. With
    replication disabled it removes the site's `etc/replication.config`. On a site
    without the repository `gerrit.allProjects` names (`All-Projects`
@@ -130,6 +134,12 @@ mounts empty anonymous volumes over them and the site disappears.
 | `ssh.service.externalTrafficPolicy`      | `Local`                          | Set on `LoadBalancer` and `NodePort` Services only         |
 | `ssh.service.externalDNS`                | `false`                          | Adds `external-dns.alpha.kubernetes.io/hostname: <ssh.host>` |
 | `networkPolicy.enabled`                  | `true`                           |                                                            |
+| `auth.saml.enabled`                      | `false`                          | See [SAML](#saml)                                          |
+| `auth.saml.existingSecret`               | `""`                             | Pre-created Secret with the SAML keys; `""` creates `<fullname>-saml` |
+| `auth.saml.metadataUrl`                  | `""`                             | IdP metadata URL; set this or `metadataFromSecret`         |
+| `auth.saml.metadataFromSecret`           | `false`                          | Read the IdP metadata from the Secret's `idp-metadata.xml` |
+| `auth.saml.serviceProviderEntityId`      | `""`                             | `""` for `gerrit.canonicalWebUrl`                          |
+| `auth.saml.*Attr`, `.computedDisplayName`, `.maxAuthLifetime` | See `values.yaml` | The `[saml]` keys of the same name             |
 | `replication.enabled`                    | `false`                          | See [Replication](#replication)                            |
 | `replication.autoReload`                 | `true`                           | `gerrit.autoReload` in `replication.config`                |
 | `replication.lockErrorMaxRetries`, `.maxRetries` | `5`, `5`                 | `[replication]` globals                                    |
@@ -162,6 +172,8 @@ values:
 | `sshd.advertisedAddress`    | `ssh.host`, else `gerrit.host`, without any port, then `:` and the SSH port: `ssh.port`, else `ssh.service.nodePort` on a `NodePort` Service, else `29418` |
 | `cache.directory`           | `cache`                                                       |
 | `container.javaOptions`     | The options the image needs, then `-XX:MaxRAMPercentage=70.0` unless `container.heapLimit` is set or there is no memory limit, then `container.javaOptions` from values |
+| `httpd.filterClass`, `auth.type` and the `auth.http*Header` keys | The SAML filter and `HTTP` authentication, with `auth.saml.enabled`; see [SAML](#saml) |
+| `saml.keystorePath`, `saml.metadataPath`, `saml.serviceProviderEntityId` | With `auth.saml.enabled`; see [SAML](#saml) |
 
 Each of these top-level values renders the `gerrit.config` section of
 the same name, key for key, with the defaults `values.yaml` lists:
@@ -186,8 +198,9 @@ subsection, as in `cache.diff_summary.diskLimit` becoming
 the same way, each top-level key a section. `jgit` defaults to
 `receive.autogc: false`, which `gerrit init` would otherwise write and
 the render would then replace. Secrets never go in
-values: `auth.registerEmailPrivateKey` and `sendemail.smtpPass` come
-from the [Secret contract](#secret-contract).
+values: `auth.registerEmailPrivateKey`, `sendemail.smtpPass` and the
+SAML keystore passwords come from the
+[Secret contract](#secret-contract).
 
 `gerrit.extraConfig` is appended verbatim, for settings with no typed
 value. A key there that a typed value also sets adds a second entry
@@ -471,6 +484,109 @@ ssh -p 29418 <user>@<ssh.host> replication start --all --wait
 ```
 
 `logs/replication_log` on the site volume records each push.
+
+## SAML
+
+`auth.saml.enabled` turns on SAML single sign-on through Gerrit's
+`saml` library module, in place of the smoke-only
+`DEVELOPMENT_BECOME_ANY_ACCOUNT`. Enabling it:
+
+- adds `saml` to the libraries `site-init` copies from the image
+  catalogue, so the image must provide
+  `<pluginCatalogue.path>/lib/saml.jar`; `site-init` fails before
+  Gerrit starts when it does not, and removes the library from the
+  site again once SAML is disabled;
+- renders `auth.type = HTTP`, the `auth.http*Header` keys the module
+  fills, `httpd.filterClass =
+  com.googlesource.gerrit.plugins.saml.SamlWebFilter` and a `[saml]`
+  section in `gerrit.config`. These win over the same keys in values,
+  so `auth.type` from values no longer applies;
+- mounts the Secret's `samlKeystore.jks` read-only at
+  `etc/samlKeystore.jks`, the `[saml] keystorePath`, and, with
+  `metadataFromSecret`, its `idp-metadata.xml` at
+  `etc/saml-idp-metadata.xml`, the `[saml] metadataPath`;
+- writes `keystore-password` and `private-key-password` to
+  `saml.keystorePassword` and `saml.privateKeyPassword` in
+  `etc/secure.config` through `render-config`;
+- with `metadataUrl` set, allows NetworkPolicy egress to the port of
+  that URL: the port it names, or 80 for `http://`. HTTPS on port 443
+  is always open.
+
+The module writes its service provider metadata to `data/saml/` on the
+site volume, so it survives restarts.
+
+```yaml
+auth:
+  saml:
+    enabled: true
+    existingSecret: gerrit-saml
+    metadataUrl: https://idp.example.org/app/gerrit/sso/saml/metadata
+    userNameAttr: uid
+    displayNameAttr: displayName
+    emailAddressAttr: mail
+```
+
+Set exactly one of `metadataUrl` and `metadataFromSecret`; neither or
+both fail the render, as does a `metadataUrl` that is not an `http://`
+or `https://` URL. `serviceProviderEntityId` defaults to
+`gerrit.canonicalWebUrl`. The attribute keys, `computedDisplayName`,
+`maxAuthLifetimeAttr` and `maxAuthLifetime` are the `[saml]` keys of
+the same name; `null` or `""` leaves a key out, so the module's
+default applies.
+
+Create the Secret from a Java keystore holding the service provider's
+signing key, and the two passwords:
+
+```sh
+kubectl create secret generic gerrit-saml \
+  --from-file=samlKeystore.jks=./samlKeystore.jks \
+  --from-literal=keystore-password='...' \
+  --from-literal=private-key-password='...'
+```
+
+Add `--from-file=idp-metadata.xml=./idp-metadata.xml` with
+`metadataFromSecret`. Without `auth.saml.existingSecret` the chart
+creates `<fullname>-saml` with every key empty for you to fill in, and
+keeps the values on upgrade. Under Argo CD, which renders without
+cluster access, name a pre-created Secret in `existingSecret` instead,
+as for the other Secrets.
+
+### Identity provider checklist
+
+- **Assertion consumer service URL:**
+  `<gerrit.canonicalWebUrl>plugins/saml/callback`, that is
+  `https://<gerrit.host><gerrit.urlPrefix>/plugins/saml/callback`. It
+  stays the same for as long as `gerrit.host` and `gerrit.urlPrefix`
+  do; changing either means updating the identity provider.
+- **Service provider entity ID:** `serviceProviderEntityId`, by default
+  `gerrit.canonicalWebUrl`.
+- **Signing certificate:** the public half of the key in
+  `samlKeystore.jks`, or the service provider metadata the module
+  writes to `data/saml/`.
+- **Attributes:** release the user name, display name and email
+  address under the names `userNameAttr`, `displayNameAttr` and
+  `emailAddressAttr` give, or first and last name with
+  `computedDisplayName`. The user name becomes the Gerrit account's
+  user name, so it must be stable and unique.
+
+### Rotating the keystore
+
+Add the new certificate to the identity provider alongside the old
+one, replace `samlKeystore.jks`, and the passwords if they changed, in
+the Secret, and restart the pod: the keystore mount and
+`secure.config` take the new values at start. Remove the stale service
+provider metadata from `data/saml/` first, for example from the
+[admin toolbox](#admin-toolbox), so the module writes it again with
+the new certificate. Remove the old certificate from the identity
+provider once logins work.
+
+### Importing a site that uses SAML
+
+When an existing site is imported, its keystore and service provider
+metadata come from the source site and must not be regenerated: the
+identity provider trusts the source's key, and a new keystore breaks
+every login until the identity provider is updated. Fill the Secret
+with the source's keystore and passwords before the first start.
 
 ## Maintenance
 

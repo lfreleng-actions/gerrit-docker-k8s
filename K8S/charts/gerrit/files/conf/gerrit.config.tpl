@@ -17,9 +17,23 @@ ConfigMap. Keys the chart derives win over the same key in values.
   "cache" (dict "directory" "cache")
   "container" (dict "javaOptions" (include "gerrit.javaOptions" . | fromJsonArray)) -}}
 {{- $sections := list "gerrit" "httpd" "sshd" "auth" "sendemail" "container" "cache" "change" "receive" "download" "index" "gc" "plugins" "user" "trackingid" "accounts" "suggest" -}}
+{{- if include "gerrit.samlEnabled" . }}
+{{- /* The SAML filter authenticates each request and hands Gerrit the
+account in the headers its HTTP authentication reads */}}
+{{- $_ := set $derived.httpd "filterClass" "com.googlesource.gerrit.plugins.saml.SamlWebFilter" -}}
+{{- $_ := set $derived "auth" (dict
+  "type" "HTTP"
+  "httpHeader" "X-SAML-UserName"
+  "httpDisplaynameHeader" "X-SAML-DisplayName"
+  "httpEmailHeader" "X-SAML-EmailHeader"
+  "httpExternalIdHeader" "X-SAML-ExternalId") -}}
+{{- $_ := set $derived "saml" (include "gerrit.samlConfig" . | fromJson) -}}
+{{- $sections = append $sections "saml" -}}
+{{- end }}
 {{- range $sections }}
 {{- $values := deepCopy (default dict (index $v .)) -}}
-{{- if eq . "gerrit" }}{{ $values = dict }}{{ end -}}
+{{- if or (eq . "gerrit") (eq . "saml") }}{{ $values = dict }}{{ end -}}
+{{- if eq . "auth" }}{{ $values = omit $values "saml" }}{{ end -}}
 {{- if eq . "gc" }}
 {{- $values = omit $values "cronJob" -}}
 {{- if dig "cronJob" "enabled" false $v.gc }}
