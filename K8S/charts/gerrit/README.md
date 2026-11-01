@@ -205,7 +205,9 @@ SAML keystore passwords come from the
 `gerrit.extraConfig` is appended verbatim, for settings with no typed
 value. A key there that a typed value also sets adds a second entry
 rather than replacing the first, so set such keys through the typed
-value.
+value. The chart does not validate `extraConfig`; the one exception
+is a best-effort check for `auth.httpDisplaynameHeader` with SAML
+enabled, described under [SAML](#saml).
 
 ### Server ID
 
@@ -497,10 +499,21 @@ ssh -p 29418 <user>@<ssh.host> replication start --all --wait
   Gerrit starts when it does not, and removes the library from the
   site again once SAML is disabled;
 - renders `auth.type = HTTP`, the `auth.http*Header` keys the module
-  fills, `httpd.filterClass =
+  fills, `gerrit.installModule =
+  com.googlesource.gerrit.plugins.saml.Module`, `httpd.filterClass =
   com.googlesource.gerrit.plugins.saml.SamlWebFilter` and a `[saml]`
   section in `gerrit.config`. These win over the same keys in values,
   so `auth.type` from values no longer applies;
+- fails the render when `auth.httpDisplaynameHeader` is set in `auth`
+  values or `gerrit.extraConfig`, since the SAML filter refuses to
+  start with it; `null`, `""` or an empty list in `auth` renders no
+  key and passes. The `extraConfig` check is best effort only: an
+  active entry in the unqualified `[auth]` section counts, with
+  Unicode whitespace treated as a space or tab, while comments,
+  values and named subsections such as `[auth "x"]` pass. The chart
+  otherwise passes `extraConfig` through unvalidated, and the SAML
+  plugin refuses to start, with a clear error, if the header is set
+  anywhere;
 - mounts the Secret's `samlKeystore.jks` read-only at
   `etc/samlKeystore.jks`, the `[saml] keystorePath`, and, with
   `metadataFromSecret`, its `idp-metadata.xml` at
@@ -529,10 +542,9 @@ auth:
 Set exactly one of `metadataUrl` and `metadataFromSecret`; neither or
 both fail the render, as does a `metadataUrl` that is not an `http://`
 or `https://` URL. `serviceProviderEntityId` defaults to
-`gerrit.canonicalWebUrl`. The attribute keys, `computedDisplayName`,
-`maxAuthLifetimeAttr` and `maxAuthLifetime` are the `[saml]` keys of
-the same name; `null` or `""` leaves a key out, so the module's
-default applies.
+`gerrit.canonicalWebUrl`. The attribute keys, `computedDisplayName`
+and `maxAuthLifetime` are the `[saml]` keys of the same name; `null`
+or `""` leaves a key out, so the module's default applies.
 
 Create the Secret from a Java keystore holding the service provider's
 signing key, and the two passwords:
