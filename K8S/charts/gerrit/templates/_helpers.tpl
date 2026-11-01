@@ -496,6 +496,81 @@ metadata source is set. */}}
 {{- toJson $values -}}
 {{- end -}}
 
+{{/* Fails the render when values set auth.httpDisplaynameHeader, in
+auth or gerrit.extraConfig: the SAML filter refuses to start with it.
+Git config keys ignore case. An auth value of null, "" or an empty
+list renders no key, as gerrit.configKeys does, so it passes.
+extraConfig is read line by line as git config: only an active entry
+in the unqualified [auth] section counts, including one on the line
+of its section header. Comments, named subsections such as
+[auth "x"], and values, quoted or continued with a trailing
+backslash, do not. Unicode whitespace, such as U+2003, counts as a
+space or tab. extraConfig follows [saml], so entries before its
+first header belong there. The check is best effort: Gerrit reads
+extraConfig unvalidated, and the SAML filter itself refuses to start
+when the header is set anywhere. */}}
+{{- define "gerrit.samlRefuseDisplayNameHeader" -}}
+{{- $message := "auth.httpDisplaynameHeader is not compatible with SAML; remove it from auth and gerrit.extraConfig" -}}
+{{- range $key, $value := (default dict .Values.auth) }}
+{{- if eq (lower $key) "httpdisplaynameheader" }}
+{{- if kindIs "slice" $value }}
+{{- if $value }}{{ fail $message }}{{ end -}}
+{{- else if not (or (kindIs "invalid" $value) (and (kindIs "string" $value) (eq $value ""))) }}
+{{- fail $message -}}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- $name := `^[A-Za-z][A-Za-z0-9-]*` -}}
+{{- $ws := `[\t\v\f\p{Z}\x{1C}-\x{1F}]` -}}
+{{- $header := printf `^\[%s*([A-Za-z0-9.-]+)%s*("(?:[^"\\]|\\.)*")?%s*\]` $ws $ws $ws -}}
+{{- $quoted := `(?:[^"\\]|\\.)*` -}}
+{{- $plain := printf `(?:[^"\\#;]|\\.|"%s")*` $quoted -}}
+{{- $section := "saml" -}}
+{{- $continued := "" -}}
+{{- range splitList "\n" (toString (default "" .Values.gerrit.extraConfig)) }}
+{{- $text := trimSuffix "\r" . -}}
+{{- $value := "" -}}
+{{- $inValue := false -}}
+{{- if $continued }}
+{{- $value = $text -}}
+{{- $inValue = true -}}
+{{- else }}
+{{- $text = regexReplaceAll (printf `^%s+` $ws) $text "" -}}
+{{- $found := regexFind $header $text -}}
+{{- if $found }}
+{{- $section = lower (regexReplaceAll (printf `%s.*$` $header) $text "${1}") -}}
+{{- if regexReplaceAll (printf `%s.*$` $header) $text "${2}" }}
+{{- $section = "" -}}
+{{- end }}
+{{- $text = regexReplaceAll (printf `^%s+` $ws) (trimPrefix $found $text) "" -}}
+{{- end }}
+{{- if regexMatch (printf `%s%s*([=#;]|$)` $name $ws) $text }}
+{{- if and (eq $section "auth") (eq (lower (regexFind $name $text)) "httpdisplaynameheader") }}
+{{- fail $message -}}
+{{- end }}
+{{- if regexMatch (printf `%s%s*=` $name $ws) $text }}
+{{- $value = regexReplaceAll (printf `%s%s*=` $name $ws) $text "" -}}
+{{- $inValue = true -}}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- /* A value continues on the next line when it ends in an unescaped
+backslash outside a comment, inside quotes or not */}}
+{{- $open := ternary (printf `%s"` $quoted) "" (eq $continued "quoted") -}}
+{{- if not $inValue }}
+{{- $continued = "" -}}
+{{- else if and (eq $continued "quoted") (regexMatch (printf `^%s\\$` $quoted) $value) }}
+{{- $continued = "quoted" -}}
+{{- else if regexMatch (printf `^%s%s\\$` $open $plain) $value }}
+{{- $continued = "plain" -}}
+{{- else if regexMatch (printf `^%s%s"%s\\$` $open $plain $quoted) $value }}
+{{- $continued = "quoted" -}}
+{{- else }}
+{{- $continued = "" -}}
+{{- end }}
+{{- end }}
+{{- end -}}
+
 {{/* TCP port of auth.saml.metadataUrl when the NetworkPolicy needs a
 rule for it: set, enabled and not 443, which is always allowed; else
 empty */}}
@@ -514,7 +589,7 @@ and gerrit+http, 443 for https, and 9418 for git; 0 when unknown */}}
 {{- $port := 0 -}}
 {{- if regexMatch "^[A-Za-z][A-Za-z0-9+.-]*://" $url }}
 {{- $scheme := lower (regexReplaceAll "^([^:]+)://.*$" $url "${1}") -}}
-{{- $authority := regexReplaceAll "^.*@" (regexReplaceAll "^[^:]+://([^/]*).*$" $url "${1}") "" -}}
+{{- $authority := regexReplaceAll "^.*@" (regexReplaceAll "^[^:]+://([^/?#]*).*$" $url "${1}") "" -}}
 {{- if regexMatch ":[0-9]+$" $authority }}
 {{- $port = regexReplaceAll "^.*:([0-9]+)$" $authority "${1}" | int -}}
 {{- else if has $scheme (list "ssh" "git+ssh" "ssh+git" "gerrit+ssh") }}

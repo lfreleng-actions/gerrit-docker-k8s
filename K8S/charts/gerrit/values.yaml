@@ -88,7 +88,6 @@ auth:
     firstNameAttr: null
     lastNameAttr: null
     computedDisplayName: false
-    maxAuthLifetimeAttr: null
     maxAuthLifetime: null
 
 # sendemail.smtpPass comes from secrets.secureConfig

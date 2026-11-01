@@ -19,12 +19,15 @@ ConfigMap. Keys the chart derives win over the same key in values.
 {{- $sections := list "gerrit" "httpd" "sshd" "auth" "sendemail" "container" "cache" "change" "receive" "download" "index" "gc" "plugins" "user" "trackingid" "accounts" "suggest" -}}
 {{- if include "gerrit.samlEnabled" . }}
 {{- /* The SAML filter authenticates each request and hands Gerrit the
-account in the headers its HTTP authentication reads */}}
+account in the headers its HTTP authentication reads. The filter needs
+the module's bindings, and refuses to start with a display name
+header set. */}}
+{{- include "gerrit.samlRefuseDisplayNameHeader" . -}}
+{{- $_ := set $derived.gerrit "installModule" "com.googlesource.gerrit.plugins.saml.Module" -}}
 {{- $_ := set $derived.httpd "filterClass" "com.googlesource.gerrit.plugins.saml.SamlWebFilter" -}}
 {{- $_ := set $derived "auth" (dict
   "type" "HTTP"
   "httpHeader" "X-SAML-UserName"
-  "httpDisplaynameHeader" "X-SAML-DisplayName"
   "httpEmailHeader" "X-SAML-EmailHeader"
   "httpExternalIdHeader" "X-SAML-ExternalId") -}}
 {{- $_ := set $derived "saml" (include "gerrit.samlConfig" . | fromJson) -}}

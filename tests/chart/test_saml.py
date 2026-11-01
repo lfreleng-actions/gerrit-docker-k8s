@@ -121,7 +121,6 @@ def test_enabled_config_matches_golden(tmp_path: Path, source: str) -> None:
     assert config == read_golden(golden)
 
 
-@pytest.mark.xfail(strict=True, reason="installModule not yet rendered")
 @pytest.mark.parametrize("source", sorted(SOURCES))
 def test_enabled_installs_the_module(tmp_path: Path, source: str) -> None:
     config = gerrit_config(render(tmp_path, saml_values(source)))
@@ -130,14 +129,26 @@ def test_enabled_installs_the_module(tmp_path: Path, source: str) -> None:
     assert "httpdisplaynameheader" not in config.lower()
 
 
-@pytest.mark.xfail(strict=True, reason="header not yet refused")
 @pytest.mark.parametrize(
     "values",
     [
         {"auth": {"httpDisplaynameHeader": "X-Name"}},
         {"auth": {"httpdisplaynameheader": "X-Name"}},
+        {"auth": {"httpDisplaynameHeader": ["X-Name"]}},
+        {"auth": {"httpDisplaynameHeader": [""]}},
+        {"auth": {"httpDisplaynameHeader": False}},
         {"gerrit": {"extraConfig": "[auth]\n\thttpDisplayNameHeader = X-Name\n"}},
         {"gerrit": {"extraConfig": "[auth] httpDisplaynameHeader = X-Name\n"}},
+        {"gerrit": {"extraConfig": "[AUTH]\n  HTTPDISPLAYNAMEHEADER\n"}},
+        {"gerrit": {"extraConfig": "[auth]\n\thttpDisplaynameHeader=X-Name # set\n"}},
+        {"gerrit": {"extraConfig": '[auth "x"]\n[auth]\nhttpDisplaynameHeader =\n'}},
+        {"gerrit": {"extraConfig": "[auth]\n\u2003httpDisplaynameHeader = X-Name\n"}},
+        {"gerrit": {"extraConfig": "[auth]\u2003httpDisplaynameHeader\u2003= X\n"}},
+        {
+            "gerrit": {
+                "extraConfig": "[auth]\n\tlogoutUrl = a\\\\\nhttpDisplaynameHeader = X\n"
+            }
+        },
     ],
 )
 def test_display_name_header_is_refused(tmp_path: Path, values: dict[str, Any]) -> None:
@@ -151,6 +162,39 @@ def test_display_name_header_is_refused(tmp_path: Path, values: dict[str, Any]) 
     assert "httpDisplaynameHeader is not compatible with SAML" in proc.stderr
 
 
+@pytest.mark.parametrize("header", [None, "", []])
+def test_empty_display_name_header_renders(tmp_path: Path, header: Any) -> None:
+    values = saml_values("url")
+    values["auth"]["httpDisplaynameHeader"] = header
+    config = gerrit_config(render(tmp_path, values))
+    assert f"\tfilterClass = {FILTER}\n" in config
+    assert "httpdisplaynameheader" not in config.lower()
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        "# [auth] httpDisplaynameHeader = X-Name\n",
+        "[auth]\n; httpDisplaynameHeader = X-Name\n",
+        "[auth]\n\t# httpDisplaynameHeader = X-Name\n",
+        '[plugin "x"]\n\tnote = "a] httpDisplaynameHeader = X-Name"\n',
+        '[plugin "x"]\n\tnote = a ; [auth] httpDisplaynameHeader = X\n',
+        '[auth "example"]\n\thttpDisplaynameHeader = X-Name\n',
+        "[auth.example]\n\thttpDisplaynameHeader = X-Name\n",
+        "[sendemail]\n\thttpDisplaynameHeader = X-Name\n",
+        "httpDisplaynameHeader = X-Name\n",
+        "[auth]\n\tlogoutUrl = a \\\nhttpDisplaynameHeader = X-Name\n",
+        '[auth]\n\tlogoutUrl = "a \\\nhttpDisplaynameHeader = \\\nb"\n',
+    ],
+)
+def test_inactive_display_name_header_renders(tmp_path: Path, extra: str) -> None:
+    values = saml_values("url")
+    values["gerrit"] = {"extraConfig": extra}
+    config = gerrit_config(render(tmp_path, values))
+    assert f"\tfilterClass = {FILTER}\n" in config
+    assert extra.rstrip("\n") in config
+
+
 def test_display_name_header_is_kept_without_saml(tmp_path: Path) -> None:
     values = {"auth": {"httpDisplaynameHeader": "X-Name"}}
     assert "\thttpDisplaynameHeader = X-Name\n" in gerrit_config(
@@ -158,7 +202,6 @@ def test_display_name_header_is_kept_without_saml(tmp_path: Path) -> None:
     )
 
 
-@pytest.mark.xfail(strict=True, reason="maxAuthLifetimeAttr not yet removed")
 def test_max_auth_lifetime_attr_is_not_a_key() -> None:
     files = [p for d in (CHART, GOLDEN) for p in d.rglob("*") if p.is_file()]
     assert files
@@ -270,16 +313,8 @@ def test_enabled_adds_the_library_once(tmp_path: Path) -> None:
         ("http://idp.example.org/metadata", {80}),
         ("https://idp.example.org?metadata=1", set()),
         ("http://idp.example.org#metadata", {80}),
-        pytest.param(
-            "https://idp.example.org:8443?metadata=1",
-            {8443},
-            marks=pytest.mark.xfail(strict=True, reason="port parsed past ?"),
-        ),
-        pytest.param(
-            "http://idp.example.org:8080#metadata",
-            {8080},
-            marks=pytest.mark.xfail(strict=True, reason="port parsed past #"),
-        ),
+        ("https://idp.example.org:8443?metadata=1", {8443}),
+        ("http://idp.example.org:8080#metadata", {8080}),
     ],
 )
 def test_egress_reaches_the_metadata_url(
