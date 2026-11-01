@@ -22,11 +22,12 @@ volume holds state only.
 | `Ingress` `<fullname>`            | With `ingress.enabled`; see [Exposing Gerrit](#exposing-gerrit) |
 | `IngressRoute` `<fullname>`, `Middleware`s, `Certificate` `<fullname>-tls` | Instead of the `Ingress`, with `ingress.traefik.enabled` |
 | `ConfigMap` `<fullname>-scripts`  | `files/scripts/*.sh`                                           |
-| `ConfigMap` `<fullname>-config`   | Rendered `gerrit.config`, `jgit.config` and `notedb.config`    |
+| `ConfigMap` `<fullname>-config`   | Rendered `gerrit.config`, `jgit.config` and `notedb.config`, and `replication.config` with `replication.enabled` |
+| `ConfigMap` `<fullname>-known-hosts` | SSH host keys of the replication remotes; with `replication.enabled`, see [Replication](#replication) |
 | `Secret` `<fullname>-admin`       | Admin credential placeholder; not consumed yet                 |
 | `Secret` `<fullname>-secure-config` | Values `render-config.sh` writes to `etc/secure.config`; see the Secret contract |
 | `CronJob` `<fullname>-git-gc`, `NetworkPolicy` `<fullname>-git-gc-deny` | With `gc.cronJob.enabled`; see [Garbage collection](#garbage-collection) |
-| `NetworkPolicy` (two)             | Default deny; allow ingress to 8080 (from `networkPolicy.ingressNamespaceSelector` when set) and 29418, egress to DNS, HTTPS and, with mail configured, the SMTP relay's port |
+| `NetworkPolicy` (two)             | Default deny; allow ingress to 8080 (from `networkPolicy.ingressNamespaceSelector` when set) and 29418, egress to DNS, HTTPS and, with mail configured, the SMTP relay's port, and with replication enabled, each remote's port |
 
 The Secrets carry `helm.sh/resource-policy: keep` and
 `argocd.argoproj.io/sync-options: Prune=false,Delete=false`, so they
@@ -51,6 +52,8 @@ secure-config Secret.
 | `secrets.admin.existingSecret`        | `username`, `password`    | Yes      | Not consumed yet                              |
 | `secrets.secureConfig.existingSecret` | `registerEmailPrivateKey` | Yes      | `auth.registerEmailPrivateKey` in `secure.config` |
 | `secrets.secureConfig.existingSecret` | `smtpPass`                | No       | `sendemail.smtpPass` in `secure.config`       |
+| `replication.sshKeySecret`            | `id_ed25519` or `id_rsa`  | For SSH remotes | Mounted in `/var/gerrit/.ssh` with mode `0400` |
+| `replication.sshKeySecret`            | `known_hosts`             | No       | Mounted in `/var/gerrit/.ssh` with mode `0400` |
 
 The generated `<fullname>-secure-config` Secret carries a random
 `registerEmailPrivateKey` and an empty `smtpPass`. Fill `smtpPass` in
@@ -64,8 +67,10 @@ empty or absent optional key leaves its entry out of `secure.config`.
    volume the `gerrit` user (UID 1001) does not own.
 2. `site-init` copies `gerrit.war` and `gerrit.sh` from the image,
    replaces the site's plugin and library jars with those named in
-   `pluginCatalogue`, and copies the rendered `gerrit.config`,
-   `jgit.config` and `notedb.config` over the site's own. On a site
+   `pluginCatalogue`, plus `replication` with `replication.enabled`,
+   and copies the rendered `gerrit.config`, `jgit.config`,
+   `notedb.config` and `replication.config` over the site's own. With
+   replication disabled it removes the site's `etc/replication.config`. On a site
    without the repository `gerrit.allProjects` names (`All-Projects`
    unless `gerrit.extraConfig` sets it) it then runs
    `gerrit init --batch --no-auto-start` on that configuration and
@@ -123,6 +128,12 @@ mounts empty anonymous volumes over them and the site disappears.
 | `ssh.service.externalTrafficPolicy`      | `Local`                          | Set on `LoadBalancer` and `NodePort` Services only         |
 | `ssh.service.externalDNS`                | `false`                          | Adds `external-dns.alpha.kubernetes.io/hostname: <ssh.host>` |
 | `networkPolicy.enabled`                  | `true`                           |                                                            |
+| `replication.enabled`                    | `false`                          | See [Replication](#replication)                            |
+| `replication.autoReload`                 | `true`                           | `gerrit.autoReload` in `replication.config`                |
+| `replication.lockErrorMaxRetries`, `.maxRetries` | `5`, `5`                 | `[replication]` globals                                    |
+| `replication.sshKeySecret`               | `""`                             | Secret with the SSH identity; `""` mounts no key           |
+| `replication.knownHosts`                 | `""`                             | Extra `known_hosts` lines; GitHub's host keys are always included |
+| `replication.remotes`                    | `[]`                             | One `[remote "<name>"]` section per entry                  |
 | `networkPolicy.ingressNamespaceSelector` | `{}`                             | Label selector for the namespaces that may reach 8080; `{}` admits any source |
 
 ### gerrit.config
@@ -348,6 +359,111 @@ every capability dropped and no service account token, so it meets the
 runs as root with `CHOWN` and `DAC_OVERRIDE`. That container breaks
 the `restricted` level but stays within `baseline`, so enable it only
 where the namespace allows `baseline` or less, as in local smoke tests.
+
+## Replication
+
+`replication.enabled` configures the core `replication` plugin to push
+from this Gerrit to other remotes, such as a GitHub organisation
+mirror or a plain git mirror. This is the opposite direction from the
+pull-replication the GitHub Action in this repository sets up.
+Enabling it:
+
+- adds `replication` to the plugins `site-init` copies from the image
+  catalogue, so the image must provide
+  `<pluginCatalogue.path>/plugins/replication.jar`;
+- renders `etc/replication.config`: `[gerrit] autoReload`, the
+  `[replication]` globals, and one `[remote "<name>"]` section per
+  entry of `replication.remotes` with only the keys that entry sets;
+- mounts `/var/gerrit/.ssh` read-only with mode `0400`, holding every
+  key of the `replication.sshKeySecret` Secret and, as `known_hosts2`,
+  GitHub's published SSH host keys plus `replication.knownHosts`. The
+  SSH client reads both `known_hosts` and `known_hosts2`, so the Secret
+  may carry its own `known_hosts` too;
+- allows NetworkPolicy egress to the port of each URL a remote's `url`
+  and `adminUrl` give, one or a list: the port a URL names, or else 22
+  for `ssh://`, `gerrit+ssh://` and `user@host:path` URLs, 80 for
+  `http://` and `gerrit+http://`, 9418 for `git://`, and 443 for HTTPS,
+  which is always open.
+
+The plugin's ref-update queue in `data/replication/` stays on the site
+volume, so pending pushes survive a restart.
+
+```yaml
+replication:
+  enabled: true
+  sshKeySecret: gerrit-replication-ssh
+  remotes:
+    - name: github
+      url: git@github.com:example-org/${name}.git
+      authGroup: GitHub Replication
+      push:
+        - +refs/heads/*:refs/heads/*
+        - +refs/tags/*:refs/tags/*
+      remoteNameStyle: dash
+      replicationDelay: 15
+```
+
+Create the Secret from a deploy key that may push to the remotes:
+
+```sh
+kubectl create secret generic gerrit-replication-ssh \
+  --from-file=id_ed25519=./replication_ed25519
+```
+
+Each remote key other than `name` is the `replication.config` key of
+the same name, as the
+[replication plugin documentation](https://gerrit.googlesource.com/plugins/replication/+/refs/heads/master/src/main/resources/Documentation/config.md)
+describes it. A list repeats the key, and `null`, `""` or an empty
+list leaves it out. A remote without `name` or `url`, or two remotes of
+one name, fail the render.
+
+### Service account and authGroup
+
+The plugin pushes as the Gerrit server, but `authGroup` limits each
+remote to the refs that group may read: a ref the group cannot see is
+never pushed, so hidden projects and restricted branches stay out of
+the mirror. Create a group for the remote, for example
+`GitHub Replication`, grant it `Read` on the refs to mirror in
+`All-Projects` or the projects concerned, and name it in `authGroup`.
+A remote without `authGroup` replicates every ref. The SSH key, not
+the group, is what the remote authenticates: give the key's public
+half write access there, such as a GitHub deploy key or a machine
+user in the organisation.
+
+### Adding a mirror remote
+
+Append an entry to `replication.remotes`. `mirror: true` deletes refs
+on the remote that no longer exist in Gerrit, so give a mirror remote
+its own repositories:
+
+```yaml
+    - name: mirror
+      url: ssh://git@git.example.org:2222/mirrors/${name}.git
+      push:
+        - +refs/*:refs/*
+      mirror: true
+      projects:
+        - ^example/.*
+```
+
+Add the remote's host key to `replication.knownHosts`, or to the
+Secret's `known_hosts`; the plugin refuses a host it does not know.
+A port other than 22 in the URL also needs a matching `[host]` entry,
+`[git.example.org]:2222 ssh-ed25519 ...`. A `helm upgrade` that
+changes the remotes changes the config map's checksum, which restarts
+the pod, and `site-init` installs the new `replication.config`.
+
+### Verifying replication
+
+An administrator lists the configured remotes, and can start a run,
+over Gerrit's SSH port:
+
+```sh
+ssh -p 29418 <user>@<ssh.host> replication list
+ssh -p 29418 <user>@<ssh.host> replication start --all --wait
+```
+
+`logs/replication_log` on the site volume records each push.
 
 ## Maintenance
 

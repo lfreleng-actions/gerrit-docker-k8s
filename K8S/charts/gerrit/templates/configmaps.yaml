@@ -13,8 +13,9 @@ metadata:
 data:
   {{- (.Files.Glob "files/scripts/*.sh").AsConfig | nindent 2 }}
 ---
-# etc/gerrit.config, jgit.config and notedb.config; site-init copies
-# each over the site's own at every start
+# etc/gerrit.config, jgit.config, notedb.config and, with replication
+# enabled, replication.config; site-init copies each over the site's
+# own at every start
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -37,3 +38,25 @@ data:
   {{- else }}
   notedb.config: ""
   {{- end }}
+  {{- if .Values.replication.enabled }}
+  replication.config: |
+    {{- include "gerrit.replicationConfig" . | trim | nindent 4 }}
+  {{- end }}
+{{- if .Values.replication.enabled }}
+---
+# Mounted in /var/gerrit/.ssh as known_hosts2, which the SSH client
+# reads besides known_hosts, so the key Secret may carry its own
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $fullname }}-known-hosts
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "gerrit.labels" . | nindent 4 }}
+data:
+  known_hosts: |
+    {{- include "gerrit.githubKnownHosts" . | nindent 4 }}
+    {{- with .Values.replication.knownHosts | trim }}
+    {{- . | nindent 4 }}
+    {{- end }}
+{{- end }}

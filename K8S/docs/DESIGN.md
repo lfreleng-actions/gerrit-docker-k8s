@@ -112,7 +112,8 @@ must succeed before the next starts:
 3. `site-init`: copies `gerrit.war` and `gerrit.sh` from the image,
    replaces the site's plugin and library jars with those named in
    `pluginCatalogue`, and installs the rendered `gerrit.config`,
-   `jgit.config` and `notedb.config` (section 1.4). On a site without
+   `jgit.config`, `notedb.config` and, with replication enabled,
+   `replication.config` (section 1.4). On a site without
    the repository `gerrit.allProjects` names (`All-Projects` by
    default) it then runs
    `gerrit init --batch --no-auto-start` on that configuration, so a
@@ -361,7 +362,9 @@ it, and the list grows with the features. The mail rule is rendered
 today: with `sendemail.smtpServer` set and `sendemail.enable` not
 `false`, the chart allows TCP egress to `sendemail.smtpServerPort`,
 or to Gerrit's default of 465 with `smtpEncryption: ssl` and 25
-otherwise.
+otherwise. So is the replication rule: with `replication.enabled`, the
+chart allows TCP egress to the port of each URL in each remote's `url`
+and `adminUrl`, or to its scheme's default (22 for SSH).
 
 | Feature | Egress | Rendered when |
 | ------- | ------ | ------------- |
@@ -572,7 +575,7 @@ sources belong to the deployment, not this document.
 | `secrets.admin.existingSecret` | `username`, `password` | Not consumed yet | Generated as `<fullname>-admin` when empty. Later chart work bootstraps the administrator account from it. |
 | `secrets.secureConfig.existingSecret` | `registerEmailPrivateKey`, and optionally `smtpPass` | `render-config` | Generated as `<fullname>-secure-config` when empty, with an empty `smtpPass` the operator fills in. Passed as `GERRIT_REGISTER_EMAIL_PRIVATE_KEY` and `GERRIT_SMTP_PASS` and written to `auth.registerEmailPrivateKey` and, when not empty, `sendemail.smtpPass` in `etc/secure.config`. Each later `secure.config` entry adds one key here and one environment variable. |
 | `auth.saml.existingSecret` | `samlKeystore.jks`, `keystore-password`, `private-key-password`, and optionally `idp-metadata.xml` | `render-config` | As #235 specifies. The keystore, and the IdP metadata when it is a file rather than `auth.saml.metadataUrl`, are copied to `etc/` with mode `0600`; the two passwords go into the `[saml]` section of `etc/secure.config`, never into values. To adopt a site that already uses SAML, the operator fills this Secret with the source's keystore, so the service provider keeps the key the identity provider trusts; a new keystore breaks every login until the IdP is updated. |
-| `replication.sshKeySecret` | `id_ed25519` (or `id_rsa`), and optionally `known_hosts` | Gerrit pod | As #236 specifies. SSH identity for the replication remotes, and their pinned host keys. |
+| `replication.sshKeySecret` | `id_ed25519` (or `id_rsa`), and optionally `known_hosts` | Gerrit pod | SSH identity for the replication remotes, and their pinned host keys. Projected with mode `0400` into `/var/gerrit/.ssh`, beside the chart's `known_hosts2` of GitHub's published host keys and `replication.knownHosts`. |
 | `siteImport.source.existingSecret` | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and `age-identity` or `gpg-private-key` | `site-import` | Reads and decrypts the archive. The object-store keys are optional where the platform supplies workload identity. |
 | `backup.existingSecret` | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | Backup CronJob | The encryption recipient is public and lives in values. Optional where the platform supplies workload identity. |
 | `toolbox.existingSecret` | `ssh-privatekey` | Admin toolbox | Identity of an administrator account used from the toolbox. |

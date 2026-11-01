@@ -162,6 +162,38 @@ pluginCatalogue:
   plugins: []
   libs: []
 
+# Push replication from this Gerrit to other remotes through the core
+# replication plugin. Enabling it adds "replication" to the plugins
+# site-init copies from the image catalogue, renders
+# etc/replication.config and mounts the SSH material at
+# /var/gerrit/.ssh. See "Replication" in the chart README.
+replication:
+  enabled: false
+  autoReload: true                # [gerrit] autoReload
+  lockErrorMaxRetries: 5          # [replication] globals
+  maxRetries: 5
+  # Secret with id_ed25519 (or id_rsa) and optionally known_hosts,
+  # mounted at /var/gerrit/.ssh with mode 0400; "" mounts no key
+  sshKeySecret: ""
+  # Extra known_hosts lines; GitHub's published host keys are
+  # included always
+  knownHosts: ""
+  # One [remote "<name>"] section per entry. Every key but name is a
+  # replication.config key of the same name, rendered only when set;
+  # a list repeats the key. For example:
+  #   - name: github
+  #     url: git@github.com:example-org/${name}.git
+  #     authGroup: GitHub Replication
+  #     push: ["+refs/*:refs/*"]
+  #     remoteNameStyle: dash
+  #     threads: 5
+  #     timeout: 5
+  #     projects: []
+  #     replicatePermissions: true
+  #     mirror: false
+  #     replicationDelay: 15
+  remotes: []
+
 persistence:
   storageClassName: ""
   size: 20Gi

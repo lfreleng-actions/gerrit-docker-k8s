@@ -3,11 +3,11 @@
 # SPDX-FileCopyrightText: 2026 The Linux Foundation
 
 # Prepare the Gerrit site on the persistent volume. Every start
-# replaces etc/gerrit.config, jgit.config and notedb.config with the
-# files the chart rendered, and refreshes the binaries and enabled
-# plugins from the image; the first boot then runs "gerrit init" on
-# the rendered configuration. The volume is mounted at GERRIT_SITE so
-# the image's /var/gerrit stays visible.
+# replaces etc/gerrit.config, jgit.config, notedb.config and
+# replication.config with the files the chart rendered, and refreshes
+# the binaries and enabled plugins from the image; the first boot then
+# runs "gerrit init" on the rendered configuration. The volume is
+# mounted at GERRIT_SITE so the image's /var/gerrit stays visible.
 
 set -eu
 
@@ -90,6 +90,13 @@ install_config() {
   for name in jgit.config notedb.config; do
     cp "$rendered/$name" "$site/etc/$name"
   done
+  # Rendered only with replication enabled; the chart owns the file,
+  # so a disabled render removes the site's copy
+  if [ -e "$rendered/replication.config" ]; then
+    cp "$rendered/replication.config" "$site/etc/replication.config"
+  else
+    rm -f "$site/etc/replication.config"
+  fi
 }
 
 install_config

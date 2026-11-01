@@ -22,7 +22,6 @@ import yaml
 from chart.test_render import CHART
 
 pytestmark = pytest.mark.skipif(shutil.which("helm") is None, reason="needs helm")
-XFAIL = pytest.mark.xfail(strict=True, reason="replication is not rendered yet")
 
 GITHUB_KEY = (
     "github.com ssh-ed25519 "
@@ -140,7 +139,6 @@ def test_disabled_renders_none_of_it(tmp_path: Path) -> None:
     assert egress_ports(docs) == {53, 443}
 
 
-@XFAIL
 def test_enabled_renders_the_config(tmp_path: Path) -> None:
     docs = render(tmp_path, REPLICATION)
     config = find(docs, "ConfigMap", "gerrit-config")
@@ -160,7 +158,6 @@ def test_enabled_renders_the_config(tmp_path: Path) -> None:
     assert git_config(text, tmp_path, "remote.mirror.mirror") == "true"
 
 
-@XFAIL
 def test_remote_renders_only_the_keys_it_sets(tmp_path: Path) -> None:
     docs = render(tmp_path, REPLICATION)
     config = find(docs, "ConfigMap", "gerrit-config")
@@ -180,7 +177,6 @@ def test_remote_renders_only_the_keys_it_sets(tmp_path: Path) -> None:
     ]
 
 
-@XFAIL
 def test_enabled_adds_the_plugin_once(tmp_path: Path) -> None:
     values = {**REPLICATION, "pluginCatalogue": {"plugins": ["replication", "x"]}}
     listed = site_init_env(render(tmp_path, values))["GERRIT_PLUGINS"].split()
@@ -189,7 +185,6 @@ def test_enabled_adds_the_plugin_once(tmp_path: Path) -> None:
     assert alone == ["replication"]
 
 
-@XFAIL
 def test_known_hosts_carry_github_and_extra_keys(tmp_path: Path) -> None:
     docs = render(tmp_path, REPLICATION)
     cm = find(docs, "ConfigMap", "gerrit-known-hosts")
@@ -200,7 +195,6 @@ def test_known_hosts_carry_github_and_extra_keys(tmp_path: Path) -> None:
     assert EXTRA_KEY in lines
 
 
-@XFAIL
 def test_ssh_material_is_mounted_read_only(tmp_path: Path) -> None:
     docs = render(tmp_path, REPLICATION)
     spec = pod_spec(docs)
@@ -225,7 +219,6 @@ def test_ssh_material_is_mounted_read_only(tmp_path: Path) -> None:
     assert ".ssh" in site_init_env(docs)["GERRIT_SITE_DIRS"].split()
 
 
-@XFAIL
 def test_no_key_secret_mounts_known_hosts_only(tmp_path: Path) -> None:
     values = {"replication": {**REPLICATION["replication"], "sshKeySecret": ""}}
     spec = pod_spec(render(tmp_path, values))
@@ -234,7 +227,6 @@ def test_no_key_secret_mounts_known_hosts_only(tmp_path: Path) -> None:
     assert [list(s) for s in sources] == [["configMap"]]
 
 
-@XFAIL
 @pytest.mark.parametrize(
     ("url", "port"),
     [
@@ -260,7 +252,6 @@ def test_https_remote_needs_no_extra_egress(tmp_path: Path) -> None:
     assert egress_ports(render(tmp_path, values)) == {53, 443}
 
 
-@XFAIL
 @pytest.mark.parametrize(
     ("admin_url", "ports"),
     [
@@ -281,7 +272,6 @@ def test_egress_reaches_the_admin_url(
     assert egress_ports(render(tmp_path, values)) == {53, 443} | ports
 
 
-@XFAIL
 @pytest.mark.parametrize("key", ["url", "adminUrl"])
 def test_egress_reaches_each_url_in_a_list(tmp_path: Path, key: str) -> None:
     remote: dict[str, Any] = {"name": "r", "url": "https://git.example.org/${name}.git"}
@@ -293,7 +283,6 @@ def test_egress_reaches_each_url_in_a_list(tmp_path: Path, key: str) -> None:
     assert egress_ports(render(tmp_path, values)) == {53, 443, 2222, 9443}
 
 
-@XFAIL
 @pytest.mark.parametrize(
     ("remotes", "message"),
     [
