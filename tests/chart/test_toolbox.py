@@ -35,8 +35,6 @@ CHECK = HELPERS / "gerrit-require-offline.py"
 GC_SCRIPT = CHART / "files" / "scripts" / "git-gc.sh"
 POD_DNS = "gerrit-0.gerrit-headless.gerrit-test.svc.cluster.local."
 needs_helm = pytest.mark.skipif(shutil.which("helm") is None, reason="needs helm")
-# Removed with the admin toolbox, which these tests describe
-pending = pytest.mark.xfail(strict=True, reason="admin toolbox not added yet")
 
 # Runs gerrit-require-offline with getaddrinfo answering as STUB_DNS says
 STUB_RUNNER = """\
@@ -87,7 +85,6 @@ def test_no_toolbox_by_default() -> None:
 
 
 @needs_helm
-@pending
 def test_toolbox_matches_golden() -> None:
     out = helm(
         "template",
@@ -108,7 +105,6 @@ def test_toolbox_matches_golden() -> None:
 
 
 @needs_helm
-@pending
 def test_toolbox_is_at_zero_replicas_without_api_access() -> None:
     docs = render(*TOOLBOX)
     kinds = {d["kind"] for d in docs}
@@ -122,7 +118,6 @@ def test_toolbox_is_at_zero_replicas_without_api_access() -> None:
 
 
 @needs_helm
-@pending
 def test_toolbox_meets_the_restricted_standard() -> None:
     spec = deployment(render(*TOOLBOX))["spec"]["template"]["spec"]
     pod = spec["securityContext"]
@@ -138,7 +133,6 @@ def test_toolbox_meets_the_restricted_standard() -> None:
 
 
 @needs_helm
-@pending
 def test_toolbox_prefers_the_gerrit_node_and_mounts_the_site() -> None:
     docs = render(*TOOLBOX)
     spec = deployment(docs)["spec"]["template"]["spec"]
@@ -164,7 +158,6 @@ def test_toolbox_prefers_the_gerrit_node_and_mounts_the_site() -> None:
 
 
 @needs_helm
-@pending
 def test_toolbox_pod_dns_follows_cluster_domain() -> None:
     docs = render(*TOOLBOX, "--set", "clusterDomain=example.internal")
     (container,) = deployment(docs)["spec"]["template"]["spec"]["containers"]
@@ -175,7 +168,6 @@ def test_toolbox_pod_dns_follows_cluster_domain() -> None:
 
 
 @needs_helm
-@pending
 def test_toolbox_helpers_are_on_path() -> None:
     docs = render(*TOOLBOX)
     spec = deployment(docs)["spec"]["template"]["spec"]
@@ -201,7 +193,6 @@ def test_toolbox_helpers_are_on_path() -> None:
 
 
 @needs_helm
-@pending
 def test_toolbox_ssh_identity_comes_from_the_secret() -> None:
     spec = deployment(render(*TOOLBOX))["spec"]["template"]["spec"]
     assert not [v for v in spec["volumes"] if "secret" in v]
@@ -215,7 +206,6 @@ def test_toolbox_ssh_identity_comes_from_the_secret() -> None:
 
 
 @needs_helm
-@pending
 def test_toolbox_network_policy() -> None:
     docs = render(*TOOLBOX)
     labels = deployment(docs)["spec"]["template"]["metadata"]["labels"]
@@ -254,7 +244,6 @@ def test_toolbox_network_policy() -> None:
         ("--set", "fullnameOverride=" + "f" * 52),
     ],
 )
-@pending
 def test_toolbox_names_fit_kubernetes_limits(override: tuple[str, str]) -> None:
     docs = render(*TOOLBOX, *override)
     (sts,) = [d for d in docs if d["kind"] == "StatefulSet"]
@@ -311,7 +300,6 @@ def run_check(
         ("nxdomain", ("--force",), 0),
     ],
 )
-@pending
 def test_check_with_a_stubbed_resolver(
     mode: str,
     args: tuple[str, ...],
@@ -328,14 +316,12 @@ def test_check_with_a_stubbed_resolver(
         assert ("WARNING" if args else "ERROR") in err
 
 
-@pending
 def test_check_fails_closed_without_a_name(monkeypatch: pytest.MonkeyPatch) -> None:
     stub_dns("nxdomain", monkeypatch)
     assert run_check(monkeypatch, dns=None) == 1
     assert run_check(monkeypatch, "--force", dns=None) == 0
 
 
-@pending
 def test_check_rejects_unknown_arguments(monkeypatch: pytest.MonkeyPatch) -> None:
     stub_dns("nxdomain", monkeypatch)
     assert run_check(monkeypatch, "--now") == 2
@@ -400,7 +386,6 @@ def cache_site(tmp_path: Path) -> Path:
         ("answer", ("--force",), True),
     ],
 )
-@pending
 def test_cache_purge(
     mode: str, args: tuple[str, ...], purged: bool, tmp_path: Path
 ) -> None:
@@ -454,7 +439,6 @@ def index_site(tmp_path: Path) -> Path:
         ("answer", ("--force",), True),
     ],
 )
-@pending
 def test_index_prune(
     mode: str, args: tuple[str, ...], pruned: bool, tmp_path: Path
 ) -> None:
@@ -476,7 +460,6 @@ def test_index_prune(
         assert left == before
 
 
-@pending
 def test_index_prune_needs_a_ready_version(tmp_path: Path) -> None:
     site = index_site(tmp_path)
     (site / "index" / "gerrit_index.config").write_text(
@@ -489,7 +472,6 @@ def test_index_prune_needs_a_ready_version(tmp_path: Path) -> None:
     assert sorted(p.name for p in (site / "index").iterdir()) == before
 
 
-@pending
 def test_index_prune_needs_the_index_config(tmp_path: Path) -> None:
     site = index_site(tmp_path)
     (site / "index" / "gerrit_index.config").unlink()
@@ -508,7 +490,6 @@ def test_index_prune_needs_the_index_config(tmp_path: Path) -> None:
         ("answer", ("--force",), True),
     ],
 )
-@pending
 def test_gc_now(mode: str, args: tuple[str, ...], ran: bool, tmp_path: Path) -> None:
     site = tmp_path / "site"
     (site / "etc").mkdir(parents=True)
@@ -524,7 +505,6 @@ def test_gc_now(mode: str, args: tuple[str, ...], ran: bool, tmp_path: Path) -> 
         assert packs(repo) == []
 
 
-@pending
 def test_gc_now_passes_git_gc_options(tmp_path: Path) -> None:
     site = tmp_path / "site"
     (site / "etc").mkdir(parents=True)
@@ -537,7 +517,6 @@ def test_gc_now_passes_git_gc_options(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     "helper", ["gerrit-cache-purge", "gerrit-index-prune", "gerrit-gc-now"]
 )
-@pending
 def test_helpers_print_usage(helper: str, tmp_path: Path) -> None:
     proc = run_helper(helper, tmp_path, tmp_path / "site", "answer", "--help")
     assert proc.returncode == 0, proc.stderr
@@ -545,7 +524,6 @@ def test_helpers_print_usage(helper: str, tmp_path: Path) -> None:
     assert "--force" in proc.stdout
 
 
-@pending
 def test_index_prune_stops_on_an_unreadable_config(tmp_path: Path) -> None:
     site = index_site(tmp_path)
     (site / "index" / "gerrit_index.config").write_text(
@@ -579,7 +557,6 @@ pathlib.Path(sys.argv[0]).with_suffix(".args").write_text(" ".join(sys.argv[1:])
         ("answer", ("--out", "final", "final"), False),
     ],
 )
-@pending
 def test_site_export_checks_gerrit_before_a_final_export(
     mode: str, args: tuple[str, ...], ran: bool, tmp_path: Path
 ) -> None:

@@ -1,0 +1,498 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+---
+# Source: gerrit/templates/admin-toolbox.yaml
+# Deny by default; egress to DNS, for the helpers' check that Gerrit is
+# stopped, and to the Gerrit pod's SSH port, for administrative commands
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: gerrit-toolbox
+  namespace: gerrit-test
+  labels:
+    helm.sh/chart: gerrit-0.1.0
+    app.kubernetes.io/name: gerrit-toolbox
+    app.kubernetes.io/instance: gerrit
+    app.kubernetes.io/component: admin-toolbox
+    app.kubernetes.io/version: "3.13.1"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: gerrit
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: gerrit-toolbox
+      app.kubernetes.io/instance: gerrit
+      app.kubernetes.io/component: admin-toolbox
+  policyTypes:
+    - Ingress
+    - Egress
+  egress:
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: gerrit
+              app.kubernetes.io/instance: gerrit
+      ports:
+        - protocol: TCP
+          port: 29418
+---
+# Source: gerrit/templates/admin-toolbox.yaml
+# The toolbox helpers, mounted on PATH without their extensions
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gerrit-toolbox
+  namespace: gerrit-test
+  labels:
+    helm.sh/chart: gerrit-0.1.0
+    app.kubernetes.io/name: gerrit-toolbox
+    app.kubernetes.io/instance: gerrit
+    app.kubernetes.io/component: admin-toolbox
+    app.kubernetes.io/version: "3.13.1"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: gerrit
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+data:
+  gerrit-cache-purge.sh: |
+    #!/bin/sh
+    # SPDX-License-Identifier: Apache-2.0
+    # SPDX-FileCopyrightText: 2026 The Linux Foundation
+
+    # Usage: gerrit-cache-purge [--force]
+    #
+    # Delete Gerrit's persistent cache files, cache/*.h2.db and
+    # cache/*.mv.db, from the site at $GERRIT_SITE; Gerrit rebuilds them as
+    # it needs them. Refuses while the Gerrit pod exists, as
+    # gerrit-require-offline reports, unless given --force.
+
+    set -eu
+
+    usage() {
+      sed -n '5,10s/^# \{0,1\}//p' "$0"
+    }
+
+    force=
+    case $# in
+      0) ;;
+      1)
+        case $1 in
+          --force) force=--force ;;
+          -h | --help) usage; exit 0 ;;
+          *) usage >&2; exit 2 ;;
+        esac
+        ;;
+      *) usage >&2; exit 2 ;;
+    esac
+
+    site=${GERRIT_SITE:?}
+    cache="$site/cache"
+    if [ ! -d "$cache" ]; then
+      echo "ERROR: no cache directory at $cache" >&2
+      exit 1
+    fi
+    gerrit-require-offline ${force:+"$force"} || exit 1
+
+    removed=0
+    for f in "$cache"/*.h2.db "$cache"/*.mv.db; do
+      [ -f "$f" ] || continue
+      rm -f -- "$f"
+      echo "removed $f"
+      removed=$((removed + 1))
+    done
+    echo "removed $removed cache files from $cache"
+
+  gerrit-gc-now.sh: |
+    #!/bin/sh
+    # SPDX-License-Identifier: Apache-2.0
+    # SPDX-FileCopyrightText: 2026 The Linux Foundation
+
+    # Usage: gerrit-gc-now [--force] [git gc option ...]
+    #
+    # Run the chart's git-gc.sh once over every repository of the site at
+    # $GERRIT_SITE, passing each git gc option on, so with none it runs a
+    # full gc. Refuses while the Gerrit pod exists, as
+    # gerrit-require-offline reports, unless given --force.
+
+    set -eu
+
+    usage() {
+      sed -n '5,10s/^# \{0,1\}//p' "$0"
+    }
+
+    force=
+    case ${1:-} in
+      --force) force=--force; shift ;;
+      -h | --help) usage; exit 0 ;;
+    esac
+
+    script=${GERRIT_GC_SCRIPT:-/scripts/git-gc.sh}
+    if [ ! -f "$script" ]; then
+      echo "ERROR: no gc script at $script" >&2
+      exit 1
+    fi
+    gerrit-require-offline ${force:+"$force"} || exit 1
+
+    exec sh "$script" "$@"
+
+  gerrit-index-prune.sh: |
+    #!/bin/sh
+    # SPDX-License-Identifier: Apache-2.0
+    # SPDX-FileCopyrightText: 2026 The Linux Foundation
+
+    # Usage: gerrit-index-prune [--force]
+    #
+    # Remove the index/<name>_NNNN directories that past upgrades left in
+    # the site at $GERRIT_SITE. index/gerrit_index.config marks the version
+    # of each index Gerrit uses as ready, and those are kept, as is any
+    # index without a ready version. Refuses while the Gerrit pod exists,
+    # as gerrit-require-offline reports, unless given --force.
+
+    set -eu
+
+    usage() {
+      sed -n '5,11s/^# \{0,1\}//p' "$0"
+    }
+
+    force=
+    case $# in
+      0) ;;
+      1)
+        case $1 in
+          --force) force=--force ;;
+          -h | --help) usage; exit 0 ;;
+          *) usage >&2; exit 2 ;;
+        esac
+        ;;
+      *) usage >&2; exit 2 ;;
+    esac
+
+    site=${GERRIT_SITE:?}
+    index="$site/index"
+    config="$index/gerrit_index.config"
+    if [ ! -f "$config" ]; then
+      echo "ERROR: no $config, so the versions in use are unknown" >&2
+      exit 1
+    fi
+
+    # Read the config on its own, not in a pipeline, so that a failed read,
+    # such as a value that is not a boolean, stops the prune rather than
+    # leaving a partial list. Status 1 means no ready key at all.
+    status=0
+    entries=$(git config -f "$config" --type=bool --get-regexp '^index\..*\.ready$') ||
+      status=$?
+    if [ "$status" -ne 0 ] && [ "$status" -ne 1 ]; then
+      echo "ERROR: cannot read $config (git config exit $status)" >&2
+      exit 1
+    fi
+    # One "<name>_NNNN" line per index version the config marks ready
+    ready=$(printf '%s\n' "$entries" |
+      awk '$2 == "true" { sub(/^index\./, "", $1); sub(/\.ready$/, "", $1); print $1 }')
+    if [ -z "$ready" ]; then
+      echo "ERROR: $config marks no index version ready" >&2
+      exit 1
+    fi
+    gerrit-require-offline ${force:+"$force"} || exit 1
+
+    removed=0
+    for dir in "$index"/*_[0-9][0-9][0-9][0-9]; do
+      [ -d "$dir" ] || continue
+      version=${dir##*/}
+      name=${version%_*}
+      # Keep the versions in use, and every version of an index none of
+      # whose versions is marked ready
+      if printf '%s\n' "$ready" | grep -qxF -- "$version" ||
+        ! printf '%s\n' "$ready" | grep -q "^${name}_[0-9][0-9][0-9][0-9]\$"; then
+        echo "kept $dir"
+        continue
+      fi
+      rm -rf -- "$dir"
+      echo "removed $dir"
+      removed=$((removed + 1))
+    done
+    echo "removed $removed stale index versions from $index"
+
+  gerrit-require-offline.py: |
+    #!/usr/bin/env python3
+    # SPDX-License-Identifier: Apache-2.0
+    # SPDX-FileCopyrightText: 2026 The Linux Foundation
+    """\
+    Usage: gerrit-require-offline [--force]
+
+    Exit 0 when the Gerrit pod does not exist, so a helper may change the
+    site volume, and 1 when it does or when the lookup cannot tell.
+
+    Looks up GERRIT_POD_DNS, the pod's fully qualified name under the
+    headless Service, which publishes not-ready addresses: the name resolves
+    while the pod starts, serves and stops, and does not exist once Gerrit
+    is scaled to zero. Only a definite "no such name" counts as stopped; a
+    timeout or any other resolver error refuses. With --force, a refusal
+    becomes a warning and the exit status is 0.
+
+    The check is a point in time, not a lock, and DNS answers can outlive a
+    scale-down by a few seconds: retry a refusal shortly after scaling down.
+    """
+
+    from __future__ import annotations
+
+    import os
+    import socket
+    import sys
+
+    USAGE = __doc__ or ""
+    PRESENT = "present"
+    ABSENT = "absent"
+
+
+    def pod_state(name: str) -> str:
+        """Return PRESENT, ABSENT, or a description of the lookup failure."""
+        try:
+            socket.getaddrinfo(name, None)
+        except socket.gaierror as exc:
+            if exc.errno == socket.EAI_NONAME:
+                return ABSENT
+            return f"lookup of {name} failed: {exc}"
+        except (OSError, UnicodeError) as exc:
+            return f"lookup of {name} failed: {exc}"
+        return PRESENT
+
+
+    def main(argv: list[str]) -> int:
+        """Run the check and return the exit status."""
+        if argv in (["-h"], ["--help"]):
+            print(USAGE, end="")
+            return 0
+        if argv not in ([], ["--force"]):
+            print(USAGE, end="", file=sys.stderr)
+            return 2
+        name = os.environ.get("GERRIT_POD_DNS", "")
+        if not name:
+            problem = "GERRIT_POD_DNS is not set, so whether Gerrit runs is unknown"
+        else:
+            state = pod_state(name)
+            if state == ABSENT:
+                return 0
+            if state == PRESENT:
+                problem = f"the Gerrit pod {name} exists; scale Gerrit to zero first"
+            else:
+                problem = f"cannot tell whether Gerrit runs: {state}"
+        if argv == ["--force"]:
+            print(f"WARNING: {problem}; continuing because of --force", file=sys.stderr)
+            return 0
+        print(f"ERROR: {problem}. Pass --force to override.", file=sys.stderr)
+        return 1
+
+
+    if __name__ == "__main__":
+        sys.exit(main(sys.argv[1:]))
+
+  gerrit-site-export.sh: |
+    #!/bin/sh
+    # SPDX-License-Identifier: Apache-2.0
+    # SPDX-FileCopyrightText: 2026 The Linux Foundation
+
+    # Usage: gerrit-site-export <seed|final> --out <dir> [option ...]
+    #
+    # Run the site export tool the image carries; see its --help. The tool's
+    # own check that Gerrit has stopped reads /proc, which shows only this
+    # pod's processes, so a final export first runs gerrit-require-offline
+    # and refuses while the Gerrit pod exists. --i-stopped-writes skips both
+    # checks. A seed export runs while Gerrit serves.
+
+    set -eu
+
+    tool=${GERRIT_SITE_EXPORT:-/opt/gerrit-site-export/gerrit-site-export.py}
+
+    # Find the mode as the tool does: skip the value after an option that
+    # takes one, unless it is given as --option=value
+    final=
+    stopped=
+    expect_value=
+    for arg in "$@"; do
+      if [ -n "$expect_value" ]; then
+        expect_value=
+        case $arg in
+          --*) ;;
+          *) continue ;;
+        esac
+      fi
+      case $arg in
+        -h | --help) exec python3 "$tool" "$@" ;;
+        final) final=1 ;;
+        --i-stopped-writes) stopped=1 ;;
+        --site | --git | --out | --encrypt | --upload) expect_value=1 ;;
+      esac
+    done
+
+    if [ -n "$final" ] && [ -z "$stopped" ]; then
+      if ! gerrit-require-offline; then
+        echo "ERROR: a final export needs Gerrit stopped; scale it to zero," \
+          "or stop writes another way and pass --i-stopped-writes" >&2
+        exit 1
+      fi
+    fi
+    exec python3 "$tool" "$@"
+---
+# Source: gerrit/templates/admin-toolbox.yaml
+# Scaled to zero by default: scale to one for a maintenance session.
+# It has no service account token and talks to no Kubernetes API.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gerrit-toolbox
+  namespace: gerrit-test
+  labels:
+    helm.sh/chart: gerrit-0.1.0
+    app.kubernetes.io/name: gerrit-toolbox
+    app.kubernetes.io/instance: gerrit
+    app.kubernetes.io/component: admin-toolbox
+    app.kubernetes.io/version: "3.13.1"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: gerrit
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  replicas: 0
+  # The site volume is usually ReadWriteOnce; never run two at once
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: gerrit-toolbox
+      app.kubernetes.io/instance: gerrit
+      app.kubernetes.io/component: admin-toolbox
+  template:
+    metadata:
+      labels:
+        helm.sh/chart: gerrit-0.1.0
+        app.kubernetes.io/name: gerrit-toolbox
+        app.kubernetes.io/instance: gerrit
+        app.kubernetes.io/component: admin-toolbox
+        app.kubernetes.io/version: "3.13.1"
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/part-of: gerrit
+      annotations:
+        checksum/helpers: 831217aeddec166990ae2a96ee2a80716c3388815d545a31a2c6e2f861641b1d
+        instrumentation.opentelemetry.io/inject-java: "false"
+        instrumentation.opentelemetry.io/inject-nodejs: "false"
+        instrumentation.opentelemetry.io/inject-python: "false"
+        instrumentation.opentelemetry.io/inject-dotnet: "false"
+        instrumentation.opentelemetry.io/inject-go: "false"
+        instrumentation.opentelemetry.io/inject-sdk: "false"
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 10
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+        fsGroup: 1001
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      # Preferred, not required: the helpers run while Gerrit is scaled
+      # to zero, and a required affinity to an absent pod would leave
+      # the toolbox unschedulable. While Gerrit runs, a toolbox placed
+      # on another node cannot attach a ReadWriteOnce site volume.
+      affinity:
+        podAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: gerrit
+                    app.kubernetes.io/instance: gerrit
+      containers:
+        - name: toolbox
+          image: ghcr.io/lfreleng-actions/gerrit:3.13.1
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - trap 'exit 0' TERM INT; while :; do sleep 3600 & wait $!; done
+          env:
+            - name: GERRIT_SITE
+              value: /var/gerrit
+            - name: HOME
+              value: /tmp
+            - name: GERRIT_POD_DNS
+              value: "gerrit-0.gerrit-headless.gerrit-test.svc.cluster.local."
+            - name: GERRIT_SSH_IDENTITY
+              value: /etc/gerrit-toolbox/ssh/id
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: site
+              mountPath: /var/gerrit
+            - name: site
+              mountPath: /var/gerrit/cache
+              subPath: cache
+            - name: site
+              mountPath: /var/gerrit/db
+              subPath: db
+            - name: site
+              mountPath: /var/gerrit/etc
+              subPath: etc
+            - name: site
+              mountPath: /var/gerrit/git
+              subPath: git
+            - name: site
+              mountPath: /var/gerrit/index
+              subPath: index
+            - name: tmp
+              mountPath: /tmp
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+            # Empty in the image and on its PATH
+            - name: helpers
+              mountPath: /usr/local/sbin
+              readOnly: true
+            - name: ssh
+              mountPath: /etc/gerrit-toolbox/ssh
+              readOnly: true
+      volumes:
+        - name: site
+          persistentVolumeClaim:
+            claimName: site-gerrit-0
+        - name: tmp
+          emptyDir: {}
+        - name: scripts
+          configMap:
+            name: gerrit-scripts
+        - name: helpers
+          configMap:
+            name: gerrit-toolbox
+            defaultMode: 0555
+            items:
+              - key: gerrit-cache-purge.sh
+                path: gerrit-cache-purge
+              - key: gerrit-gc-now.sh
+                path: gerrit-gc-now
+              - key: gerrit-index-prune.sh
+                path: gerrit-index-prune
+              - key: gerrit-require-offline.py
+                path: gerrit-require-offline
+              - key: gerrit-site-export.sh
+                path: gerrit-site-export
+        - name: ssh
+          secret:
+            secretName: gerrit-toolbox-ssh
+            defaultMode: 0400
+            items:
+              - key: ssh-privatekey
+                path: id
