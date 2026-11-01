@@ -453,11 +453,35 @@ pluginCatalogue.plugins names, plus replication when it is enabled */}}
 {{- join " " (uniq $plugins) -}}
 {{- end -}}
 
+{{/* TCP port a URL reaches: the port it names, or else its scheme's
+default: 22 for SSH and the scp-like user@host:path form, 80 for http
+and gerrit+http, 443 for https, and 9418 for git; 0 when unknown */}}
+{{- define "gerrit.urlPort" -}}
+{{- $url := toString (default "" .) -}}
+{{- $port := 0 -}}
+{{- if regexMatch "^[A-Za-z][A-Za-z0-9+.-]*://" $url }}
+{{- $scheme := lower (regexReplaceAll "^([^:]+)://.*$" $url "${1}") -}}
+{{- $authority := regexReplaceAll "^.*@" (regexReplaceAll "^[^:]+://([^/]*).*$" $url "${1}") "" -}}
+{{- if regexMatch ":[0-9]+$" $authority }}
+{{- $port = regexReplaceAll "^.*:([0-9]+)$" $authority "${1}" | int -}}
+{{- else if has $scheme (list "ssh" "git+ssh" "ssh+git" "gerrit+ssh") }}
+{{- $port = 22 -}}
+{{- else if has $scheme (list "http" "gerrit+http") }}
+{{- $port = 80 -}}
+{{- else if eq $scheme "https" }}
+{{- $port = 443 -}}
+{{- else if eq $scheme "git" }}
+{{- $port = 9418 -}}
+{{- end }}
+{{- else if regexMatch "^[^/]+:" $url }}
+{{- $port = 22 -}}
+{{- end }}
+{{- $port -}}
+{{- end -}}
+
 {{/* TCP ports the replication remotes' url and adminUrl reach, other
 than 443, which the NetworkPolicy always allows, as a JSON list. Each
-key may hold one URL or a list of them. A URL without a port takes its
-scheme's default: 22 for SSH and the scp-like user@host:path form, 80
-for http and gerrit+http, and 9418 for git. */}}
+key may hold one URL or a list of them; see gerrit.urlPort. */}}
 {{- define "gerrit.replicationEgressPorts" -}}
 {{- $ports := list -}}
 {{- range (default list .Values.replication.remotes) }}
@@ -470,23 +494,7 @@ for http and gerrit+http, and 9418 for git. */}}
 {{- end }}
 {{- end }}
 {{- range $url := $urls }}
-{{- $url = toString (default "" $url) -}}
-{{- $port := 0 -}}
-{{- if regexMatch "^[A-Za-z][A-Za-z0-9+.-]*://" $url }}
-{{- $scheme := lower (regexReplaceAll "^([^:]+)://.*$" $url "${1}") -}}
-{{- $authority := regexReplaceAll "^.*@" (regexReplaceAll "^[^:]+://([^/]*).*$" $url "${1}") "" -}}
-{{- if regexMatch ":[0-9]+$" $authority }}
-{{- $port = regexReplaceAll "^.*:([0-9]+)$" $authority "${1}" | int -}}
-{{- else if has $scheme (list "ssh" "git+ssh" "ssh+git" "gerrit+ssh") }}
-{{- $port = 22 -}}
-{{- else if has $scheme (list "http" "gerrit+http") }}
-{{- $port = 80 -}}
-{{- else if eq $scheme "git" }}
-{{- $port = 9418 -}}
-{{- end }}
-{{- else if regexMatch "^[^/]+:" $url }}
-{{- $port = 22 -}}
-{{- end }}
+{{- $port := include "gerrit.urlPort" $url | int -}}
 {{- if and $port (ne $port 443) }}
 {{- $ports = append $ports $port -}}
 {{- end }}
