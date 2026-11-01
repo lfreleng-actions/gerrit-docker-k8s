@@ -122,7 +122,6 @@ def test_enabled_config_matches_golden(tmp_path: Path, source: str) -> None:
     assert config == read_golden(golden)
 
 
-@pytest.mark.xfail(strict=True, reason="auth.saml.memberOfAttr is not declared")
 def test_member_of_attr_defaults_to_null() -> None:
     values = yaml.safe_load((CHART / "values.yaml").read_text(encoding="utf-8"))
     saml = values["auth"]["saml"]

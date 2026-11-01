@@ -140,6 +140,7 @@ mounts empty anonymous volumes over them and the site disappears.
 | `auth.saml.metadataFromSecret`           | `false`                          | Read the IdP metadata from the Secret's `idp-metadata.xml` |
 | `auth.saml.serviceProviderEntityId`      | `""`                             | `""` for `gerrit.canonicalWebUrl`                          |
 | `auth.saml.*Attr`, `.computedDisplayName`, `.maxAuthLifetime` | See `values.yaml` | The `[saml]` keys of the same name             |
+| `auth.saml.memberOfAttr`                 | `null`                           | Group membership sync, off when unset; see [Group membership sync](#group-membership-sync) |
 | `replication.enabled`                    | `false`                          | See [Replication](#replication)                            |
 | `replication.autoReload`                 | `true`                           | `gerrit.autoReload` in `replication.config`                |
 | `replication.lockErrorMaxRetries`, `.maxRetries` | `5`, `5`                 | `[replication]` globals                                    |
@@ -563,6 +564,35 @@ keeps the values on upgrade. Under Argo CD, which renders without
 cluster access, name a pre-created Secret in `existingSecret` instead,
 as for the other Secrets.
 
+### Group membership sync
+
+`memberOfAttr` names the assertion attribute that lists the user's
+groups, and turns on the module's group membership sync; `null` or
+`""` leaves it out and the sync off. Each group the attribute names
+becomes a Gerrit group `saml/<name>`, created the first time it
+appears, and at each web login the module adds the user to the groups
+the assertion names and removes them from the other `saml/` groups.
+Access rules grant rights to these groups as to any other.
+
+```yaml
+auth:
+  saml:
+    memberOfAttr: memberOf
+```
+
+Membership changes only at a web login. Someone removed from a group
+at the identity provider keeps its rights over SSH and git until they
+next log in to the web UI.
+
+When a site that uses the sync is imported, its `saml/` groups, and
+the access rules that name them, carry over with the import. The
+module finds groups by name, so the identity provider must keep
+sending the same group names and user names. A renamed group becomes a
+new `saml/` group that does not inherit the old one's access grants.
+Each user moves from the old group to the new one only at their next
+web login; until then they keep the rights the old group's rules
+grant.
+
 ### Identity provider checklist
 
 - **Assertion consumer service URL:**
@@ -580,6 +610,8 @@ as for the other Secrets.
   `emailAddressAttr` give, or first and last name with
   `computedDisplayName`. The user name becomes the Gerrit account's
   user name, so it must be stable and unique.
+- **Groups:** with the group sync, release the user's groups under the
+  name `memberOfAttr` gives.
 
 ### Rotating the keystore
 
