@@ -316,6 +316,12 @@ the image, hiding the site on the persistent volume. */}}
 cache db etc git index
 {{- end -}}
 
+{{/* Site directories site-init creates before the kubelet mounts into
+them: the image VOLUME dirs, and .ssh with replication enabled */}}
+{{- define "gerrit.siteDirs" -}}
+{{- include "gerrit.imageVolumeDirs" . }}{{ if .Values.replication.enabled }} .ssh{{ end }}
+{{- end -}}
+
 {{/* Site volume mounted at /var/gerrit, plus its image VOLUME dirs */}}
 {{- define "gerrit.siteMounts" -}}
 - name: site
@@ -363,4 +369,89 @@ backend */}}
 {{- if and (eq $ing.className "nginx") $ing.redirectRootToPrefix (include "gerrit.urlPrefix" .) -}}
 true
 {{- end -}}
+{{- end -}}
+
+{{/* etc/replication.config: [gerrit] autoReload, the [replication]
+globals, then one [remote "<name>"] section per entry of
+replication.remotes with only the keys it sets. Fails on a remote
+without a name or url, or on two remotes of one name. */}}
+{{- define "gerrit.replicationConfig" -}}
+{{- $r := .Values.replication -}}
+{{- include "gerrit.configSection" (dict "name" "gerrit" "values" (dict "autoReload" $r.autoReload)) }}
+{{- include "gerrit.configSection" (dict "name" "replication" "values" (dict "lockErrorMaxRetries" $r.lockErrorMaxRetries "maxRetries" $r.maxRetries)) }}
+{{- $seen := dict -}}
+{{- range $i, $remote := (default list $r.remotes) }}
+{{- $name := toString (default "" $remote.name) -}}
+{{- if not $name }}
+{{- fail (printf "replication.remotes[%d] needs a name" $i) }}
+{{- end }}
+{{- if not $remote.url }}
+{{- fail (printf "replication remote %q needs a url" $name) }}
+{{- end }}
+{{- if hasKey $seen $name }}
+{{- fail (printf "replication remote %q is listed twice" $name) }}
+{{- end }}
+{{- $_ := set $seen $name true -}}
+{{- include "gerrit.configSection" (dict "name" "remote" "values" (dict $name (omit $remote "name"))) }}
+{{- end }}
+{{- end -}}
+
+{{/* GitHub's published SSH host keys, from
+https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/githubs-ssh-key-fingerprints */}}
+{{- define "gerrit.githubKnownHosts" -}}
+github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl
+github.com ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBEmKSENjQEezOmxkZMy7opKgwFB9nkt5YRrYMjNuG5N87uRgg6CLrbo5wAdT/y6v0mKV0U2w0WZ2YB/++Tpockg=
+github.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQCj7ndNxQowgcQnjshcLrqPEiiphnt+VTTvDP6mHBL9j1aNUkY4Ue1gvwnGLVlOhGeYrnZaMgRK6+PKCUXaDbC7qtbW8gIkhL7aGCsOr/C56SJMy/BCZfxd1nWzAOxSDPgVsmerOBYfNqltV9/hWCqBywINIR+5dIg6JTJ72pcEpEjcYgXkE2YEFXV1JHnsKgbLWNlhScqb2UmyRkQyytRLtL+38TGxkxCflmO+5Z8CSSNY7GidjMIZ7Q4zMjA2n1nGrlTDkzwDCsw+wqFPGQA179cnfGWOWRVruj16z6XyvxvjJwbz0wQZ75XK5tKSb7FNyeIEs4TT4jk+S4dhPeAUC5y+bDYirYgM4GC7uEnztnZyaVWQ7B381AK4Qdrwt51ZqExKbQpTUNn+EjqoTwvqNj4kqx5QUCI0ThS/YkOxJCXmPUWZbhjpCg56i+2aB6CmK2JGhn57K5mj0MNdBXA4/WnwH6XoPWJzK5Nyu2zB3nAZp+S5hpQs+p1vN1/wsjk=
+{{- end -}}
+
+{{/* Plugin jars site-init copies from the catalogue: those
+pluginCatalogue.plugins names, plus replication when it is enabled */}}
+{{- define "gerrit.plugins" -}}
+{{- $plugins := default list .Values.pluginCatalogue.plugins -}}
+{{- if .Values.replication.enabled -}}
+{{- $plugins = append $plugins "replication" -}}
+{{- end -}}
+{{- join " " (uniq $plugins) -}}
+{{- end -}}
+
+{{/* TCP ports the replication remotes' url and adminUrl reach, other
+than 443, which the NetworkPolicy always allows, as a JSON list. Each
+key may hold one URL or a list of them. A URL without a port takes its
+scheme's default: 22 for SSH and the scp-like user@host:path form, 80
+for http and gerrit+http, and 9418 for git. */}}
+{{- define "gerrit.replicationEgressPorts" -}}
+{{- $ports := list -}}
+{{- range (default list .Values.replication.remotes) }}
+{{- $urls := list -}}
+{{- range $value := list .url .adminUrl }}
+{{- if kindIs "slice" $value }}
+{{- $urls = concat $urls $value -}}
+{{- else }}
+{{- $urls = append $urls $value -}}
+{{- end }}
+{{- end }}
+{{- range $url := $urls }}
+{{- $url = toString (default "" $url) -}}
+{{- $port := 0 -}}
+{{- if regexMatch "^[A-Za-z][A-Za-z0-9+.-]*://" $url }}
+{{- $scheme := lower (regexReplaceAll "^([^:]+)://.*$" $url "${1}") -}}
+{{- $authority := regexReplaceAll "^.*@" (regexReplaceAll "^[^:]+://([^/]*).*$" $url "${1}") "" -}}
+{{- if regexMatch ":[0-9]+$" $authority }}
+{{- $port = regexReplaceAll "^.*:([0-9]+)$" $authority "${1}" | int -}}
+{{- else if has $scheme (list "ssh" "git+ssh" "ssh+git" "gerrit+ssh") }}
+{{- $port = 22 -}}
+{{- else if has $scheme (list "http" "gerrit+http") }}
+{{- $port = 80 -}}
+{{- else if eq $scheme "git" }}
+{{- $port = 9418 -}}
+{{- end }}
+{{- else if regexMatch "^[^/]+:" $url }}
+{{- $port = 22 -}}
+{{- end }}
+{{- if and $port (ne $port 443) }}
+{{- $ports = append $ports $port -}}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- toJson (uniq $ports) -}}
 {{- end -}}

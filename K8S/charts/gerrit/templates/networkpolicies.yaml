@@ -63,4 +63,13 @@ spec:
           port: {{ int (.smtpServerPort | default $default) }}
     {{- end }}
     {{- end }}
+    {{- if .Values.replication.enabled }}
+    {{- with include "gerrit.replicationEgressPorts" . | fromJsonArray }}
+    - ports:
+        {{- range . }}
+        - protocol: TCP
+          port: {{ int . }}
+        {{- end }}
+    {{- end }}
+    {{- end }}
 {{- end }}

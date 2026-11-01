@@ -70,13 +70,13 @@ spec:
             - name: GERRIT_SITE
               value: /mnt/site
             - name: GERRIT_SITE_DIRS
-              value: {{ include "gerrit.imageVolumeDirs" . | quote }}
+              value: {{ include "gerrit.siteDirs" . | quote }}
             - name: GERRIT_RENDERED_CONFIG
               value: /config
             - name: GERRIT_CATALOGUE
               value: {{ .Values.pluginCatalogue.path | quote }}
             - name: GERRIT_PLUGINS
-              value: {{ join " " .Values.pluginCatalogue.plugins | quote }}
+              value: {{ include "gerrit.plugins" . | quote }}
             - name: GERRIT_LIBS
               value: {{ join " " .Values.pluginCatalogue.libs | quote }}
             - name: HOME
@@ -167,6 +167,13 @@ spec:
             {{- include "gerrit.siteMounts" . | nindent 12 }}
             - name: tmp
               mountPath: /tmp
+            {{- if .Values.replication.enabled }}
+            # The replication plugin's SSH identity and known hosts;
+            # its queue in data/replication stays on the site volume
+            - name: replication-ssh
+              mountPath: /var/gerrit/.ssh
+              readOnly: true
+            {{- end }}
       volumes:
         - name: config
           configMap:
@@ -176,6 +183,21 @@ spec:
             name: {{ $fullname }}-scripts
         - name: tmp
           emptyDir: {}
+        {{- if .Values.replication.enabled }}
+        - name: replication-ssh
+          projected:
+            defaultMode: 0400
+            sources:
+              {{- with .Values.replication.sshKeySecret }}
+              - secret:
+                  name: {{ . }}
+              {{- end }}
+              - configMap:
+                  name: {{ $fullname }}-known-hosts
+                  items:
+                    - key: known_hosts
+                      path: known_hosts2
+        {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

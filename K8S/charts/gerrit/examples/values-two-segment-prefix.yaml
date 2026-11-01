@@ -3,10 +3,11 @@
 
 # Synthetic example: Gerrit under a two-segment URL prefix behind a
 # Traefik IngressRoute, with cache limits, garbage collection, user
-# defaults and a free-form block for a setting the chart has no typed
-# value for. CI lints and renders the chart with every file in this
-# directory, and tests/chart compares each rendered gerrit.config with
-# a golden file.
+# defaults, a free-form block for a setting the chart has no typed
+# value for, and push replication to a GitHub organisation and to a
+# plain git mirror. CI lints and renders the chart with every file in
+# this directory, and tests/chart compares each rendered gerrit.config
+# and replication.config with a golden file.
 
 gerrit:
   host: www.example.org
@@ -48,3 +49,28 @@ accounts:
 
 suggest:
   maxSuggestedReviewers: 20
+
+replication:
+  enabled: true
+  sshKeySecret: gerrit-replication-ssh
+  knownHosts: |
+    [git.example.org]:2222 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGitExampleOrgHostKeyPlaceholder
+  remotes:
+    - name: github
+      url: git@github.com:example-org/${name}.git
+      authGroup: GitHub Replication
+      push:
+        - +refs/heads/*:refs/heads/*
+        - +refs/tags/*:refs/tags/*
+      remoteNameStyle: dash
+      threads: 5
+      timeout: 5
+      replicatePermissions: false
+      replicationDelay: 15
+    - name: mirror
+      url: ssh://git@git.example.org:2222/mirrors/${name}.git
+      push:
+        - +refs/*:refs/*
+      mirror: true
+      projects:
+        - ^example/.*

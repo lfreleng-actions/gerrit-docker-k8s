@@ -5,10 +5,11 @@
 
 Renders the chart with ``helm template`` and each values file under
 ``K8S/charts/gerrit/examples/``, and compares the ``<fullname>-config``
-ConfigMap data with ``tests/chart/golden/<example>/<file>``. Each golden
-starts with the two SPDX comment lines, which the comparison skips.
-Also checks that the NetworkPolicies let the configured mail relay
-through.
+ConfigMap data with ``tests/chart/golden/<example>/<file>``; an example
+that enables replication also has a ``replication.config`` golden.
+Each golden starts with the two SPDX comment lines, which the
+comparison skips. Also checks that the NetworkPolicies let the
+configured mail relay through.
 
 After an intended change to the rendered output, regenerate the
 goldens with ``UPDATE_GOLDEN=1 uv run pytest tests/chart`` and review
@@ -20,6 +21,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +33,9 @@ CHART = ROOT / "K8S" / "charts" / "gerrit"
 EXAMPLES = CHART / "examples"
 GOLDEN = Path(__file__).parent / "golden"
 CONFIG_FILES = ("gerrit.config", "jgit.config", "notedb.config")
+# Rendered only when a feature enables it; compared where the example's
+# golden directory holds one
+OPTIONAL_CONFIG_FILES = ("replication.config",)
 # REUSE-IgnoreStart
 GOLDEN_HEADER = (
     "# SPDX-License-Identifier: Apache-2.0\n"
@@ -106,11 +111,42 @@ def test_every_example_has_goldens() -> None:
     assert len(examples) >= 3
 
 
+def config_files(example: str) -> tuple[str, ...]:
+    """Return the config files an example renders, per its goldens."""
+    extra = tuple(n for n in OPTIONAL_CONFIG_FILES if (GOLDEN / example / n).exists())
+    return CONFIG_FILES + extra
+
+
+def update_optional_goldens(example: str, data: dict[str, str]) -> None:
+    """Create or remove an example's optional goldens to match *data*."""
+    for name in OPTIONAL_CONFIG_FILES:
+        golden = GOLDEN / example / name
+        if name in data:
+            golden.write_text(GOLDEN_HEADER + data[name], encoding="utf-8")
+        else:
+            golden.unlink(missing_ok=True)
+
+
+def test_update_creates_and_removes_optional_goldens(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(sys.modules[__name__], "GOLDEN", tmp_path)
+    (tmp_path / "ex").mkdir()
+    update_optional_goldens("ex", {"replication.config": "[gerrit]\n"})
+    assert config_files("ex") == (*CONFIG_FILES, "replication.config")
+    assert read_golden(tmp_path / "ex" / "replication.config") == "[gerrit]\n"
+    update_optional_goldens("ex", {})
+    assert config_files("ex") == CONFIG_FILES
+
+
 @pytest.mark.parametrize("example", EXAMPLE_NAMES)
 def test_rendered_config_matches_golden(example: str) -> None:
     data = render_config(EXAMPLES / f"{example}.yaml")
-    assert sorted(data) == sorted(CONFIG_FILES)
-    for name in CONFIG_FILES:
+    if os.environ.get("UPDATE_GOLDEN"):
+        update_optional_goldens(example, data)
+    names = config_files(example)
+    assert sorted(data) == sorted(names)
+    for name in names:
         golden = GOLDEN / example / name
         if os.environ.get("UPDATE_GOLDEN"):
             golden.write_text(GOLDEN_HEADER + data[name], encoding="utf-8")
@@ -120,7 +156,7 @@ def test_rendered_config_matches_golden(example: str) -> None:
 @pytest.mark.parametrize("example", EXAMPLE_NAMES)
 def test_rendered_config_parses_as_git_config(example: str, tmp_path: Path) -> None:
     data = render_config(EXAMPLES / f"{example}.yaml")
-    for name in CONFIG_FILES:
+    for name in data:
         path = tmp_path / name
         path.write_text(data[name], encoding="utf-8")
         proc = subprocess.run(
