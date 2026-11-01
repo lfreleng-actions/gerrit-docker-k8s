@@ -78,7 +78,7 @@ spec:
             - name: GERRIT_PLUGINS
               value: {{ include "gerrit.plugins" . | quote }}
             - name: GERRIT_LIBS
-              value: {{ join " " .Values.pluginCatalogue.libs | quote }}
+              value: {{ include "gerrit.libs" . | quote }}
             - name: HOME
               value: /tmp
           securityContext:
@@ -116,6 +116,18 @@ spec:
                   name: {{ include "gerrit.secureConfigSecretName" . }}
                   key: smtpPass
                   optional: true
+            {{- if include "gerrit.samlEnabled" . }}
+            - name: GERRIT_SAML_KEYSTORE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "gerrit.samlSecretName" . }}
+                  key: keystore-password
+            - name: GERRIT_SAML_PRIVATE_KEY_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "gerrit.samlSecretName" . }}
+                  key: private-key-password
+            {{- end }}
           securityContext:
             {{- include "gerrit.containerSecurityContext" . | nindent 12 }}
           volumeMounts:
@@ -174,6 +186,21 @@ spec:
               mountPath: /var/gerrit/.ssh
               readOnly: true
             {{- end }}
+            {{- if include "gerrit.samlEnabled" . }}
+            # The SAML keystore and, from the Secret, the identity
+            # provider's metadata; the module writes its own service
+            # provider metadata to data/saml on the site volume
+            - name: saml
+              mountPath: /var/gerrit/etc/samlKeystore.jks
+              subPath: samlKeystore.jks
+              readOnly: true
+            {{- if .Values.auth.saml.metadataFromSecret }}
+            - name: saml
+              mountPath: /var/gerrit/etc/saml-idp-metadata.xml
+              subPath: idp-metadata.xml
+              readOnly: true
+            {{- end }}
+            {{- end }}
       volumes:
         - name: config
           configMap:
@@ -197,6 +224,12 @@ spec:
                   items:
                     - key: known_hosts
                       path: known_hosts2
+        {{- end }}
+        {{- if include "gerrit.samlEnabled" . }}
+        - name: saml
+          secret:
+            secretName: {{ include "gerrit.samlSecretName" . }}
+            defaultMode: 0400
         {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:

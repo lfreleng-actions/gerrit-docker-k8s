@@ -63,6 +63,33 @@ auth:
   contributorAgreements: null
   editableAccountFields: []
   cookieSecure: null
+  # SAML single sign-on through the saml library in the image
+  # catalogue. Enabling it adds "saml" to the libraries site-init
+  # copies, sets auth.type to HTTP and httpd.filterClass to the SAML
+  # filter, and renders the [saml] section. See "SAML" in the chart
+  # README.
+  saml:
+    enabled: false
+    # Secret with samlKeystore.jks, keystore-password,
+    # private-key-password and, with metadataFromSecret,
+    # idp-metadata.xml. "" creates <fullname>-saml with empty keys the
+    # operator fills in; under Argo CD name a pre-created Secret.
+    existingSecret: ""
+    # Identity provider metadata: a URL Gerrit fetches, or
+    # idp-metadata.xml from the Secret; set exactly one
+    metadataUrl: ""
+    metadataFromSecret: false
+    serviceProviderEntityId: ""   # "" for gerrit.canonicalWebUrl
+    # Each key below is the [saml] key of the same name, left out when
+    # null or "" so the module's default applies
+    userNameAttr: null
+    displayNameAttr: null
+    emailAddressAttr: null
+    firstNameAttr: null
+    lastNameAttr: null
+    computedDisplayName: false
+    maxAuthLifetimeAttr: null
+    maxAuthLifetime: null
 
 # sendemail.smtpPass comes from secrets.secureConfig
 sendemail:

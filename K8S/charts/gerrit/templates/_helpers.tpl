@@ -453,11 +453,88 @@ pluginCatalogue.plugins names, plus replication when it is enabled */}}
 {{- join " " (uniq $plugins) -}}
 {{- end -}}
 
+{{/* Library names site-init copies from the image catalogue:
+pluginCatalogue.libs, plus saml when auth.saml is enabled */}}
+{{- define "gerrit.libs" -}}
+{{- $libs := default list .Values.pluginCatalogue.libs -}}
+{{- if include "gerrit.samlEnabled" . -}}
+{{- $libs = append $libs "saml" -}}
+{{- end -}}
+{{- join " " (uniq $libs) -}}
+{{- end -}}
+
+{{/* "true" when auth.saml is enabled, else empty */}}
+{{- define "gerrit.samlEnabled" -}}
+{{- if dig "saml" "enabled" false (default dict .Values.auth) }}true{{ end -}}
+{{- end -}}
+
+{{/* Name of the Secret holding the SAML keystore and its passwords */}}
+{{- define "gerrit.samlSecretName" -}}
+{{- default (printf "%s-saml" (include "gerrit.fullname" .)) .Values.auth.saml.existingSecret -}}
+{{- end -}}
+
+{{/* The [saml] section of gerrit.config as JSON. The keystore and
+the identity provider's metadata file are mounted from the Secret into
+etc/; the passwords go to secure.config. Fails unless exactly one
+metadata source is set. */}}
+{{- define "gerrit.samlConfig" -}}
+{{- $saml := .Values.auth.saml -}}
+{{- $url := toString (default "" $saml.metadataUrl) -}}
+{{- if and $url $saml.metadataFromSecret -}}
+{{- fail "auth.saml: set metadataUrl or metadataFromSecret, not both" -}}
+{{- end -}}
+{{- if not (or $url $saml.metadataFromSecret) -}}
+{{- fail "auth.saml: set metadataUrl or metadataFromSecret" -}}
+{{- end -}}
+{{- if and $url (not (regexMatch "^(?i)https?://[^/]" $url)) -}}
+{{- fail "auth.saml.metadataUrl must be an http:// or https:// URL" -}}
+{{- end -}}
+{{- $values := omit $saml "enabled" "existingSecret" "metadataUrl" "metadataFromSecret" "serviceProviderEntityId" -}}
+{{- $_ := set $values "keystorePath" "etc/samlKeystore.jks" -}}
+{{- $_ := set $values "metadataPath" (ternary "etc/saml-idp-metadata.xml" $url (empty $url)) -}}
+{{- $_ := set $values "serviceProviderEntityId" (default (include "gerrit.canonicalWebUrl" .) $saml.serviceProviderEntityId) -}}
+{{- toJson $values -}}
+{{- end -}}
+
+{{/* TCP port of auth.saml.metadataUrl when the NetworkPolicy needs a
+rule for it: set, enabled and not 443, which is always allowed; else
+empty */}}
+{{- define "gerrit.samlEgressPort" -}}
+{{- if include "gerrit.samlEnabled" . -}}
+{{- $port := include "gerrit.urlPort" .Values.auth.saml.metadataUrl | int -}}
+{{- if and $port (ne $port 443) }}{{ $port }}{{ end -}}
+{{- end -}}
+{{- end -}}
+
+{{/* TCP port a URL reaches: the port it names, or else its scheme's
+default: 22 for SSH and the scp-like user@host:path form, 80 for http
+and gerrit+http, 443 for https, and 9418 for git; 0 when unknown */}}
+{{- define "gerrit.urlPort" -}}
+{{- $url := toString (default "" .) -}}
+{{- $port := 0 -}}
+{{- if regexMatch "^[A-Za-z][A-Za-z0-9+.-]*://" $url }}
+{{- $scheme := lower (regexReplaceAll "^([^:]+)://.*$" $url "${1}") -}}
+{{- $authority := regexReplaceAll "^.*@" (regexReplaceAll "^[^:]+://([^/]*).*$" $url "${1}") "" -}}
+{{- if regexMatch ":[0-9]+$" $authority }}
+{{- $port = regexReplaceAll "^.*:([0-9]+)$" $authority "${1}" | int -}}
+{{- else if has $scheme (list "ssh" "git+ssh" "ssh+git" "gerrit+ssh") }}
+{{- $port = 22 -}}
+{{- else if has $scheme (list "http" "gerrit+http") }}
+{{- $port = 80 -}}
+{{- else if eq $scheme "https" }}
+{{- $port = 443 -}}
+{{- else if eq $scheme "git" }}
+{{- $port = 9418 -}}
+{{- end }}
+{{- else if regexMatch "^[^/]+:" $url }}
+{{- $port = 22 -}}
+{{- end }}
+{{- $port -}}
+{{- end -}}
+
 {{/* TCP ports the replication remotes' url and adminUrl reach, other
 than 443, which the NetworkPolicy always allows, as a JSON list. Each
-key may hold one URL or a list of them. A URL without a port takes its
-scheme's default: 22 for SSH and the scp-like user@host:path form, 80
-for http and gerrit+http, and 9418 for git. */}}
+key may hold one URL or a list of them; see gerrit.urlPort. */}}
 {{- define "gerrit.replicationEgressPorts" -}}
 {{- $ports := list -}}
 {{- range (default list .Values.replication.remotes) }}
@@ -470,23 +547,7 @@ for http and gerrit+http, and 9418 for git. */}}
 {{- end }}
 {{- end }}
 {{- range $url := $urls }}
-{{- $url = toString (default "" $url) -}}
-{{- $port := 0 -}}
-{{- if regexMatch "^[A-Za-z][A-Za-z0-9+.-]*://" $url }}
-{{- $scheme := lower (regexReplaceAll "^([^:]+)://.*$" $url "${1}") -}}
-{{- $authority := regexReplaceAll "^.*@" (regexReplaceAll "^[^:]+://([^/]*).*$" $url "${1}") "" -}}
-{{- if regexMatch ":[0-9]+$" $authority }}
-{{- $port = regexReplaceAll "^.*:([0-9]+)$" $authority "${1}" | int -}}
-{{- else if has $scheme (list "ssh" "git+ssh" "ssh+git" "gerrit+ssh") }}
-{{- $port = 22 -}}
-{{- else if has $scheme (list "http" "gerrit+http") }}
-{{- $port = 80 -}}
-{{- else if eq $scheme "git" }}
-{{- $port = 9418 -}}
-{{- end }}
-{{- else if regexMatch "^[^/]+:" $url }}
-{{- $port = 22 -}}
-{{- end }}
+{{- $port := include "gerrit.urlPort" $url | int -}}
 {{- if and $port (ne $port 443) }}
 {{- $ports = append $ports $port -}}
 {{- end }}
