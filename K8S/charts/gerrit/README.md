@@ -27,6 +27,7 @@ volume holds state only.
 | `Secret` `<fullname>-admin`       | Admin credential placeholder; not consumed yet                 |
 | `Secret` `<fullname>-secure-config` | Values `render-config.sh` writes to `etc/secure.config`; see the Secret contract |
 | `CronJob` `<fullname>-git-gc`, `NetworkPolicy` `<fullname>-git-gc-deny` | With `gc.cronJob.enabled`; see [Garbage collection](#garbage-collection) |
+| `Deployment`, `ConfigMap` and `NetworkPolicy` `<fullname>-toolbox` | With `toolbox.enabled`, at zero replicas; see [Admin toolbox](#admin-toolbox) |
 | `NetworkPolicy` (two)             | Default deny; allow ingress to 8080 (from `networkPolicy.ingressNamespaceSelector` when set) and 29418, egress to DNS, HTTPS and, with mail configured, the SMTP relay's port, and with replication enabled, each remote's port |
 
 The Secrets carry `helm.sh/resource-policy: keep` and
@@ -54,6 +55,7 @@ secure-config Secret.
 | `secrets.secureConfig.existingSecret` | `smtpPass`                | No       | `sendemail.smtpPass` in `secure.config`       |
 | `replication.sshKeySecret`            | `id_ed25519` or `id_rsa`  | For SSH remotes | Mounted in `/var/gerrit/.ssh` with mode `0400` |
 | `replication.sshKeySecret`            | `known_hosts`             | No       | Mounted in `/var/gerrit/.ssh` with mode `0400` |
+| `toolbox.existingSecret`              | `ssh-privatekey`          | No       | Mounted in the admin toolbox at `/etc/gerrit-toolbox/ssh/id` with mode `0400` |
 
 The generated `<fullname>-secure-config` Secret carries a random
 `registerEmailPrivateKey` and an empty `smtpPass`. Fill `smtpPass` in
@@ -135,6 +137,11 @@ mounts empty anonymous volumes over them and the site disappears.
 | `replication.knownHosts`                 | `""`                             | Extra `known_hosts` lines; GitHub's host keys are always included |
 | `replication.remotes`                    | `[]`                             | One `[remote "<name>"]` section per entry                  |
 | `networkPolicy.ingressNamespaceSelector` | `{}`                             | Label selector for the namespaces that may reach 8080; `{}` admits any source |
+| `clusterDomain`                          | `cluster.local`                  | Cluster DNS domain, for the Gerrit pod name the toolbox looks up |
+| `toolbox.enabled`                        | `false`                          | See [Admin toolbox](#admin-toolbox)                        |
+| `toolbox.replicas`                       | `0`                              | Scale to `1` for a maintenance session                     |
+| `toolbox.existingSecret`                 | `""`                             | Secret with an administrator's `ssh-privatekey`; `""` mounts none |
+| `toolbox.resources`                      | `{}`                             | Resources of the toolbox container                         |
 
 ### gerrit.config
 
@@ -545,38 +552,96 @@ subsection. Override one in `cache.limits`, or drop it with `null` or
 
 Trimming keeps a cache within its limit, but an H2 file never shrinks
 on disk, and every index version an upgrade leaves behind stays in
-`index/` as `<name>_NNNN`. To reclaim the space, stop Gerrit, delete
-the files from a pod that mounts the site volume, and start Gerrit
-again. Gerrit rebuilds the caches as it needs them. The purge pod
-below meets the `restricted` Pod Security Standard the chart's
-namespace enforces:
+`index/` as `<name>_NNNN`. To reclaim the space, stop Gerrit and run
+`gerrit-cache-purge` and `gerrit-index-prune` from the
+[admin toolbox](#admin-toolbox). Gerrit rebuilds the caches as it
+needs them.
+
+`index/gerrit_index.config` names the version of each index Gerrit
+uses, as `[index "changes_0084"]` with `ready = true`.
+`gerrit-index-prune` keeps those versions, and every version of an
+index that has none marked ready, and removes each other
+`index/<name>_NNNN` directory. It refuses to run without the file or
+with no version marked ready: Gerrit would need an offline reindex to
+rebuild a version it uses.
+
+## Admin toolbox
+
+`toolbox.enabled` adds the `<fullname>-toolbox` `Deployment`, at zero
+replicas, on the Gerrit image. It mounts the site volume at
+`/var/gerrit`, as the Gerrit pod does, and carries the Gerrit
+command-line programs in `bin/gerrit.war`, `git`, `ssh`, the site
+export tool as `gerrit-site-export`, and these helpers on its `PATH`:
+
+| Helper               | Does                                                                   |
+| -------------------- | ---------------------------------------------------------------------- |
+| `gerrit-cache-purge` | Deletes the persistent cache files, `cache/*.h2.db` and `cache/*.mv.db` |
+| `gerrit-index-prune` | Removes the `index/<name>_NNNN` versions Gerrit no longer uses         |
+| `gerrit-gc-now`      | Runs `git-gc.sh` from [Garbage collection](#garbage-collection) once; its arguments go to `git gc`, and none runs a full gc |
+
+Each helper refuses to run while the Gerrit pod exists, unless given
+`--force`. The check, `gerrit-require-offline`, looks up the pod's
+fully qualified name,
+`<fullname>-0.<fullname>-headless.<namespace>.svc.<clusterDomain>.`.
+The headless Service publishes not-ready addresses, so the name
+resolves while the pod starts, serves and shuts down, and does not
+exist once Gerrit is scaled to zero. An answer refuses, a definite
+"no such name" proceeds, and anything else, such as a resolver
+timeout, refuses. The check is a point-in-time test, not a lock, and a
+DNS answer can outlive a scale-down by a few seconds: retry a refusal
+shortly after Gerrit stops.
+
+The export tool's own check that Gerrit has stopped reads `/proc`,
+which in the toolbox shows only the toolbox's processes, so
+`gerrit-site-export final` runs the same check first and refuses while
+the Gerrit pod exists. `--i-stopped-writes` skips both checks, for
+writes stopped another way; `gerrit-site-export seed` runs while
+Gerrit serves.
+
+The offline workflow:
 
 ```sh
 ns=gerrit
+kubectl -n "$ns" scale deploy/gerrit-toolbox --replicas=1
 kubectl -n "$ns" scale sts/gerrit --replicas=0
 kubectl -n "$ns" wait --for=delete pod/gerrit-0 --timeout=5m
-kubectl -n "$ns" run gerrit-purge --rm -i --restart=Never \
-  --image=busybox:1.37 --overrides='{"spec": {
-    "securityContext": {"runAsUser": 1001, "runAsGroup": 1001,
-      "runAsNonRoot": true, "seccompProfile": {"type": "RuntimeDefault"}},
-    "containers": [{"name": "gerrit-purge", "image": "busybox:1.37",
-      "command": ["sh", "-c",
-        "rm -fv /site/cache/*.mv.db /site/cache/*.h2.db; ls /site/index"],
-      "securityContext": {"allowPrivilegeEscalation": false,
-        "capabilities": {"drop": ["ALL"]}},
-      "volumeMounts": [{"name": "site", "mountPath": "/site"}]}],
-    "volumes": [{"name": "site",
-      "persistentVolumeClaim": {"claimName": "site-gerrit-0"}}]}}'
+kubectl -n "$ns" rollout status deploy/gerrit-toolbox --timeout=5m
+kubectl -n "$ns" exec deploy/gerrit-toolbox -- gerrit-cache-purge
+kubectl -n "$ns" exec deploy/gerrit-toolbox -- gerrit-index-prune
+kubectl -n "$ns" exec deploy/gerrit-toolbox -- gerrit-gc-now
+kubectl -n "$ns" exec -it deploy/gerrit-toolbox -- \
+  java -jar /var/gerrit/bin/gerrit.war reindex -d /var/gerrit
 kubectl -n "$ns" scale sts/gerrit --replicas=1
+kubectl -n "$ns" scale deploy/gerrit-toolbox --replicas=0
 ```
 
-`index/gerrit_index.config` names the version of each index Gerrit
-uses, as `[index "changes_0084"]` with `ready = true`. Every other
-`index/<name>_NNNN` directory is left over from an earlier release and
-can go in the same step, for example by adding
-`rm -rf /site/index/changes_0083` to the command above. Never delete
-the versions `gerrit_index.config` marks ready: Gerrit would need an
-offline reindex to rebuild them.
+The site volume is usually `ReadWriteOnce`, so the toolbox prefers,
+but does not require, the node the Gerrit pod runs on: a required
+affinity to a pod scaled to zero would leave the toolbox
+unschedulable. Scale the toolbox up before Gerrit down, as above, and
+it lands beside Gerrit. While Gerrit runs, a toolbox placed on
+another node cannot attach the volume and stays in
+`ContainerCreating`; scale Gerrit to zero and it starts, so wait for
+the toolbox rollout before the first `exec`, as above. A Gerrit pod
+starting on another node while the toolbox holds the volume waits in
+the same way, so scale the toolbox back to zero when done.
+
+With `toolbox.existingSecret`, the `ssh-privatekey` key of that Secret
+is mounted at `/etc/gerrit-toolbox/ssh/id`, named by
+`$GERRIT_SSH_IDENTITY`, for administrative commands to a running
+Gerrit:
+
+```sh
+ssh -i "$GERRIT_SSH_IDENTITY" -p 29418 admin@"$GERRIT_POD_DNS" gerrit version
+```
+
+The toolbox runs as the Gerrit UID and meets the `restricted` Pod
+Security Standard. It has no service account token, and the chart
+renders no ServiceAccount, Role or RoleBinding for it. With
+`networkPolicy.enabled`, its `NetworkPolicy` denies all ingress and
+allows egress only to DNS and to port 29418 of the Gerrit pod. For
+Argo CD, the `Deployment` sits in sync wave `1` and its `ConfigMap`
+and `NetworkPolicy` in wave `-1`.
 
 ## Quick validation
 
@@ -636,7 +701,10 @@ must render the `gerrit.config`, `jgit.config` and `notedb.config` in
 plain Ingress and as Traefik objects in `ingress-plain.golden` and
 `ingress-traefik.golden` there, and `render-config.sh` must write the
 `secure.config` there with mode `0600`. With `gc.cronJob.enabled`,
-`templates/gc-cronjob.yaml` must render `gc-cronjob.golden`. After an intended change to
+`templates/gc-cronjob.yaml` must render `gc-cronjob.golden`, and with
+`toolbox.enabled`, `templates/admin-toolbox.yaml` must render
+`admin-toolbox.golden`; the toolbox helpers run against fixture sites
+with the DNS lookup stubbed. After an intended change to
 the rendered output, regenerate the goldens and review the diff:
 
 ```sh

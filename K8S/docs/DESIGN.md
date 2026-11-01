@@ -338,6 +338,19 @@ the Gerrit command-line programs, `git`, `ssh` and the export tool. An
 operator scales it to one for interactive work, such as an offline
 `reindex` against a stopped site, and back to zero afterwards.
 
+The toolbox (`toolbox.enabled`) mounts the site volume with a
+preferred, not required, affinity to the Gerrit pod's node: its
+helpers run while Gerrit is scaled to zero, and a required affinity to
+an absent pod would leave it unschedulable. The helpers,
+`gerrit-cache-purge`, `gerrit-index-prune` and `gerrit-gc-now`, refuse
+to run while the Gerrit pod exists. They look up the pod's name under
+the headless Service, which publishes not-ready addresses, so the name
+exists exactly while the pod does; only a definite "no such name"
+lets them proceed, and `--force` overrides a refusal. The toolbox has
+no service account token or Role (section 1.11), and its own
+`NetworkPolicy` allows egress only to DNS and to the Gerrit pod's SSH
+port.
+
 ### 1.10 Network policies
 
 With `networkPolicy.enabled` (the default), the chart installs a
@@ -604,9 +617,9 @@ healthy before the next ([sync waves][argo-waves]), so the
 configuration exists before the pod that reads it. The import needs
 no wave or hook of its own: it runs inside the StatefulSet's pod
 (section 1.7), and a failed import leaves the StatefulSet unhealthy,
-which stops the sync from reporting success. The skeleton carries no
-`argocd.argoproj.io/sync-wave` annotations yet; the Argo CD sub-issue
-of #228 adds them (section 7).
+which stops the sync from reporting success. Only the admin toolbox's
+objects carry `argocd.argoproj.io/sync-wave` annotations yet; the Argo
+CD sub-issue of #228 adds the rest (section 7).
 
 ### 6.2 existingSecret is required
 
@@ -667,9 +680,10 @@ reference; each updates the section it changes.
 - #242: the backup CronJob and its `backup` manifests (sections 1.8
   and 3).
 - #256: the export tool leaving out `.chart/` (sections 1.7 and 3.1).
+- #262: the admin toolbox and its maintenance helpers (section 1.9).
 - The other sub-issues of #228 cover narrowing the egress default to
-  the per-feature destinations, the maintenance CronJob, the admin
-  toolbox and the Argo CD example.
+  the per-feature destinations, the maintenance CronJob and the Argo
+  CD example.
 
 Open questions:
 

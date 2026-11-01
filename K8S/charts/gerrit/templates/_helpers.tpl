@@ -77,6 +77,45 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 app.kubernetes.io/part-of: gerrit
 {{- end -}}
 
+{{/* Name label of the admin toolbox's pods: the chart name, cut to 55
+characters so the "-toolbox" suffix fits the 63-character label limit.
+A name that already ends in "-toolbox" and would come out unchanged
+takes "-tb" instead, as gerrit.gcName does. */}}
+{{- define "gerrit.toolboxName" -}}
+{{- $name := include "gerrit.name" . -}}
+{{- $base := $name | trunc 55 | trimSuffix "-" -}}
+{{- $toolbox := printf "%s-toolbox" $base -}}
+{{- if eq $toolbox $name -}}
+{{- $toolbox = printf "%s-tb" $base -}}
+{{- end -}}
+{{- $toolbox -}}
+{{- end -}}
+
+{{/* Labels of the admin toolbox's pods. Their name differs from the
+Gerrit pod's, so no Service selector or Gerrit NetworkPolicy matches
+them. */}}
+{{- define "gerrit.toolboxSelectorLabels" -}}
+app.kubernetes.io/name: {{ include "gerrit.toolboxName" . }}
+app.kubernetes.io/instance: {{ .Release.Name }}
+app.kubernetes.io/component: admin-toolbox
+{{- end -}}
+
+{{- define "gerrit.toolboxLabels" -}}
+helm.sh/chart: {{ include "gerrit.chart" . }}
+{{ include "gerrit.toolboxSelectorLabels" . }}
+app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+app.kubernetes.io/managed-by: {{ .Release.Service }}
+app.kubernetes.io/part-of: gerrit
+{{- end -}}
+
+{{/* Fully qualified DNS name of the Gerrit pod under the headless
+Service, with the trailing dot so a lookup never tries a search domain.
+It exists exactly while the pod does, ready or not. */}}
+{{- define "gerrit.podDNSName" -}}
+{{- $fullname := include "gerrit.fullname" . -}}
+{{- printf "%s-0.%s-headless.%s.svc.%s." $fullname $fullname .Release.Namespace (trimSuffix "." .Values.clusterDomain) -}}
+{{- end -}}
+
 {{/* Image reference; a digest takes precedence over the tag */}}
 {{- define "gerrit.image" -}}
 {{- if .Values.image.digest -}}

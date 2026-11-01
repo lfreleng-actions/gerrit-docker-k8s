@@ -280,6 +280,21 @@ networkPolicy:
   #     kubernetes.io/metadata.name: traefik
   ingressNamespaceSelector: {}
 
+# DNS domain of the cluster, for the Gerrit pod's name the admin
+# toolbox looks up
+clusterDomain: cluster.local
+
+# Optional admin toolbox: a Deployment on the Gerrit image with the
+# site volume mounted, for offline maintenance while Gerrit is scaled
+# to zero. See "Admin toolbox" in the chart README.
+toolbox:
+  enabled: false
+  replicas: 0                     # scale to 1 for a session, then back
+  # Secret with key ssh-privatekey: an administrator's SSH identity,
+  # mounted at /etc/gerrit-toolbox/ssh/id with mode 0400; "" mounts none
+  existingSecret: ""
+  resources: {}
+
 podAnnotations: {}
 
 nodeSelector: {}

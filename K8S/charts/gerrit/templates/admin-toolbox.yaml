@@ -1,0 +1,187 @@
+{{/*
+SPDX-License-Identifier: Apache-2.0
+SPDX-FileCopyrightText: 2026 The Linux Foundation
+*/}}
+{{- with .Values.toolbox }}
+{{- if .enabled }}
+{{- $fullname := include "gerrit.fullname" $ }}
+{{- $name := printf "%s-toolbox" $fullname }}
+{{- $helpers := $.Files.Glob "files/toolbox/*" }}
+# The toolbox helpers, mounted on PATH without their extensions
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "gerrit.toolboxLabels" $ | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+data:
+  {{- range $path, $content := $helpers }}
+  {{ base $path }}: |
+    {{- /* Indent only lines with content, so blank lines carry no
+    trailing whitespace */}}
+{{ regexReplaceAll "(?m)^(.)" (toString $content) "    ${1}" }}
+  {{- end }}
+---
+# Scaled to zero by default: scale to one for a maintenance session.
+# It has no service account token and talks to no Kubernetes API.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "gerrit.toolboxLabels" $ | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  replicas: {{ int .replicas }}
+  # The site volume is usually ReadWriteOnce; never run two at once
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "gerrit.toolboxSelectorLabels" $ | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "gerrit.toolboxLabels" $ | nindent 8 }}
+      annotations:
+        checksum/helpers: {{ toJson $helpers | sha256sum }}
+        {{- include "gerrit.otelOptOutAnnotations" $ | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 10
+      {{- with include "gerrit.imagePullSecrets" $ | trim }}
+      {{- . | nindent 6 }}
+      {{- end }}
+      securityContext:
+        {{- include "gerrit.podSecurityContext" $ | nindent 8 }}
+      # Preferred, not required: the helpers run while Gerrit is scaled
+      # to zero, and a required affinity to an absent pod would leave
+      # the toolbox unschedulable. While Gerrit runs, a toolbox placed
+      # on another node cannot attach a ReadWriteOnce site volume.
+      affinity:
+        podAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    {{- include "gerrit.selectorLabels" $ | nindent 20 }}
+      containers:
+        - name: toolbox
+          image: {{ include "gerrit.image" $ }}
+          imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          command:
+            - sh
+            - -c
+            - trap 'exit 0' TERM INT; while :; do sleep 3600 & wait $!; done
+          env:
+            - name: GERRIT_SITE
+              value: /var/gerrit
+            - name: HOME
+              value: /tmp
+            - name: GERRIT_POD_DNS
+              value: {{ include "gerrit.podDNSName" $ | quote }}
+            {{- if .existingSecret }}
+            - name: GERRIT_SSH_IDENTITY
+              value: /etc/gerrit-toolbox/ssh/id
+            {{- end }}
+          securityContext:
+            {{- include "gerrit.containerSecurityContext" $ | nindent 12 }}
+          {{- with .resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            {{- include "gerrit.siteMounts" $ | nindent 12 }}
+            - name: tmp
+              mountPath: /tmp
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+            # Empty in the image and on its PATH
+            - name: helpers
+              mountPath: /usr/local/sbin
+              readOnly: true
+            {{- if .existingSecret }}
+            - name: ssh
+              mountPath: /etc/gerrit-toolbox/ssh
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: site
+          persistentVolumeClaim:
+            claimName: site-{{ $fullname }}-0
+        - name: tmp
+          emptyDir: {}
+        - name: scripts
+          configMap:
+            name: {{ $fullname }}-scripts
+        - name: helpers
+          configMap:
+            name: {{ $name }}
+            defaultMode: 0555
+            items:
+              {{- range $path, $_ := $helpers }}
+              {{- $file := base $path }}
+              - key: {{ $file }}
+                path: {{ regexReplaceAll "\\.(sh|py)$" $file "" }}
+              {{- end }}
+        {{- with .existingSecret }}
+        - name: ssh
+          secret:
+            secretName: {{ . }}
+            defaultMode: 0400
+            items:
+              - key: ssh-privatekey
+                path: id
+        {{- end }}
+      {{- with $.Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $.Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- if $.Values.networkPolicy.enabled }}
+---
+# Deny by default; egress to DNS, for the helpers' check that Gerrit is
+# stopped, and to the Gerrit pod's SSH port, for administrative commands
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $name }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "gerrit.toolboxLabels" $ | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "gerrit.toolboxSelectorLabels" $ | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  egress:
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "gerrit.selectorLabels" $ | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: 29418
+{{- end }}
+{{- end }}
+{{- end }}
