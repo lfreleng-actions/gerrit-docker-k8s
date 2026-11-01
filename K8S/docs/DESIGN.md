@@ -196,6 +196,15 @@ prefix the Ingress serves. Behind the chart's Ingress the schemes are
 `gerrit.listenScheme`
 ([config-gerrit: httpd.listenUrl][gc-listenurl]).
 
+**Group membership from the SSO.** With SAML and
+`auth.saml.memberOfAttr` set, Gerrit takes group membership from the
+SSO: the SAML module creates a `saml/<name>` group for each group the
+assertion names and updates the user's membership at each web login
+(#268). Access rules on the adopted sites name these groups, so an
+import keeps them and the SSO must keep sending the same group names.
+The SSO's source for that membership is moving from LDAP to LFX
+committees; Gerrit is unaffected as long as the names stay the same.
+
 ### 1.5 HTTP: ClusterIP Service behind an Ingress
 
 HTTP reaches Gerrit through an Ingress and the `ClusterIP` Service
@@ -685,6 +694,7 @@ reference; each updates the section it changes.
   and 3).
 - #256: the export tool leaving out `.chart/` (sections 1.7 and 3.1).
 - #262: the admin toolbox and its maintenance helpers (section 1.9).
+- #268: SAML group membership sync (section 1.4).
 - The other sub-issues of #228 cover narrowing the egress default to
   the per-feature destinations, the maintenance CronJob and the Argo
   CD example.

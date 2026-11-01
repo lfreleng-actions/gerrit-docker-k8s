@@ -89,6 +89,10 @@ auth:
     lastNameAttr: null
     computedDisplayName: false
     maxAuthLifetime: null
+    # Assertion attribute naming the user's groups; set to turn on the
+    # group sync into saml/<name> groups. See "Group membership sync"
+    # in the chart README.
+    memberOfAttr: null
 
 # sendemail.smtpPass comes from secrets.secureConfig
 sendemail:
