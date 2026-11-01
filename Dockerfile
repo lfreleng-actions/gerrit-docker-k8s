@@ -6,6 +6,7 @@
 # This Dockerfile extends the official Gerrit image to include:
 # - uv/uvx: Fast Python package installer and runner
 # - gerrit-to-platform: Tool for Gerrit to GitHub/GitLab synchronization
+# - the site export tool, scripts/gerrit-site-export.py, with rsync and zstd
 #
 # Build:
 #   docker build --build-arg GERRIT_VERSION=3.13.1-ubuntu24 -t gerrit-extended .
@@ -37,7 +38,8 @@ LABEL org.opencontainers.image.licenses="Apache-2.0"
 # Install dependencies as root
 USER root
 
-# Install Python and required packages. The same layer removes
+# Install Python and required packages; rsync and zstd serve the site
+# export tool below. The same layer removes
 # emSign ECC Root CA - G3 (GHSA-6q48-6c7w-9gw2, compromised
 # intermediate keys) from the JDK trust store: Temurin drops it from
 # 21.0.13+9, which no Gerrit image bundles yet. The delete is
@@ -51,7 +53,9 @@ RUN set -eux; \
         curl \
         ca-certificates \
         python3 \
-        python3-venv; \
+        python3-venv \
+        rsync \
+        zstd; \
     apt-get clean; \
     rm -rf /var/lib/apt/lists/*; \
     alias='cn_emsign_ecc_root_ca__g3,o_emudhra_technologies_limited,ou_emsign_pki,c_in [jdk]'; \
@@ -129,6 +133,10 @@ RUN set -eux; \
         -r /tmp/docker-requirements-scripts.txt; \
     rm /tmp/docker-requirements-scripts.txt
 
+# --- Site export tool: standard library only, run with python3 -----------------
+# The chart's admin toolbox wraps it as gerrit-site-export.
+COPY scripts/gerrit-site-export.py /opt/gerrit-site-export/gerrit-site-export.py
+
 # Verify installations work as root
 RUN set -eux; \
     echo "=== Verifying as root ===" && \
@@ -136,6 +144,7 @@ RUN set -eux; \
     uvx --version && \
     test -x "$GERRIT_TOOLS_VENV/bin/change-merged" && \
     "$GERRIT_SCRIPTS_VENV/bin/python" -c "import requests; print('requests:', requests.__version__)" && \
+    python3 /opt/gerrit-site-export/gerrit-site-export.py --help >/dev/null && \
     echo "=== Root verification complete ==="
 
 # Switch back to gerrit user for normal operation
