@@ -8,7 +8,8 @@ enabled, once per identity provider metadata source, with
 ``tests/chart/golden/saml-metadata-<source>.config``, and checks the
 Secret, the mounts, the library, the NetworkPolicy egress and the
 passwords ``render-config.sh`` writes to ``secure.config``. The default
-render must carry none of it. No test needs a real keystore: the chart
+render must carry none of it. With ``memberOfAttr`` set, the render
+must match ``tests/chart/golden/saml-member-of-attr.config``. No test needs a real keystore: the chart
 never reads the keystore's contents.
 
 After an intended change to the rendered output, regenerate the
@@ -119,6 +120,44 @@ def test_enabled_config_matches_golden(tmp_path: Path, source: str) -> None:
     if os.environ.get("UPDATE_GOLDEN"):
         golden.write_text(GOLDEN_HEADER + config, encoding="utf-8")
     assert config == read_golden(golden)
+
+
+@pytest.mark.xfail(strict=True, reason="auth.saml.memberOfAttr is not declared")
+def test_member_of_attr_defaults_to_null() -> None:
+    values = yaml.safe_load((CHART / "values.yaml").read_text(encoding="utf-8"))
+    saml = values["auth"]["saml"]
+    assert "memberOfAttr" in saml
+    assert saml["memberOfAttr"] is None
+
+
+def test_member_of_attr_matches_golden(tmp_path: Path) -> None:
+    values = saml_values("url", memberOfAttr="memberOf")
+    config = gerrit_config(render(tmp_path, values))
+    golden = GOLDEN / "saml-member-of-attr.config"
+    if os.environ.get("UPDATE_GOLDEN"):
+        golden.write_text(GOLDEN_HEADER + config, encoding="utf-8")
+    assert config == read_golden(golden)
+    path = tmp_path / "gerrit.config"
+    path.write_text(config, encoding="utf-8")
+    read = subprocess.run(
+        ["git", "config", "-f", str(path), "saml.memberOfAttr"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert read.stdout == "memberOf\n"
+
+
+@pytest.mark.parametrize("member_of", [None, ""])
+@pytest.mark.parametrize("source", sorted(SOURCES))
+def test_member_of_attr_unset_renders_no_key(
+    tmp_path: Path, source: str, member_of: str | None
+) -> None:
+    config = gerrit_config(
+        render(tmp_path, saml_values(source, memberOfAttr=member_of))
+    )
+    assert "[saml]" in config
+    assert "memberofattr" not in config.lower()
 
 
 @pytest.mark.parametrize("source", sorted(SOURCES))
