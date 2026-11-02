@@ -1,0 +1,234 @@
+---
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+
+# Grype configuration for the release image's vulnerability gate
+# (release.yaml's grype job and testing.yaml's release-build job).
+#
+# Each rule accepts one finding in a component this repository does
+# not build. A rule names the vulnerability and the package's exact
+# name, version and type, so it stops matching once a base image or
+# plugin bump changes that version, and the finding gates again until
+# someone reviews it. Never match by package name alone, by wildcard
+# or by fix state, and never accept an Ubuntu package: the Dockerfile
+# upgrades those at build time. The README's "Vulnerability gate"
+# section describes the policy.
+
+ignore:
+
+  # Upstream Gerrit 3.13.10 gerrit.war
+  - vulnerability: 'GHSA-cj8j-37rh-8475'
+    package:
+      name: 'bcpg-jdk18on'
+      version: '1.80'
+      type: 'java-archive'
+    reason: >-
+      Bundled in upstream Gerrit 3.13.10's gerrit.war; only a Gerrit
+      release fixes it. Re-check when GERRIT_VERSION changes.
+  - vulnerability: 'GHSA-574f-3g2m-x479'
+    package:
+      name: 'bcprov-jdk18on'
+      version: '1.80'
+      type: 'java-archive'
+    reason: >-
+      Bundled in upstream Gerrit 3.13.10's gerrit.war; only a Gerrit
+      release fixes it. Re-check when GERRIT_VERSION changes.
+  - vulnerability: 'GHSA-9pwp-9qqc-pr26'
+    package:
+      name: 'bcprov-jdk18on'
+      version: '1.80'
+      type: 'java-archive'
+    reason: >-
+      Bundled in upstream Gerrit 3.13.10's gerrit.war; only a Gerrit
+      release fixes it. Re-check when GERRIT_VERSION changes.
+  - vulnerability: 'GHSA-qp49-qgx5-5m26'
+    package:
+      name: 'bcprov-jdk18on'
+      version: '1.80'
+      type: 'java-archive'
+    reason: >-
+      Bundled in upstream Gerrit 3.13.10's gerrit.war; only a Gerrit
+      release fixes it. Re-check when GERRIT_VERSION changes.
+  - vulnerability: 'GHSA-xxph-c9ww-hj94'
+    package:
+      name: 'guava'
+      version: '33.4.8-jre'
+      type: 'java-archive'
+    reason: >-
+      Bundled in upstream Gerrit 3.13.10's gerrit.war; only a Gerrit
+      release fixes it. Re-check when GERRIT_VERSION changes.
+  - vulnerability: 'GHSA-355h-qmc2-wpwf'
+    package:
+      name: 'jetty-http'
+      version: '9.4.57.v20241219'
+      type: 'java-archive'
+    reason: >-
+      Bundled in upstream Gerrit 3.13.10's gerrit.war; only a Gerrit
+      release fixes it. Re-check when GERRIT_VERSION changes.
+  - vulnerability: 'GHSA-2fvj-hgj9-j2gr'
+    package:
+      name: 'jetty-security'
+      version: '9.4.57.v20241219'
+      type: 'java-archive'
+    reason: >-
+      Bundled in upstream Gerrit 3.13.10's gerrit.war; only a Gerrit
+      release fixes it. Re-check when GERRIT_VERSION changes.
+  - vulnerability: 'GHSA-65r4-943x-97jj'
+    package:
+      name: 'jsoup'
+      version: '1.14.3'
+      type: 'java-archive'
+    reason: >-
+      Bundled in upstream Gerrit 3.13.10's gerrit.war; only a Gerrit
+      release fixes it. Re-check when GERRIT_VERSION changes.
+  - vulnerability: 'GHSA-8297-v2rf-2p32'
+    package:
+      name: 'mina-core'
+      version: '2.2.4'
+      type: 'java-archive'
+    reason: >-
+      Bundled in upstream Gerrit 3.13.10's gerrit.war; only a Gerrit
+      release fixes it. Re-check when GERRIT_VERSION changes.
+  - vulnerability: 'GHSA-995c-6rp3-4m4x'
+    package:
+      name: 'mina-core'
+      version: '2.2.4'
+      type: 'java-archive'
+    reason: >-
+      Bundled in upstream Gerrit 3.13.10's gerrit.war; only a Gerrit
+      release fixes it. Re-check when GERRIT_VERSION changes.
+  - vulnerability: 'GHSA-f2wh-grmh-r6jm'
+    package:
+      name: 'mina-core'
+      version: '2.2.4'
+      type: 'java-archive'
+    reason: >-
+      Bundled in upstream Gerrit 3.13.10's gerrit.war; only a Gerrit
+      release fixes it. Re-check when GERRIT_VERSION changes.
+  - vulnerability: 'GHSA-v3pr-hxpr-mfm8'
+    package:
+      name: 'mina-core'
+      version: '2.2.4'
+      type: 'java-archive'
+    reason: >-
+      Bundled in upstream Gerrit 3.13.10's gerrit.war; only a Gerrit
+      release fixes it. Re-check when GERRIT_VERSION changes.
+  - vulnerability: 'GHSA-vf5j-865m-mq7c'
+    package:
+      name: 'mina-core'
+      version: '2.2.4'
+      type: 'java-archive'
+    reason: >-
+      Bundled in upstream Gerrit 3.13.10's gerrit.war; only a Gerrit
+      release fixes it. Re-check when GERRIT_VERSION changes.
+  - vulnerability: 'GHSA-735f-pc8j-v9w8'
+    package:
+      name: 'protobuf-java'
+      version: '3.25.3'
+      type: 'java-archive'
+    reason: >-
+      Bundled in upstream Gerrit 3.13.10's gerrit.war; only a Gerrit
+      release fixes it. Re-check when GERRIT_VERSION changes.
+
+  # JDK bundled in the official Gerrit 3.13.10 image
+  - vulnerability: 'CVE-2025-53066'
+    package:
+      name: 'openjdk'
+      version: '21.0.8+9-LTS'
+      type: 'UnknownPackage'
+    reason: >-
+      JDK 21.0.8 bundled in the official Gerrit 3.13.10 image; only a
+      newer official base image fixes it. Re-check when GERRIT_VERSION
+      changes.
+  - vulnerability: 'CVE-2026-21932'
+    package:
+      name: 'openjdk'
+      version: '21.0.8+9-LTS'
+      type: 'UnknownPackage'
+    reason: >-
+      JDK 21.0.8 bundled in the official Gerrit 3.13.10 image; only a
+      newer official base image fixes it. Re-check when GERRIT_VERSION
+      changes.
+  - vulnerability: 'CVE-2026-21945'
+    package:
+      name: 'openjdk'
+      version: '21.0.8+9-LTS'
+      type: 'UnknownPackage'
+    reason: >-
+      JDK 21.0.8 bundled in the official Gerrit 3.13.10 image; only a
+      newer official base image fixes it. Re-check when GERRIT_VERSION
+      changes.
+  - vulnerability: 'CVE-2026-22016'
+    package:
+      name: 'openjdk'
+      version: '21.0.8+9-LTS'
+      type: 'UnknownPackage'
+    reason: >-
+      JDK 21.0.8 bundled in the official Gerrit 3.13.10 image; only a
+      newer official base image fixes it. Re-check when GERRIT_VERSION
+      changes.
+  - vulnerability: 'CVE-2026-34282'
+    package:
+      name: 'openjdk'
+      version: '21.0.8+9-LTS'
+      type: 'UnknownPackage'
+    reason: >-
+      JDK 21.0.8 bundled in the official Gerrit 3.13.10 image; only a
+      newer official base image fixes it. Re-check when GERRIT_VERSION
+      changes.
+  - vulnerability: 'CVE-2026-41254'
+    package:
+      name: 'openjdk'
+      version: '21.0.8+9-LTS'
+      type: 'UnknownPackage'
+    reason: >-
+      JDK 21.0.8 bundled in the official Gerrit 3.13.10 image; only a
+      newer official base image fixes it. Re-check when GERRIT_VERSION
+      changes.
+  - vulnerability: 'CVE-2026-47063'
+    package:
+      name: 'openjdk'
+      version: '21.0.8+9-LTS'
+      type: 'UnknownPackage'
+    reason: >-
+      JDK 21.0.8 bundled in the official Gerrit 3.13.10 image; only a
+      newer official base image fixes it. Re-check when GERRIT_VERSION
+      changes.
+
+  # saml plugin (docker/plugins.lock)
+  - vulnerability: 'GHSA-x64g-4xx9-fh6x'
+    package:
+      name: 'cryptacular'
+      version: '1.2.1'
+      type: 'java-archive'
+    reason: >-
+      Pinned by the saml plugin's stable-3.13 build; GerritForge has
+      published only build #1. Re-check when docker/plugins.lock
+      changes.
+  - vulnerability: 'GHSA-76mw-6p95-x9x5'
+    package:
+      name: 'pac4j-core'
+      version: '3.8.3'
+      type: 'java-archive'
+    reason: >-
+      Pinned by the saml plugin's stable-3.13 build; GerritForge has
+      published only build #1. Re-check when docker/plugins.lock
+      changes.
+  - vulnerability: 'GHSA-xw5c-jc7x-gf75'
+    package:
+      name: 'pac4j-core'
+      version: '3.8.3'
+      type: 'java-archive'
+    reason: >-
+      Pinned by the saml plugin's stable-3.13 build; GerritForge has
+      published only build #1. Re-check when docker/plugins.lock
+      changes.
+  - vulnerability: 'GHSA-j8wc-gxx9-82hx'
+    package:
+      name: 'xmlsec'
+      version: '2.1.4'
+      type: 'java-archive'
+    reason: >-
+      Pinned by the saml plugin's stable-3.13 build; GerritForge has
+      published only build #1. Re-check when docker/plugins.lock
+      changes.

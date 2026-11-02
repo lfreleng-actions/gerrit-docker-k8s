@@ -1126,6 +1126,28 @@ digest. It is signed and attested the same way, and the packaged
 chart is attached to the GitHub release; the chart README's
 "Published chart" section shows how to install and verify it.
 
+### Vulnerability Gate
+
+Before publishing, the release workflow scans the image's SBOM with
+Grype and fails on any High or Critical finding that has a fix. The
+`Dockerfile` applies Ubuntu's security updates at build time, and
+Ubuntu packages get no ignore rules.
+
+`.grype.yaml` accepts the findings this repository cannot fix, in
+components it does not build: the upstream `gerrit.war`, the JDK the
+official Gerrit image bundles, and plugin jars pinned in
+`docker/plugins.lock`. Each rule names one vulnerability and the
+package's exact name, version and type, with a reason. No rule
+matches by package name alone, by wildcard or by fix state.
+
+The version pin forces a review: once a `GERRIT_VERSION` or plugin
+lock bump changes a package's version, its rule stops matching and
+the finding gates again. A pull request that changes the image or
+`.grype.yaml` runs the same gate, so that review happens in the
+pull request, and warns about each rule that matched nothing so it
+can be removed. Each release's summary lists the findings it accepted
+and why.
+
 ## Advanced Configuration
 
 ### Custom Gerrit Configuration
