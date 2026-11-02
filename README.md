@@ -1119,6 +1119,13 @@ gh attestation verify "oci://${image}:${tag}" --repo "${repo}" \
   --predicate-type https://spdx.dev/Document
 ```
 
+The same release publishes the Helm chart in `K8S/charts/gerrit` to
+`oci://ghcr.io/lfreleng-actions/gerrit-docker-k8s/charts/gerrit`,
+versioned as the tag without its `v` and pinned to this image by
+digest. It is signed and attested the same way, and the packaged
+chart is attached to the GitHub release; the chart README's
+"Published chart" section shows how to install and verify it.
+
 ## Advanced Configuration
 
 ### Custom Gerrit Configuration

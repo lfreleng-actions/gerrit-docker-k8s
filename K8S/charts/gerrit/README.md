@@ -124,6 +124,40 @@ it. Set `image.tag` to a release tag or `image.digest` to a manifest
 digest; with neither, the chart refuses to render. A digest takes
 precedence over the tag.
 
+### Published chart
+
+Each release tag also publishes this chart to
+`oci://ghcr.io/lfreleng-actions/gerrit-docker-k8s/charts/gerrit`,
+versioned as the tag without its `v` (`v1.2.3` publishes `1.2.3`).
+The release workflow runs `scripts/pin-chart-images.py` to set
+`image.repository`, `image.tag` and `image.digest` to the image the
+same release published, packages the chart, lints and renders the
+package and checks with `scripts/lib/chart_digests.py` that every
+container image carries that digest. It then pushes the chart, signs
+it with cosign (keyless, through GitHub OIDC) and attests its build
+provenance, as it does the image, and attaches the packaged `.tgz` to
+the GitHub release. The published chart therefore needs no image
+values:
+
+```sh
+version=1.2.3
+chart=oci://ghcr.io/lfreleng-actions/gerrit-docker-k8s/charts/gerrit
+helm install gerrit "$chart" --version "$version" \
+  -n gerrit --create-namespace -f my-values.yaml
+```
+
+Verify the chart before installing it:
+
+```sh
+repo=lfreleng-actions/gerrit-docker-k8s
+workflow="https://github.com/${repo}/.github/workflows/release.yaml"
+cosign verify "ghcr.io/${repo}/charts/gerrit:${version}" \
+  --certificate-identity "${workflow}@refs/tags/v${version}" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+gh attestation verify "oci://ghcr.io/${repo}/charts/gerrit:${version}" \
+  --repo "${repo}"
+```
+
 ## Values
 
 | Value                                    | Default                          | Notes                                                      |
