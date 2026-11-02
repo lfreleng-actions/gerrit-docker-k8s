@@ -23,10 +23,6 @@ REPOSITORY = "ghcr.io/example/gerrit-docker-k8s/gerrit"
 TAG = "v1.2.3"
 DIGEST = "sha256:" + "d" * 64
 
-pytestmark = pytest.mark.xfail(
-    strict=True, reason="scripts/pin-chart-images.py does not exist yet"
-)
-
 VALUES = """\
 # Leading comment
 nameOverride: ""
