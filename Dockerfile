@@ -58,9 +58,15 @@ USER root
 # apt-get update would fail there. Removing the source leaves the
 # installed gerrit package alone; rm -f keeps a base image without
 # the file building. The Ubuntu sources are untouched.
+#
+# apt-get upgrade applies the Ubuntu security updates published since
+# the base image was built, so the release Grype gate does not fail on
+# fixed Ubuntu packages. It runs after the GerritForge source is gone,
+# so it cannot touch the image's Gerrit package.
 RUN set -eux; \
     rm -f /etc/apt/sources.list.d/GerritForge.list; \
     apt-get update; \
+    DEBIAN_FRONTEND=noninteractive apt-get upgrade -y; \
     apt-get install -y --no-install-recommends \
         curl \
         ca-certificates \
