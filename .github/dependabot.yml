@@ -44,7 +44,10 @@ updates:
     open-pull-requests-limit: 5
 
   # The Dockerfile base image (gerritcodereview/gerrit); grouped so a
-  # base image bump arrives as a single pull request.
+  # base image bump arrives as a single pull request. Updates stay on
+  # the 3.13 line: the chart image's plugin catalogue (docker/plugins.lock)
+  # pins stable-3.13 builds, and moving Gerrit's minor line means
+  # re-pinning it.
   - package-ecosystem: "docker"
     directory: "/"
     schedule:
@@ -55,6 +58,11 @@ updates:
       docker:
         patterns:
           - "*"
+    ignore:
+      - dependency-name: "gerritcodereview/gerrit"
+        update-types:
+          - "version-update:semver-major"
+          - "version-update:semver-minor"
     cooldown:
       default-days: 7
     open-pull-requests-limit: 5
