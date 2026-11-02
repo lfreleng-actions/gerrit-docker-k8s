@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+#
+# Endpoints this repository needs beyond the organisation allow-list.
+# The release workflow's build job reads this file, at the tagged
+# commit, through harden-runner-block-action's supplemental_config.
+
+# Plugin catalogue artefacts pinned in docker/plugins.lock
+gerrit-ci.gerritforge.com:443

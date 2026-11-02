@@ -173,10 +173,10 @@ plugins:
   # healthcheck to the plugins site-init copies from the image
   # catalogue, renders etc/healthcheck.config and points the readiness
   # and liveness probes at <urlPrefix>/config/server/healthcheck~status
-  # instead of the version endpoint. Off until the image catalogue
-  # ships healthcheck.jar (#231), since site-init fails on a missing
-  # jar; the default then becomes true. See "Health checks" in the
-  # chart README.
+  # instead of the version endpoint. Off until the chart points at the
+  # published image, whose catalogue ships healthcheck.jar (#246),
+  # since site-init fails on a missing jar; the default then becomes
+  # true. See "Health checks" in the chart README.
   healthcheck:
     enabled: false
     # etc/healthcheck.config: keys under [healthcheck], such as

@@ -2,44 +2,1058 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: 2026 The Linux Foundation
 
-# Thin caller for the reusable release workflow in generic-workflows.
+# Release workflow: build, test, publish, sign, promote.
 #
-# Replaces the former "fat" tag-push.yaml, which carried its own copy of
-# the validate-then-promote job graph. The reusable validates the pushed
-# tag against the organisation's release-gating policy, ensures a draft
-# release exists for the tag (creating one if release-drafter has not),
-# and then publishes it.
+# Triggered by a semver tag push (e.g. `v1.0.0` or `v1.0.0-rc1`). The
+# tag must be signed and well formed; tag-validate enforces that before
+# anything else runs. Modelled on the sigul-docker-k8s release
+# workflow, trimmed to the one image this repository publishes:
+# ghcr.io/<owner>/<repo>/gerrit, built from Dockerfile.chart on top of
+# the image Dockerfile builds.
 #
-# No `with:` block: this repository adopts the reusable's defaults in
-# full. That covers the release-gating policy and also the runner
-# hardening defaults (egress policy and its allow-list). See the
-# generic-workflows README for every input and its default.
+# 1. Builds the image (linux/amd64) and exports it as an artefact.
+# 2. Smoke-tests it: the Gerrit version, the plugin catalogue, a
+#    `--dev --batch` site init and the HTTP endpoint of a running
+#    container.
+# 3. Generates an SPDX SBOM and audits it with Grype, before anything
+#    is published, so a failing image never reaches GHCR.
+# 4. Publishes the image to GHCR as vX.Y.Z, then, one tag run at a
+#    time, moves X.Y, X and latest to it while it is the newest final
+#    tag each covers; a pre-release tag publishes only its own tag.
+# 5. Signs the published image (cosign keyless) and attaches
+#    build-provenance and SBOM attestations.
+# 6. Attaches the SBOM and Grype reports to the GitHub release and
+#    promotes the draft release.
+#
+# The GitHub Action in this repository does not use this image: it
+# still builds Dockerfile at run time.
+
 name: 'Release on Tag Push 🚀'
 
 # yamllint disable-line rule:truthy
 on:
   push:
     tags:
-      - '**'
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+      - 'v[0-9]+.[0-9]+.[0-9]+-*'
 
 permissions: {}
 
 # Serialise repeated runs for the same tag; never cancel an in-flight
-# release promotion. Distinct tags use distinct groups and proceed
-# independently. This group cannot collide with the reusable's own,
-# which carries a literal workflow-specific prefix.
+# release. Runs for different tags overlap, so the two jobs that move
+# shared state (the image aliases and the 'latest' release badge) also
+# share a job-level queue across tags, and each checks for a newer
+# final tag inside it.
 concurrency:
-  group: '${{ github.workflow }}-${{ github.ref }}'
+  group: 'release-${{ github.ref }}'
   cancel-in-progress: false
 
+env:
+  IMAGE: 'ghcr.io/${{ github.repository }}/gerrit'
+
 jobs:
-  release:
-    name: 'Release'
-    # Deleting a tag also fires this push event. The reusable skips its
-    # own jobs on a deletion, but guarding here too keeps the previous
-    # behaviour exactly: no run starts at all.
-    if: "!github.event.deleted"
+  repository-metadata:
+    name: 'Repository Metadata'
+    # Deleting a tag also fires the push event; start nothing then
+    if: ${{ !github.event.deleted }}
+    runs-on: 'ubuntu-latest'
     permissions:
-      contents: write  # Promote (publish) the draft release for the tag
-    # yamllint disable-line rule:line-length
-    uses: lfreleng-actions/generic-workflows/.github/workflows/release.yaml@04672a980550ff9bd89d24bacd39fb03e25b0b0b  # v0.6.1
+      contents: read  # Checkout repository contents
+      pull-requests: read  # Gather pull request metadata
+    timeout-minutes: 5
+    steps:
+      # Load the egress allow-list out-of-band from the
+      # organisation's .github repository and publish it as
+      # $CONNECTION_ALLOW_LIST for the harden-runner step below.
+      # yamllint disable-line rule:line-length
+      - uses: lfreleng-actions/harden-runner-block-action@2fed66c9c36c4687c31ca349b925b81ec629673f  # v0.15.0
+        with:
+          config: '@6d4a65c5601afd6c2fbe52bda4b0024b132f265d'  # v0.19.0
+
+      - name: 'Harden runner (block)'
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
+        with:
+          egress-policy: 'block'
+          allowed-endpoints: >
+            ${{ env.CONNECTION_ALLOW_LIST }}
+
+      - name: 'Checkout repository'
+        # yamllint disable-line rule:line-length
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: 'Gather repository metadata'
+        # yamllint disable-line rule:line-length
+        uses: lfreleng-actions/repository-metadata-action@2206d754f65f1a90f57b49be546712c5f594def2  # v0.3.3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          github_summary: 'true'
+          gerrit_summary: 'false'
+          artifact_upload: 'true'
+          artifact_formats: 'json'
+
+  ### Validate the pushed tag (parallel with repository-metadata) ###
+  tag-validate:
+    name: 'Validate Tag'
+    if: ${{ !github.event.deleted }}
+    runs-on: 'ubuntu-24.04'
+    permissions:
+      contents: read  # Read the tag and its history
+    timeout-minutes: 5
+    outputs:
+      tag: ${{ steps.validate.outputs.tag_name }}
+    steps:
+      # yamllint disable-line rule:line-length
+      - uses: lfreleng-actions/harden-runner-block-action@2fed66c9c36c4687c31ca349b925b81ec629673f  # v0.15.0
+        with:
+          config: '@6d4a65c5601afd6c2fbe52bda4b0024b132f265d'  # v0.19.0
+          allow_list_summary: 'false'
+
+      - name: 'Harden runner (block)'
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
+        with:
+          egress-policy: 'block'
+          allowed-endpoints: >
+            ${{ env.CONNECTION_ALLOW_LIST }}
+
+      - name: 'Checkout repository'
+        # yamllint disable-line rule:line-length
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      # The release-gating policy the generic-workflows reusable this
+      # workflow replaces applied, except that pre-release tags pass:
+      # a pre-release tag publishes a pre-release image.
+      - name: 'Validate tag'
+        id: validate
+        # yamllint disable-line rule:line-length
+        uses: lfreleng-actions/tag-validate-action@eab7d92e02c8b447a4de04e68bd5ee7eae3450eb  # v1.1.8
+        with:
+          token: "${{ secrets.GITHUB_TOKEN }}"
+          require_type: 'semver'
+          require_signed: 'ssh,gpg-unverifiable'
+          # The tag's signing key must belong to the tagger's account
+          require_github: true
+          reject_development: false
+          enforce_increment: true
+          require_branch: 'true'
+          require_recent: 'true'
+          require_latest: true
+
+  ### Build the image ###
+  build:
+    name: 'Build (${{ matrix.platform }})'
+    needs: [repository-metadata, tag-validate]
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read  # Checkout repository contents
+    timeout-minutes: 30
+    strategy:
+      fail-fast: true
+      matrix:
+        # linux/arm64 would add a leg here, on 'ubuntu-24.04-arm', once
+        # the Dockerfile installs uv for that architecture
+        include:
+          - platform: 'linux/amd64'
+            platform-id: 'linux-amd64'
+            runner: 'ubuntu-24.04'
+    steps:
+      # The image build pulls the plugin catalogue from GerritForge CI,
+      # which the organisation allow-list lacks. This repository's
+      # supplemental list adds it, read at the tagged commit.
+      # yamllint disable-line rule:line-length
+      - uses: lfreleng-actions/harden-runner-block-action@2fed66c9c36c4687c31ca349b925b81ec629673f  # v0.15.0
+        with:
+          config: '@6d4a65c5601afd6c2fbe52bda4b0024b132f265d'  # v0.19.0
+          # yamllint disable-line rule:line-length
+          supplemental_config: '${{ github.repository }}//.github/harden-runner/allow_list.txt@${{ github.sha }}'
+          supplemental_required: 'true'
+          token: ${{ github.token }}
+
+      - name: 'Harden runner (block)'
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
+        with:
+          egress-policy: 'block'
+          allowed-endpoints: >
+            ${{ env.CONNECTION_ALLOW_LIST }}
+
+      - name: 'Checkout repository'
+        # yamllint disable-line rule:line-length
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The standard OCI label set (revision, version, created and so
+      # on) from the workflow context; it survives the tar export
+      - name: 'Compute OCI image metadata'
+        id: meta
+        # yamllint disable-line rule:line-length
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302  # v6.2.0
+        with:
+          images: ${{ env.IMAGE }}
+          labels: |
+            org.opencontainers.image.title=Gerrit for Kubernetes
+            org.opencontainers.image.description=Gerrit Code Review with a plugin catalogue for the Helm chart
+
+      # Dockerfile.chart starts from the image Dockerfile builds. The
+      # docker driver builds both into the local image store, where the
+      # second build finds the first; no registry is involved. Each
+      # matrix leg builds natively on its runner.
+      - name: 'Build the image'
+        shell: bash
+        env:
+          META_LABELS: ${{ steps.meta.outputs.labels }}
+          PLATFORM_ID: ${{ matrix.platform-id }}
+        run: |
+          # Build the image
+          set -euo pipefail
+          labels=()
+          while IFS= read -r label; do
+            [[ -n "$label" ]] && labels+=(--label "$label")
+          done <<< "$META_LABELS"
+          docker build -t gerrit-base:build .
+          docker build -f Dockerfile.chart \
+            --build-arg BASE_IMAGE=gerrit-base:build \
+            "${labels[@]}" \
+            -t "gerrit:${PLATFORM_ID}" .
+          docker save -o "/tmp/gerrit-${PLATFORM_ID}.tar" \
+            "gerrit:${PLATFORM_ID}"
+
+      - name: 'Upload image artefact'
+        # yamllint disable-line rule:line-length
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: gerrit-${{ matrix.platform-id }}-image
+          path: /tmp/gerrit-${{ matrix.platform-id }}.tar
+          retention-days: 7
+          if-no-files-found: error
+
+  ### Smoke-test the built image ###
+  smoke:
+    name: 'Smoke test'
+    needs: [build]
+    runs-on: 'ubuntu-24.04'
+    permissions:
+      contents: read  # Checkout repository contents
+    timeout-minutes: 20
+    steps:
+      # yamllint disable-line rule:line-length
+      - uses: lfreleng-actions/harden-runner-block-action@2fed66c9c36c4687c31ca349b925b81ec629673f  # v0.15.0
+        with:
+          config: '@6d4a65c5601afd6c2fbe52bda4b0024b132f265d'  # v0.19.0
+          allow_list_summary: 'false'
+
+      - name: 'Harden runner (block)'
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
+        with:
+          egress-policy: 'block'
+          allowed-endpoints: >
+            ${{ env.CONNECTION_ALLOW_LIST }}
+
+      - name: 'Checkout repository'
+        # yamllint disable-line rule:line-length
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: 'Download image artefact'
+        # yamllint disable-line rule:line-length
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: gerrit-linux-amd64-image
+          path: /tmp
+
+      - name: 'Load the image'
+        shell: bash
+        run: |
+          # Load the image
+          set -euo pipefail
+          docker load --input /tmp/gerrit-linux-amd64.tar
+
+      # The image entrypoint starts Gerrit whatever the arguments, so
+      # one-off commands override it
+      - name: 'Check the Gerrit version'
+        shell: bash
+        run: |
+          # Check the Gerrit version
+          set -euo pipefail
+          pinned=$(sed -n 's/^ARG GERRIT_VERSION=//p' Dockerfile)
+          want="gerrit version ${pinned%%-*}"
+          got=$(docker run --rm --entrypoint java gerrit:linux-amd64 \
+            -jar /var/gerrit/bin/gerrit.war version)
+          echo "$got"
+          if ! grep -qxF "$want" <<< "$got"; then
+            echo "::error::Expected '$want', got '$got' ❌"
+            exit 1
+          fi
+          echo "Gerrit ${pinned%%-*} as pinned ✅"
+
+      - name: 'Check the plugin catalogue'
+        shell: bash
+        run: |
+          # Check the plugin catalogue
+          set -euo pipefail
+          # Lock entries, then the core plugins site-init expects
+          mapfile -t jars < <(grep -Ev '^[[:space:]]*(#|$)' \
+            docker/plugins.lock | awk '{print $1}')
+          jars+=(plugins/replication plugins/hooks plugins/webhooks
+            plugins/delete-project plugins/download-commands)
+          docker run --rm --entrypoint bash gerrit:linux-amd64 -c '
+            set -eu
+            cd /var/gerrit-catalogue
+            for jar in "$@"; do
+              test -f "$jar.jar" || { echo "missing: $jar.jar" >&2; exit 1; }
+            done
+            bad=$(find . -type f \( ! -user root -o ! -perm 0644 \))
+            test -z "$bad" || { echo "not root 0644: $bad" >&2; exit 1; }
+            ls -lR .
+          ' bash "${jars[@]}"
+          echo "Catalogue holds ${#jars[@]} expected jars ✅"
+
+      - name: 'Initialise a development site'
+        shell: bash
+        run: |
+          # Initialise a development site
+          set -euo pipefail
+          docker run --rm --entrypoint java gerrit:linux-amd64 \
+            -jar /var/gerrit/bin/gerrit.war init \
+            --dev --batch --no-auto-start -d /tmp/site
+          echo "gerrit init --dev --batch succeeded ✅"
+
+      - name: 'Check the HTTP endpoint'
+        shell: bash
+        run: |
+          # Check the HTTP endpoint
+          set -euo pipefail
+          pinned=$(sed -n 's/^ARG GERRIT_VERSION=//p' Dockerfile)
+          docker run -d --name gerrit-smoke -p 127.0.0.1:8080:8080 \
+            gerrit:linux-amd64
+          url=http://127.0.0.1:8080/config/server/version
+          for _ in $(seq 1 60); do
+            if body=$(curl -fsS "$url" 2>/dev/null); then
+              echo "$body"
+              if [[ "$body" == *"\"${pinned%%-*}\""* ]]; then
+                echo "Gerrit answers on HTTP ✅"
+                exit 0
+              fi
+              echo "::error::Unexpected version from $url ❌"
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "::error::Gerrit did not answer on $url ❌"
+          docker logs gerrit-smoke || true
+          exit 1
+
+      - name: 'Stop the container'
+        if: always()
+        shell: bash
+        run: |
+          # Stop the container
+          docker rm -f gerrit-smoke >/dev/null 2>&1 || true
+
+  ### Generate the SBOM (pre-publish) ###
+  sbom:
+    name: 'SBOM'
+    needs: [build]
+    runs-on: 'ubuntu-latest'
+    permissions:
+      contents: read  # Read workflow artefacts
+    timeout-minutes: 15
+    steps:
+      # yamllint disable-line rule:line-length
+      - uses: lfreleng-actions/harden-runner-block-action@2fed66c9c36c4687c31ca349b925b81ec629673f  # v0.15.0
+        with:
+          config: '@6d4a65c5601afd6c2fbe52bda4b0024b132f265d'  # v0.19.0
+          allow_list_summary: 'false'
+
+      - name: 'Harden runner (block)'
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
+        with:
+          egress-policy: 'block'
+          allowed-endpoints: >
+            ${{ env.CONNECTION_ALLOW_LIST }}
+
+      - name: 'Download image artefact'
+        # yamllint disable-line rule:line-length
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: gerrit-linux-amd64-image
+          path: /tmp
+
+      - name: 'Load the image'
+        shell: bash
+        run: |
+          # Load the image
+          set -euo pipefail
+          docker load --input /tmp/gerrit-linux-amd64.tar
+
+      - name: 'Generate SPDX SBOM'
+        # yamllint disable-line rule:line-length
+        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c  # v0.24.3
+        with:
+          image: 'gerrit:linux-amd64'
+          format: spdx-json
+          output-file: sbom-gerrit.spdx.json
+          # The upload below names the artefact; avoid a duplicate
+          upload-artifact: false
+
+      - name: 'Upload SBOM artefact'
+        # yamllint disable-line rule:line-length
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: sbom-gerrit
+          path: sbom-gerrit.spdx.json
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: 'SBOM summary'
+        shell: bash
+        run: |
+          # SBOM summary
+          set -euo pipefail
+          count=$(jq '[.packages[]?] | length' sbom-gerrit.spdx.json)
+          {
+            echo "## SBOM: gerrit"
+            echo ""
+            echo "SPDX package count: ${count}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  ### Audit the SBOM with Grype (pre-publish gate) ###
+  grype:
+    name: 'Grype'
+    needs: [tag-validate, sbom]
+    runs-on: 'ubuntu-latest'
+    permissions:
+      contents: read  # Read workflow artefacts
+      security-events: write  # Upload Grype SARIF to code scanning
+    timeout-minutes: 15
+    steps:
+      # yamllint disable-line rule:line-length
+      - uses: lfreleng-actions/harden-runner-block-action@2fed66c9c36c4687c31ca349b925b81ec629673f  # v0.15.0
+        with:
+          config: '@6d4a65c5601afd6c2fbe52bda4b0024b132f265d'  # v0.19.0
+          allow_list_summary: 'false'
+
+      - name: 'Harden runner (block)'
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
+        with:
+          egress-policy: 'block'
+          allowed-endpoints: >
+            ${{ env.CONNECTION_ALLOW_LIST }}
+
+      - name: 'Download SBOM artefact'
+        # yamllint disable-line rule:line-length
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: sbom-gerrit
+
+      # Gates on fixable high and critical findings. The upstream
+      # Gerrit image carries Ubuntu and JVM packages this repository
+      # cannot patch, so an unfixable advisory warns rather than
+      # blocking every release. The NO_BLOCK_AUDIT_FAIL repository
+      # variable lets an urgent release publish despite findings.
+      - name: 'Grype audit SBOM'
+        # yamllint disable-line rule:line-length
+        uses: lfreleng-actions/grype-scan-action@5c81b23afb2ea771b2d247807a12d90783328675  # v0.5.0
+        with:
+          sbom: 'sbom-gerrit.spdx.json'
+          name: 'gerrit'
+          fail-on: 'high'
+          only-fixed: 'true'
+          permit-fail: ${{ vars.NO_BLOCK_AUDIT_FAIL == 'true' }}
+          bypass-enabled: 'false'
+          output-formats: 'json,table,sarif'
+          output-prefix: 'grype-gerrit'
+          summary-title: 'Grype scan'
+          upload-artifact: 'true'
+          artifact-name: 'scan-gerrit'
+          retention-days: 90
+
+      - name: 'Upload Grype SARIF to code scanning'
+        if: always()
+        # The SARIF also ships as a release asset; a transient upload
+        # failure must not block the release
+        continue-on-error: true
+        # yamllint disable-line rule:line-length
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370  # v4.39.1
+        with:
+          sarif_file: grype-gerrit.sarif
+          category: grype-gerrit
+
+  ### Publish to GHCR (gated on smoke and Grype) ###
+  publish-ghcr:
+    name: 'Publish'
+    needs: [tag-validate, smoke, grype]
+    runs-on: 'ubuntu-latest'
+    permissions:
+      contents: read  # Read workflow artefacts
+      packages: write  # Push release container images to GHCR
+    timeout-minutes: 15
+    steps:
+      # yamllint disable-line rule:line-length
+      - uses: lfreleng-actions/harden-runner-block-action@2fed66c9c36c4687c31ca349b925b81ec629673f  # v0.15.0
+        with:
+          config: '@6d4a65c5601afd6c2fbe52bda4b0024b132f265d'  # v0.19.0
+          allow_list_summary: 'false'
+
+      - name: 'Harden runner (block)'
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
+        with:
+          egress-policy: 'block'
+          allowed-endpoints: >
+            ${{ env.CONNECTION_ALLOW_LIST }}
+
+      - name: 'Log in to GitHub Container Registry'
+        # yamllint disable-line rule:line-length
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6  # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 'Download image artefact'
+        # yamllint disable-line rule:line-length
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: gerrit-linux-amd64-image
+          path: /tmp
+
+      # Only the git tag's own name here, so sign-attest finds it; the
+      # shared aliases move in publish-aliases, one tag run at a time
+      - name: 'Push the image'
+        shell: bash
+        env:
+          TAG: ${{ needs.tag-validate.outputs.tag }}
+        run: |
+          # Push the image
+          set -euo pipefail
+          docker load --input /tmp/gerrit-linux-amd64.tar
+          docker tag gerrit:linux-amd64 "${IMAGE}:${TAG}"
+          docker push "${IMAGE}:${TAG}"
+          echo "Published: ${IMAGE}:${TAG}"
+
+  ### Move the shared image aliases (serialised across tags) ###
+  publish-aliases:
+    name: 'Publish aliases'
+    # Aliases move only once vX.Y.Z is signed and attested, so no
+    # shared tag ever points at an image that fails verification
+    needs: [tag-validate, publish-ghcr, sign-attest]
+    runs-on: 'ubuntu-latest'
+    # One queue for every tag's run, shared with promote-release: the
+    # newest-tag check and the alias moves happen inside it, so a run
+    # for an older tag cannot interleave with a newer one's. 'max'
+    # keeps every waiting job instead of cancelling all but the last.
+    concurrency:
+      group: 'release-shared-state'
+      cancel-in-progress: false
+      queue: max
+    permissions:
+      contents: read  # List the repository's tags
+      packages: write  # Move the shared image aliases in GHCR
+    timeout-minutes: 10
+    steps:
+      # yamllint disable-line rule:line-length
+      - uses: lfreleng-actions/harden-runner-block-action@2fed66c9c36c4687c31ca349b925b81ec629673f  # v0.15.0
+        with:
+          config: '@6d4a65c5601afd6c2fbe52bda4b0024b132f265d'  # v0.19.0
+          allow_list_summary: 'false'
+
+      - name: 'Harden runner (block)'
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
+        with:
+          egress-policy: 'block'
+          allowed-endpoints: >
+            ${{ env.CONNECTION_ALLOW_LIST }}
+
+      - name: 'Log in to GitHub Container Registry'
+        # yamllint disable-line rule:line-length
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6  # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # A pre-release moves nothing. A final release moves each shared
+      # alias (X.Y, X, latest) only while it is the newest final tag
+      # that alias covers. A newer tag's run queues here after its tag
+      # exists, so whichever order the runs take, the newest wins: an
+      # older tag's run either sees the newer tag and stays put, or
+      # moves first and is overwritten. The copy is registry-side and
+      # keeps the digest, so the signature on vX.Y.Z covers the aliases.
+      - name: 'Move the aliases'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.tag-validate.outputs.tag }}
+          REPO: ${{ github.repository }}
+        run: |
+          # Move the aliases
+          set -euo pipefail
+          re='^v([0-9]+)\.([0-9]+)\.([0-9]+)(-[0-9A-Za-z.-]+)?$'
+          if [[ ! "${TAG}" =~ $re ]]; then
+            echo "::error::'${TAG}' is not a vX.Y.Z[-pre] tag ❌" >&2
+            exit 1
+          fi
+          major="${BASH_REMATCH[1]}"
+          minor="${BASH_REMATCH[2]}"
+          if [[ -n "${BASH_REMATCH[4]}" ]]; then
+            echo "Pre-release ${TAG}: no shared alias moves"
+            exit 0
+          fi
+          src="${IMAGE}:${TAG}"
+          digest() {
+            docker buildx imagetools inspect "$1" \
+              --format '{{.Manifest.Digest}}'
+          }
+          want=$(digest "${src}")
+          refs=$(gh api --paginate \
+            "repos/${REPO}/git/matching-refs/tags/v" \
+            --jq '.[].ref | ltrimstr("refs/tags/")')
+          mapfile -t finals < <(grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+            <<< "${refs}" | sort -V)
+          newest() {
+            printf '%s\n' "${finals[@]}" \
+              | awk -v p="$1" 'index($0, p) == 1' | tail -n 1
+          }
+          moved=()
+          for alias in "${major}.${minor}" "${major}" latest; do
+            case "${alias}" in
+              latest) prefix=v ;;
+              *) prefix="v${alias}." ;;
+            esac
+            top=$(newest "${prefix}")
+            if [[ "${top}" != "${TAG}" ]]; then
+              echo "::warning::${top} is newer; '${alias}' stays put"
+              continue
+            fi
+            docker buildx imagetools create --prefer-index=false \
+              --tag "${IMAGE}:${alias}" "${src}"
+            got=$(digest "${IMAGE}:${alias}")
+            if [[ "${got}" != "${want}" ]]; then
+              echo "::error::${alias} is ${got}, not ${want} ❌" >&2
+              exit 1
+            fi
+            moved+=("${IMAGE}:${alias}")
+          done
+          echo "Moved to ${TAG} (${want}):"
+          printf '  %s\n' "${moved[@]}"
+
+  ### Sign and attest the published image ###
+  sign-attest:
+    name: 'Sign and attest'
+    needs: [tag-validate, publish-ghcr, sbom]
+    runs-on: 'ubuntu-latest'
+    permissions:
+      contents: read  # Read workflow artefacts
+      packages: write  # Attach signatures/attestations as OCI referrers
+      id-token: write  # Keyless cosign signing and attestations use OIDC
+      attestations: write  # Write signed build attestations
+    timeout-minutes: 20
+    steps:
+      # yamllint disable-line rule:line-length
+      - uses: lfreleng-actions/harden-runner-block-action@2fed66c9c36c4687c31ca349b925b81ec629673f  # v0.15.0
+        with:
+          config: '@6d4a65c5601afd6c2fbe52bda4b0024b132f265d'  # v0.19.0
+          allow_list_summary: 'false'
+
+      - name: 'Harden runner (block)'
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
+        with:
+          egress-policy: 'block'
+          allowed-endpoints: >
+            ${{ env.CONNECTION_ALLOW_LIST }}
+
+      - name: 'Log in to GitHub Container Registry'
+        # yamllint disable-line rule:line-length
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6  # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Bind signatures and attestations to the immutable digest
+      # rather than the moving tag
+      - name: 'Resolve the manifest digest'
+        id: ref
+        shell: bash
+        env:
+          TAG: ${{ needs.tag-validate.outputs.tag }}
+        run: |
+          # Resolve the manifest digest
+          set -euo pipefail
+          digest=$(docker buildx imagetools inspect "${IMAGE}:${TAG}" \
+            --format '{{json .Manifest}}' | jq -r '.digest')
+          if [[ -z "$digest" || "$digest" == "null" ]]; then
+            echo "::error::No manifest digest for ${IMAGE}:${TAG} ❌" >&2
+            exit 1
+          fi
+          echo "Resolved ${IMAGE}:${TAG} -> ${digest}"
+          {
+            echo "digest=${digest}"
+            echo "ref=${IMAGE}@${digest}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: 'Install cosign'
+        # yamllint disable-line rule:line-length
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6  # v4.1.2
+
+      - name: 'Sign image (keyless OIDC)'
+        env:
+          IMAGE_REF: ${{ steps.ref.outputs.ref }}
+        run: cosign sign --yes "${IMAGE_REF}"
+
+      - name: 'Attest build provenance'
+        env:
+          # Some registries overflow Node's default 16KB response
+          # header cap when attestations are pushed as referrers
+          NODE_OPTIONS: '--max-http-header-size=32768'
+        # yamllint disable-line rule:line-length
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6  # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.ref.outputs.digest }}
+          push-to-registry: true
+          # Attestations live as OCI referrers and in the attestations
+          # API, which is what gh attestation verify reads
+          create-storage-record: false
+
+      # Attest the exact SBOM the Grype gate scanned
+      - name: 'Download SBOM artefact'
+        # yamllint disable-line rule:line-length
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: sbom-gerrit
+
+      - name: 'Attest SBOM'
+        env:
+          NODE_OPTIONS: '--max-http-header-size=32768'
+        # yamllint disable-line rule:line-length
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6  # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.ref.outputs.digest }}
+          sbom-path: sbom-gerrit.spdx.json
+          push-to-registry: true
+          create-storage-record: false
+
+  ### Attach the SBOM and Grype reports to the release ###
+  release-attach:
+    name: 'Attach Release Assets'
+    needs: [tag-validate, grype, sign-attest]
+    # Run even when grype or sign-attest fails: the reports explain a
+    # failed release. promote-release still waits on both.
+    if: >-
+      always() && needs.tag-validate.result == 'success'
+    runs-on: 'ubuntu-24.04'
+    permissions:
+      contents: write  # Create the draft release and upload assets
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TAG: ${{ needs.tag-validate.outputs.tag }}
+      # No checkout, so gh needs the repository named
+      REPO: ${{ github.repository }}
+      # On the path to promotion every report is required; a run that
+      # failed upstream attaches what it has to explain the failure
+      REQUIRE_REPORTS: >-
+        ${{ needs.grype.result == 'success'
+        && needs.sign-attest.result == 'success' }}
+    steps:
+      # yamllint disable-line rule:line-length
+      - uses: lfreleng-actions/harden-runner-block-action@2fed66c9c36c4687c31ca349b925b81ec629673f  # v0.15.0
+        with:
+          config: '@6d4a65c5601afd6c2fbe52bda4b0024b132f265d'  # v0.19.0
+          allow_list_summary: 'false'
+
+      - name: 'Harden runner (block)'
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
+        with:
+          egress-policy: 'block'
+          allowed-endpoints: >
+            ${{ env.CONNECTION_ALLOW_LIST }}
+
+      # release-drafter normally drafts the release; create a draft
+      # when it has not, as the reusable workflow this replaces did
+      - name: 'Ensure a draft release exists'
+        shell: bash
+        run: |
+          # Ensure a draft release exists
+          set -euo pipefail
+          if gh release view "${TAG}" --repo "${REPO}" \
+            --json isDraft >/dev/null 2>&1; then
+            echo "Release ${TAG} exists"
+          else
+            echo "Creating draft release for ${TAG}"
+            pre=()
+            [[ "${TAG#v}" == *-* ]] && pre=(--prerelease)
+            gh release create "${TAG}" --repo "${REPO}" --draft \
+              "${pre[@]}" --verify-tag --title "Release ${TAG}" \
+              --notes "Automated release for ${TAG}"
+          fi
+
+      - name: 'Download SBOM'
+        # Tolerate a missing SBOM only when an upstream job failed
+        continue-on-error: ${{ env.REQUIRE_REPORTS != 'true' }}
+        # yamllint disable-line rule:line-length
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          path: release-assets
+          pattern: sbom-*
+          merge-multiple: true
+
+      - name: 'Download Grype reports'
+        continue-on-error: ${{ env.REQUIRE_REPORTS != 'true' }}
+        # yamllint disable-line rule:line-length
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          path: release-assets
+          pattern: scan-*
+          merge-multiple: true
+
+      - name: 'Upload SBOM and Grype reports to the release'
+        shell: bash
+        run: |
+          # Upload SBOM and Grype reports to the release
+          set -euo pipefail
+          mkdir -p release-assets
+          if [[ "${REQUIRE_REPORTS}" == 'true' ]]; then
+            missing=0
+            for f in sbom-gerrit.spdx.json grype-gerrit.json \
+              grype-gerrit.txt grype-gerrit.sarif; do
+              if [[ ! -s "release-assets/${f}" ]]; then
+                echo "::error::Release asset ${f} is missing ❌" >&2
+                missing=1
+              fi
+            done
+            [[ "${missing}" -eq 0 ]] || exit 1
+          fi
+          mapfile -t assets < <(find release-assets -type f)
+          if [[ "${#assets[@]}" -eq 0 ]]; then
+            echo "::warning::No release assets found to upload"
+            exit 0
+          fi
+          gh release upload "${TAG}" "${assets[@]}" \
+            --repo "${REPO}" --clobber
+
+      - name: 'Append verification footer to release notes'
+        # Only when signing ran, or the footer's claims would be false
+        if: needs.sign-attest.result == 'success'
+        shell: bash
+        run: |
+          # Append verification footer to release notes
+          set -euo pipefail
+          # The sentinel keeps the footer idempotent across re-runs
+          sentinel='<!-- gerrit release verification footer -->'
+          existing=$(gh release view "${TAG}" \
+            --repo "${REPO}" --json body --jq .body)
+          head_body="${existing%%"${sentinel}"*}"
+
+          footer=$(cat <<EOF
+          ${sentinel}
+
+          ---
+
+          ## Container image
+
+          \`${IMAGE}:${TAG}\` (linux/amd64) is cosign-signed (keyless,
+          GitHub OIDC) and carries SLSA build-provenance and SPDX SBOM
+          attestations as OCI referrers.
+
+          \`\`\`sh
+          cosign verify "${IMAGE}:${TAG}" \\
+            --certificate-identity "https://github.com/${REPO}/.github/workflows/release.yaml@refs/tags/${TAG}" \\
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com
+          gh attestation verify "oci://${IMAGE}:${TAG}" --repo ${REPO}
+          gh attestation verify "oci://${IMAGE}:${TAG}" --repo ${REPO} \\
+            --predicate-type https://spdx.dev/Document
+          \`\`\`
+
+          The SPDX SBOM and Grype reports are attached to this release.
+          EOF
+          )
+
+          printf '%s\n%s\n' "${head_body}" "${footer}" \
+            | gh release edit "${TAG}" --repo "${REPO}" --notes-file -
+
+  ### Promote the draft release ###
+  promote-release:
+    name: 'Promote Draft Release'
+    needs:
+      - tag-validate
+      - publish-ghcr
+      - publish-aliases
+      - grype
+      - sign-attest
+      - release-attach
+    runs-on: 'ubuntu-24.04'
+    # The 'latest' badge is shared state too: same queue as
+    # publish-aliases, with the newest-tag check inside it
+    concurrency:
+      group: 'release-shared-state'
+      cancel-in-progress: false
+      queue: max
+    permissions:
+      contents: write  # Promote the draft GitHub release
+    timeout-minutes: 5
+    steps:
+      # yamllint disable-line rule:line-length
+      - uses: lfreleng-actions/harden-runner-block-action@2fed66c9c36c4687c31ca349b925b81ec629673f  # v0.15.0
+        with:
+          config: '@6d4a65c5601afd6c2fbe52bda4b0024b132f265d'  # v0.19.0
+          allow_list_summary: 'false'
+
+      - name: 'Harden runner (block)'
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
+        with:
+          egress-policy: 'block'
+          allowed-endpoints: >
+            ${{ env.CONNECTION_ALLOW_LIST }}
+
+      # A re-run after a successful promotion is a no-op, not an error
+      - name: 'Check the release state'
+        id: state
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.tag-validate.outputs.tag }}
+          REPO: ${{ github.repository }}
+        run: |
+          # Check the release state
+          set -euo pipefail
+          if [[ -z "${TAG}" ]]; then
+            echo "::error::TAG is empty; refusing to promote ❌" >&2
+            exit 1
+          fi
+          is_draft=$(gh release view "${TAG}" --repo "${REPO}" \
+            --json isDraft --jq .isDraft)
+          case "${TAG#v}" in
+            *-*) is_prerelease=true ;;
+            *) is_prerelease=false ;;
+          esac
+          # Only the newest final tag claims the 'latest' badge, read
+          # inside the shared queue so an older tag's run cannot take
+          # it back
+          latest=false
+          if [[ "${is_prerelease}" == false ]]; then
+            refs=$(gh api --paginate \
+              "repos/${REPO}/git/matching-refs/tags/v" \
+              --jq '.[].ref | ltrimstr("refs/tags/")')
+            newest=$(grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' <<< "${refs}" \
+              | sort -V | tail -n 1)
+            if [[ "${newest}" == "${TAG}" ]]; then
+              latest=true
+            else
+              echo "::warning::${newest} is newer; ${TAG} is not latest"
+            fi
+          fi
+          {
+            echo "is_draft=${is_draft}"
+            echo "is_prerelease=${is_prerelease}"
+            echo "latest=${latest}"
+          } >> "$GITHUB_OUTPUT"
+          echo "Release ${TAG}: draft=${is_draft}" \
+            "pre-release=${is_prerelease} latest=${latest}"
+
+      # A draft from release-drafter lacks the pre-release flag, and
+      # the promote action sets only draft and latest
+      - name: 'Set the pre-release flag'
+        if: steps.state.outputs.is_draft == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.tag-validate.outputs.tag }}
+          REPO: ${{ github.repository }}
+          IS_PRERELEASE: ${{ steps.state.outputs.is_prerelease }}
+        run: |
+          # Set the pre-release flag
+          set -euo pipefail
+          gh release edit "${TAG}" --repo "${REPO}" \
+            --prerelease="${IS_PRERELEASE}"
+
+      - name: 'Promote draft release'
+        if: steps.state.outputs.is_draft == 'true'
+        # yamllint disable-line rule:line-length
+        uses: lfreleng-actions/draft-release-promote-action@358264a2efca5ac359a90718373cbce18016bd27  # v0.1.7
+        with:
+          token: "${{ secrets.GITHUB_TOKEN }}"
+          tag: "${{ needs.tag-validate.outputs.tag }}"
+          latest: "${{ steps.state.outputs.latest }}"
+
+  ### Final summary ###
+  summary:
+    name: 'Release Summary'
+    needs:
+      - tag-validate
+      - build
+      - smoke
+      - sbom
+      - grype
+      - publish-ghcr
+      - publish-aliases
+      - sign-attest
+      - release-attach
+      - promote-release
+    runs-on: 'ubuntu-latest'
+    if: always()
+    permissions: {}
+    timeout-minutes: 2
+    steps:
+      - name: 'Build summary'
+        shell: bash
+        env:
+          TAG: ${{ needs.tag-validate.outputs.tag }}
+          R_TAG: ${{ needs.tag-validate.result }}
+          R_BUILD: ${{ needs.build.result }}
+          R_SMOKE: ${{ needs.smoke.result }}
+          R_SBOM: ${{ needs.sbom.result }}
+          R_GRYPE: ${{ needs.grype.result }}
+          R_PUBLISH: ${{ needs.publish-ghcr.result }}
+          R_ALIASES: ${{ needs.publish-aliases.result }}
+          R_SIGN: ${{ needs.sign-attest.result }}
+          R_ATTACH: ${{ needs.release-attach.result }}
+          R_PROMOTE: ${{ needs.promote-release.result }}
+        run: |
+          # Build summary
+          {
+            echo "# Release ${TAG}"
+            echo ""
+            echo "| Stage | Result |"
+            echo "| ----- | ------ |"
+            echo "| Tag validation | ${R_TAG} |"
+            echo "| Image build | ${R_BUILD} |"
+            echo "| Smoke test | ${R_SMOKE} |"
+            echo "| SBOM generation | ${R_SBOM} |"
+            echo "| Grype audit | ${R_GRYPE} |"
+            echo "| GHCR publish | ${R_PUBLISH} |"
+            echo "| GHCR aliases | ${R_ALIASES} |"
+            echo "| Sign + attest | ${R_SIGN} |"
+            echo "| Release assets | ${R_ATTACH} |"
+            echo "| Release promote | ${R_PROMOTE} |"
+            echo ""
+            if [[ "${R_PROMOTE}" == "success" ]]; then
+              echo "## ✅ Release published"
+              echo ""
+              echo '```sh'
+              echo "docker pull ${IMAGE}:${TAG}"
+              echo '```'
+            else
+              echo "## ❌ Release did not complete"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

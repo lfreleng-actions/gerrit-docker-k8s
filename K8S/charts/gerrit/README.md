@@ -811,9 +811,10 @@ reject.
 `plugins.healthcheck.enabled` adds `healthcheck` to the jars
 `site-init` copies, so the image must hold `healthcheck.jar` under
 `<pluginCatalogue.path>/plugins/`. It is off by default because the
-image catalogue does not ship that jar yet, and `site-init` fails on
-a missing one; the default becomes `true` once the image ships it
-(#231).
+chart's default image does not ship that jar yet, and `site-init`
+fails on a missing one; the published image's catalogue holds it, and
+the default becomes `true` once the chart points at that image
+(#246).
 
 With the plugin enabled, the readiness and liveness probes call
 `<urlPrefix>/config/server/healthcheck~status`, which answers 200 only

@@ -1061,6 +1061,64 @@ Run `python3 scripts/gerrit-site-export.py --help` for every option.
 The chart README covers the import side: how the import Job reads this
 archive into a new deployment.
 
+## Container Image for the Helm Chart
+
+Each release tag publishes a Gerrit image for the Helm chart to
+`ghcr.io/lfreleng-actions/gerrit-docker-k8s/gerrit`, tagged `vX.Y.Z`.
+A final release also moves `X.Y`, `X` and `latest`, each only while
+it is the newest final tag that alias covers, and only after the
+image is signed and attested. Release runs move the aliases one at a
+time, so a backport or a late or concurrent run for an older tag
+never rolls one back. A pre-release tag such as
+`v1.2.0-rc1` publishes only that tag, and its GitHub release is marked
+as a pre-release. The Action does not use this image: it still
+builds `Dockerfile` at run time.
+
+`Dockerfile.chart` builds the image on top of the one `Dockerfile`
+builds and adds the plugin catalogue the chart's `site-init` copies
+from, at `/var/gerrit-catalogue` (`pluginCatalogue.path`):
+
+- `lib/saml.jar`, and `plugins/` holding `its-jira`, `events-log`,
+  `analytics`, `reviewers`, `lfs`, `healthcheck` and
+  `metrics-reporter-prometheus`, downloaded from GerritForge CI's
+  `stable-3.13` builds and checked against the sha256 pins in
+  `docker/plugins.lock`
+- a link in `plugins/` to each core plugin the official image bundles
+  in `/var/gerrit/plugins`, such as `replication`, `hooks`, `webhooks`,
+  `delete-project` and `download-commands`
+
+`bash scripts/check-plugin-lock.sh` checks the lock's format (a
+pre-commit hook runs it), `--verify` downloads and compares every
+jar, and `--refresh [NAME...]` moves entries to their CI job's last
+successful build.
+
+The image's entrypoint starts Gerrit whatever the arguments, so
+override it for one-off commands:
+
+```bash
+docker run --rm --entrypoint java \
+  ghcr.io/lfreleng-actions/gerrit-docker-k8s/gerrit:<tag> \
+  -jar /var/gerrit/bin/gerrit.war version
+```
+
+The release workflow signs each image with cosign (keyless, through
+GitHub OIDC) and attaches SLSA build-provenance and SPDX SBOM
+attestations. The SBOM and Grype reports also ship as release assets.
+Verify an image before deploying it:
+
+```bash
+repo=lfreleng-actions/gerrit-docker-k8s
+image="ghcr.io/${repo}/gerrit"
+tag=v1.2.3
+workflow="https://github.com/${repo}/.github/workflows/release.yaml"
+cosign verify "${image}:${tag}" \
+  --certificate-identity "${workflow}@refs/tags/${tag}" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+gh attestation verify "oci://${image}:${tag}" --repo "${repo}"
+gh attestation verify "oci://${image}:${tag}" --repo "${repo}" \
+  --predicate-type https://spdx.dev/Document
+```
+
 ## Advanced Configuration
 
 ### Custom Gerrit Configuration
