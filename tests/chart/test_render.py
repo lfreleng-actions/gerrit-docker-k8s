@@ -32,7 +32,7 @@ ROOT = Path(__file__).resolve().parents[2]
 CHART = ROOT / "K8S" / "charts" / "gerrit"
 EXAMPLES = CHART / "examples"
 GOLDEN = Path(__file__).parent / "golden"
-CONFIG_FILES = ("gerrit.config", "jgit.config", "notedb.config")
+CONFIG_FILES = ("gerrit.config", "jgit.config", "notedb.config", "log4j.properties")
 # Rendered only when a feature enables it; compared where the example's
 # golden directory holds one
 OPTIONAL_CONFIG_FILES = ("replication.config",)
@@ -156,7 +156,8 @@ def test_rendered_config_matches_golden(example: str) -> None:
 @pytest.mark.parametrize("example", EXAMPLE_NAMES)
 def test_rendered_config_parses_as_git_config(example: str, tmp_path: Path) -> None:
     data = render_config(EXAMPLES / f"{example}.yaml")
-    for name in data:
+    # log4j.properties is a Java properties file, not a git config
+    for name in (n for n in data if n.endswith(".config")):
         path = tmp_path / name
         path.write_text(data[name], encoding="utf-8")
         proc = subprocess.run(

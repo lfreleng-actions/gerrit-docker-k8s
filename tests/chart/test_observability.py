@@ -134,7 +134,6 @@ def test_defaults_render_none_of_the_plugins(tmp_path: Path) -> None:
     assert kinds(docs, "CronJob") == []
 
 
-@pytest.mark.xfail(strict=True, reason="observability lands in #244")
 @needs_helm
 @pytest.mark.parametrize(("prefix", "path"), [("/r", "/r"), ("", "")])
 def test_healthcheck_points_readiness_and_liveness_at_status(
@@ -151,14 +150,12 @@ def test_healthcheck_points_readiness_and_liveness_at_status(
     }
 
 
-@pytest.mark.xfail(strict=True, reason="observability lands in #244")
 @needs_helm
 def test_healthcheck_config_turns_off_the_auth_check(tmp_path: Path) -> None:
     config = config_data(render(tmp_path, HEALTHCHECK))["healthcheck.config"]
     assert config == '[healthcheck "auth"]\n\tenabled = false\n'
 
 
-@pytest.mark.xfail(strict=True, reason="observability lands in #244")
 @needs_helm
 def test_healthcheck_config_renders_the_values(tmp_path: Path) -> None:
     values = {
@@ -181,7 +178,6 @@ def test_healthcheck_config_renders_the_values(tmp_path: Path) -> None:
     ]
 
 
-@pytest.mark.xfail(strict=True, reason="observability lands in #244")
 @needs_helm
 def test_plugin_values_stay_out_of_the_plugins_section(tmp_path: Path) -> None:
     values = {"plugins": {**HEALTHCHECK["plugins"], **METRICS["plugins"]}}
@@ -192,7 +188,6 @@ def test_plugin_values_stay_out_of_the_plugins_section(tmp_path: Path) -> None:
     assert plugins(docs) == ["healthcheck", "metrics-reporter-prometheus"]
 
 
-@pytest.mark.xfail(strict=True, reason="observability lands in #244")
 @needs_helm
 def test_metrics_token_comes_from_a_generated_secret(tmp_path: Path) -> None:
     docs = render(tmp_path, METRICS)
@@ -206,7 +201,6 @@ def test_metrics_token_comes_from_a_generated_secret(tmp_path: Path) -> None:
     assert ref == {"name": "gerrit-metrics", "key": "token"}
 
 
-@pytest.mark.xfail(strict=True, reason="observability lands in #244")
 @needs_helm
 def test_metrics_existing_secret_is_used(tmp_path: Path) -> None:
     values = {**METRICS, "metrics": {"existingSecret": "prom-token"}}
@@ -217,7 +211,6 @@ def test_metrics_existing_secret_is_used(tmp_path: Path) -> None:
     assert ref == {"name": "prom-token", "key": "token"}
 
 
-@pytest.mark.xfail(strict=True, reason="observability lands in #244")
 @needs_helm
 def test_service_monitor_needs_the_crd(tmp_path: Path) -> None:
     assert kinds(render(tmp_path, MONITOR), "ServiceMonitor") == []
@@ -226,7 +219,6 @@ def test_service_monitor_needs_the_crd(tmp_path: Path) -> None:
     assert monitor["metadata"]["name"] == "gerrit"
 
 
-@pytest.mark.xfail(strict=True, reason="observability lands in #244")
 @needs_helm
 def test_service_monitor_matches_golden() -> None:
     out = render_only(
@@ -246,7 +238,6 @@ def test_service_monitor_matches_golden() -> None:
     assert_matches_golden(out, "servicemonitor.golden")
 
 
-@pytest.mark.xfail(strict=True, reason="observability lands in #244")
 @needs_helm
 def test_service_monitor_selects_only_the_http_service(tmp_path: Path) -> None:
     docs = render(tmp_path, MONITOR, *CRD)
@@ -260,7 +251,6 @@ def test_service_monitor_selects_only_the_http_service(tmp_path: Path) -> None:
     assert selected == ["gerrit-http"]
 
 
-@pytest.mark.xfail(strict=True, reason="observability lands in #244")
 @needs_helm
 def test_service_monitor_needs_the_metrics_plugin(tmp_path: Path) -> None:
     values = {"metrics": {"serviceMonitor": {"enabled": True}}}
@@ -269,7 +259,6 @@ def test_service_monitor_needs_the_metrics_plugin(tmp_path: Path) -> None:
     )
 
 
-@pytest.mark.xfail(strict=True, reason="observability lands in #244")
 @needs_helm
 def test_network_policy_admits_the_scraper_namespace(tmp_path: Path) -> None:
     ingress = {"matchLabels": {"kubernetes.io/metadata.name": "traefik"}}
@@ -297,7 +286,6 @@ def test_network_policy_any_source_stays_open(tmp_path: Path) -> None:
     assert "from" not in http_ingress_rule(render(tmp_path, values))
 
 
-@pytest.mark.xfail(strict=True, reason="observability lands in #244")
 @needs_helm
 def test_log_section_defaults(tmp_path: Path) -> None:
     config = gerrit_config(render(tmp_path))
@@ -317,7 +305,6 @@ def log4j_properties(docs: list[Any]) -> dict[str, str]:
     return props
 
 
-@pytest.mark.xfail(strict=True, reason="observability lands in #244")
 @needs_helm
 def test_java_options_name_the_log4j_properties(tmp_path: Path) -> None:
     config = gerrit_config(render(tmp_path))
@@ -328,7 +315,6 @@ def test_java_options_name_the_log4j_properties(tmp_path: Path) -> None:
     )
 
 
-@pytest.mark.xfail(strict=True, reason="observability lands in #244")
 @needs_helm
 def test_log4j_sends_the_error_log_to_stderr_as_json(tmp_path: Path) -> None:
     props = log4j_properties(render(tmp_path))
@@ -340,7 +326,6 @@ def test_log4j_sends_the_error_log_to_stderr_as_json(tmp_path: Path) -> None:
     )
 
 
-@pytest.mark.xfail(strict=True, reason="observability lands in #244")
 @needs_helm
 @pytest.mark.parametrize(
     ("name", "layout"),
@@ -362,7 +347,6 @@ def test_log4j_keeps_the_request_logs_on_the_volume(
     assert props[f"{prefix}.layout"] == layout
 
 
-@pytest.mark.xfail(strict=True, reason="observability lands in #244")
 @needs_helm
 def test_log4j_follows_rotate_and_level(tmp_path: Path) -> None:
     values = {"log": {"rotate": False}, "logs": {"level": "warn"}}
@@ -373,7 +357,6 @@ def test_log4j_follows_rotate_and_level(tmp_path: Path) -> None:
         assert f"log4j.appender.{name}.DatePattern" not in props
 
 
-@pytest.mark.xfail(strict=True, reason="observability lands in #244")
 @needs_helm
 @pytest.mark.parametrize("key", ["jsonLogging", "textLogging"])
 def test_log4j_rejects_the_built_in_log_toggles(tmp_path: Path, key: str) -> None:
@@ -381,14 +364,12 @@ def test_log4j_rejects_the_built_in_log_toggles(tmp_path: Path, key: str) -> Non
     assert f"log.{key} is not supported" in message
 
 
-@pytest.mark.xfail(strict=True, reason="observability lands in #244")
 @needs_helm
 def test_log4j_rejects_an_unknown_level(tmp_path: Path) -> None:
     message = helm_fails(tmp_path, {"logs": {"level": "LOUD"}})
     assert "logs.level must be a log4j level" in message
 
 
-@pytest.mark.xfail(strict=True, reason="observability lands in #244")
 @needs_helm
 def test_log_cleanup_matches_golden() -> None:
     out = render_only(
@@ -401,7 +382,6 @@ def test_log_cleanup_matches_golden() -> None:
     assert_matches_golden(out, "log-cleanup-cronjob.golden")
 
 
-@pytest.mark.xfail(strict=True, reason="observability lands in #244")
 @needs_helm
 def test_log_cleanup_pod_is_isolated(tmp_path: Path) -> None:
     docs = render(tmp_path, CLEANUP)
@@ -439,7 +419,6 @@ def test_log_cleanup_pod_is_isolated(tmp_path: Path) -> None:
     "override",
     [("--set", "nameOverride=" + "n" * 63), ("--set", "fullnameOverride=" + "f" * 52)],
 )
-@pytest.mark.xfail(strict=True, reason="observability lands in #244")
 def test_log_cleanup_names_fit_kubernetes_limits(
     tmp_path: Path, override: tuple[str, str]
 ) -> None:
@@ -450,7 +429,6 @@ def test_log_cleanup_names_fit_kubernetes_limits(
     assert len(labels["app.kubernetes.io/name"]) <= 63
 
 
-@pytest.mark.xfail(strict=True, reason="observability lands in #244")
 @needs_helm
 @pytest.mark.parametrize("days", [-1, 1.5, "a week"])
 def test_log_cleanup_rejects_a_bad_retention(tmp_path: Path, days: object) -> None:
@@ -458,7 +436,6 @@ def test_log_cleanup_rejects_a_bad_retention(tmp_path: Path, days: object) -> No
     assert "logs.retentionDays must be a whole number of days" in message
 
 
-@pytest.mark.xfail(strict=True, reason="observability lands in #244")
 def test_metrics_token_lands_in_secure_config(tmp_path: Path) -> None:
     (tmp_path / "etc").mkdir()
     env = {**SECRET_ENV, "GERRIT_METRICS_BEARER_TOKEN": "fixed-metrics-token"}
@@ -494,7 +471,6 @@ def make_log(logs: Path, name: str, age_days: float) -> Path:
     return path
 
 
-@pytest.mark.xfail(strict=True, reason="observability lands in #244")
 def test_cleanup_deletes_only_old_rotated_logs(tmp_path: Path) -> None:
     logs = tmp_path / "logs"
     logs.mkdir()
@@ -518,7 +494,6 @@ def test_cleanup_deletes_only_old_rotated_logs(tmp_path: Path) -> None:
     assert sorted(proc.stdout.splitlines()[:-1]) == sorted(str(p) for p in old)
 
 
-@pytest.mark.xfail(strict=True, reason="observability lands in #244")
 @pytest.mark.parametrize("days", ["", "0", "07", "-1", "1.5", "ten"])
 def test_cleanup_rejects_a_bad_retention(tmp_path: Path, days: str) -> None:
     (tmp_path / "logs").mkdir()
@@ -527,7 +502,6 @@ def test_cleanup_rejects_a_bad_retention(tmp_path: Path, days: str) -> None:
     assert "LOG_RETENTION_DAYS" in proc.stderr
 
 
-@pytest.mark.xfail(strict=True, reason="observability lands in #244")
 def test_cleanup_without_a_log_directory(tmp_path: Path) -> None:
     proc = run_cleanup(tmp_path, "30")
     assert proc.returncode == 0, proc.stderr

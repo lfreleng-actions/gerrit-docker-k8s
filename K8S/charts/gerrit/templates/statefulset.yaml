@@ -3,7 +3,8 @@ SPDX-License-Identifier: Apache-2.0
 SPDX-FileCopyrightText: 2026 The Linux Foundation
 */}}
 {{- $fullname := include "gerrit.fullname" . }}
-{{- $probePath := printf "%s/config/server/version" (include "gerrit.urlPrefix" .) }}
+{{- $versionPath := printf "%s/config/server/version" (include "gerrit.urlPrefix" .) }}
+{{- $healthPath := include "gerrit.healthProbePath" . }}
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -158,6 +159,13 @@ spec:
                   name: {{ include "gerrit.itsJiraSecretName" . }}
                   key: password
             {{- end }}
+            {{- if include "gerrit.metricsEnabled" . }}
+            - name: GERRIT_METRICS_BEARER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "gerrit.metricsSecretName" . }}
+                  key: token
+            {{- end }}
           securityContext:
             {{- include "gerrit.containerSecurityContext" . | nindent 12 }}
           volumeMounts:
@@ -187,22 +195,25 @@ spec:
             - name: ssh
               containerPort: 29418
           # First boot runs init and index creation in site-init, but
-          # the daemon still loads caches and indexes before serving
+          # the daemon still loads caches and indexes before serving.
+          # The startup probe waits up to ten minutes for the version
+          # endpoint; readiness and liveness then call the healthcheck
+          # plugin when it is enabled.
           startupProbe:
             httpGet:
-              path: {{ $probePath }}
+              path: {{ $versionPath }}
               port: http
             periodSeconds: 10
             failureThreshold: 60
           readinessProbe:
             httpGet:
-              path: {{ $probePath }}
+              path: {{ $healthPath }}
               port: http
             periodSeconds: 10
             failureThreshold: 3
           livenessProbe:
             httpGet:
-              path: {{ $probePath }}
+              path: {{ $healthPath }}
               port: http
             periodSeconds: 30
             timeoutSeconds: 5

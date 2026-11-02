@@ -774,6 +774,15 @@ jobs:
             --namespace "$SMOKE_NAMESPACE" --fullname gerrit --url-prefix /r \
             --hook-log /var/gerrit/logs/smoke-hook.log
 
+      # The error log must reach the container's output as JSON, and
+      # the request logs must stay in logs/ on the site volume
+      - name: 'Verify the logs'
+        shell: bash
+        run: |
+          # Verify the logs
+          python3 "$CHART/files/scripts/verify-logs.py" \
+            --namespace "$SMOKE_NAMESPACE" --fullname gerrit
+
       # Enables the git gc CronJob with a full gc, runs it once on a
       # fixture repository of loose objects and checks it packed them
       - name: 'Run the git gc CronJob'

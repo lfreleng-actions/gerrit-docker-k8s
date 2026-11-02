@@ -169,6 +169,31 @@ gc:
 
 plugins:
   allowRemoteAdmin: false
+  # Health checks through the healthcheck plugin. Enabling it adds
+  # healthcheck to the plugins site-init copies from the image
+  # catalogue, renders etc/healthcheck.config and points the readiness
+  # and liveness probes at <urlPrefix>/config/server/healthcheck~status
+  # instead of the version endpoint. Off until the image catalogue
+  # ships healthcheck.jar (#231), since site-init fails on a missing
+  # jar; the default then becomes true. See "Health checks" in the
+  # chart README.
+  healthcheck:
+    enabled: false
+    # etc/healthcheck.config: keys under [healthcheck], such as
+    # timeout, and one map per check, such as querychanges, rendered
+    # as its [healthcheck "<check>"] subsection with enabled, timeout
+    # and the check's own keys. The auth check logs in with a fixed
+    # account a site rarely has, so it is off unless set here.
+    config:
+      auth:
+        enabled: false
+  # Prometheus metrics through the metrics-reporter-prometheus plugin.
+  # Enabling it adds the plugin to the plugins site-init copies from
+  # the image catalogue and writes the bearer token from
+  # metrics.existingSecret to secure.config. See "Metrics" in the
+  # chart README.
+  metrics-reporter-prometheus:
+    enabled: false
   # Jira integration through the its-jira plugin, which has its-base
   # compiled in. Enabling it adds its-jira to the plugins site-init
   # copies from the image catalogue and renders [its-jira],
@@ -191,6 +216,44 @@ plugins:
     # Appended verbatim to etc/its/actions-its-jira.config, for rules
     # and actions the toggles above do not cover
     extraConfig: ""
+
+# Scraping of plugins.metrics-reporter-prometheus
+metrics:
+  # Secret with key token, the bearer token Prometheus presents. ""
+  # creates <fullname>-metrics with a random token; under Argo CD name
+  # a pre-created Secret.
+  existingSecret: ""
+  # A Prometheus Operator ServiceMonitor for the <fullname>-http
+  # Service, rendered only where the cluster serves the
+  # monitoring.coreos.com/v1 API
+  serviceMonitor:
+    enabled: false
+    labels: {}                    # e.g. the release label Prometheus selects
+    interval: 60s
+    scrapeTimeout: ""             # "" for Prometheus' default
+
+# [log] in gerrit.config. The chart configures logging through
+# etc/log4j.properties: the error log goes to the container's stderr
+# as JSON, one object per line, and httpd_log and sshd_log stay in
+# logs/ on the site volume for audit. Gerrit ignores jsonLogging and
+# textLogging for its error log under that file, but they rename the
+# request log appenders it looks up and can disable request logging,
+# so the chart refuses both. See "Logs" in the chart README.
+log:
+  rotate: true                    # daily, with the date in the name
+  compress: true                  # gzip each rotated log
+
+# The container's JSON error log, and retention of the rotated logs
+# under logs/ on the site volume
+logs:
+  # Lowest log4j level the error log writes: ERROR, WARN, INFO, DEBUG...
+  level: INFO
+  # Delete rotated logs older than this many days from the
+  # <fullname>-log-cleanup CronJob; 0 keeps them and renders no CronJob
+  retentionDays: 0
+  schedule: "30 4 * * *"
+  timeZone: ""                    # e.g. Etc/UTC; "" for the controller's
+  resources: {}
 
 # Server-side hooks through the hooks plugin. Enabling it adds "hooks"
 # to the plugins site-init copies from the image catalogue and renders
@@ -356,6 +419,11 @@ networkPolicy:
   #   matchLabels:
   #     kubernetes.io/metadata.name: traefik
   ingressNamespaceSelector: {}
+  # Namespaces of the Prometheus that scrapes the metrics plugin, as a
+  # label selector, admitted to port 8080 beside those
+  # ingressNamespaceSelector selects. Used only with that selector set
+  # and plugins.metrics-reporter-prometheus enabled; {} adds none.
+  metricsNamespaceSelector: {}
 
 # DNS domain of the cluster, for the Gerrit pod's name the admin
 # toolbox looks up

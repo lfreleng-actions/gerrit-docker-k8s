@@ -41,6 +41,13 @@ spec:
       from:
         - namespaceSelector:
             {{- toYaml . | nindent 12 }}
+        {{- if include "gerrit.metricsEnabled" $ }}
+        {{- with $.Values.networkPolicy.metricsNamespaceSelector }}
+        # The Prometheus that scrapes the metrics plugin
+        - namespaceSelector:
+            {{- toYaml . | nindent 12 }}
+        {{- end }}
+        {{- end }}
       {{- end }}
     - ports:
         - protocol: TCP

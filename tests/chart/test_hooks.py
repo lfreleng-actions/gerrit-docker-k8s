@@ -354,7 +354,6 @@ def test_site_init_installs_hooks_and_ini(image: dict[str, str]) -> None:
     )
 
 
-@pytest.mark.xfail(strict=True, reason="observability lands in #244")
 def test_site_init_installs_log4j_properties(image: dict[str, str]) -> None:
     rendered = Path(image["GERRIT_RENDERED_CONFIG"]) / "log4j.properties"
     rendered.write_text("log4j.rootLogger=INFO, stderr\n", encoding="utf-8")

@@ -16,7 +16,7 @@ ConfigMap. Keys the chart derives win over the same key in values.
   "sshd" (dict "advertisedAddress" (include "gerrit.sshAdvertisedAddress" .))
   "cache" (dict "directory" "cache")
   "container" (dict "javaOptions" (include "gerrit.javaOptions" . | fromJsonArray)) -}}
-{{- $sections := list "gerrit" "httpd" "sshd" "auth" "sendemail" "container" "cache" "change" "receive" "download" "index" "gc" "plugins" "user" "trackingid" "accounts" "suggest" -}}
+{{- $sections := list "gerrit" "httpd" "sshd" "auth" "sendemail" "container" "cache" "change" "receive" "download" "index" "gc" "plugins" "log" "user" "trackingid" "accounts" "suggest" -}}
 {{- if include "gerrit.samlEnabled" . }}
 {{- /* The SAML filter authenticates each request and hands Gerrit the
 account in the headers its HTTP authentication reads. The filter needs
@@ -53,7 +53,7 @@ header set. */}}
 {{- $values := deepCopy (default dict (index $v .)) -}}
 {{- if has . (list "gerrit" "saml" "hooks" "its-jira" "plugin") }}{{ $values = dict }}{{ end -}}
 {{- if eq . "auth" }}{{ $values = omit $values "saml" }}{{ end -}}
-{{- if eq . "plugins" }}{{ $values = omit $values "its-jira" }}{{ end -}}
+{{- if eq . "plugins" }}{{ $values = omit $values "its-jira" "healthcheck" "metrics-reporter-prometheus" }}{{ end -}}
 {{- if eq . "gc" }}
 {{- $values = omit $values "cronJob" -}}
 {{- if dig "cronJob" "enabled" false $v.gc }}

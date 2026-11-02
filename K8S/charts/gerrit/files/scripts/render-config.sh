@@ -35,6 +35,10 @@ fi
 if [ -n "${GERRIT_ITS_JIRA_PASSWORD:-}" ]; then
   git config -f "$tmp" its-jira.password "$GERRIT_ITS_JIRA_PASSWORD"
 fi
+if [ -n "${GERRIT_METRICS_BEARER_TOKEN:-}" ]; then
+  git config -f "$tmp" plugin.metrics-reporter-prometheus.prometheusBearerToken \
+    "$GERRIT_METRICS_BEARER_TOKEN"
+fi
 mv -f "$tmp" "$secure"
 
 echo "Wrote $secure"

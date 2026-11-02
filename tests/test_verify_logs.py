@@ -16,8 +16,6 @@ from types import ModuleType
 
 import pytest
 
-pytestmark = pytest.mark.xfail(strict=True, reason="verify-logs.py lands in #244")
-
 SCRIPT = (
     Path(__file__).resolve().parents[1]
     / "K8S"

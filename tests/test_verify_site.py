@@ -422,7 +422,6 @@ def _check(result: str) -> dict[str, object]:
     return {"result": result, "ts": 1, "elapsed": 2}
 
 
-@pytest.mark.xfail(strict=True, reason="observability lands in #244")
 def test_healthcheck_passes(
     gerrit: tuple[StubGerrit, str], verify_health: ModuleType
 ) -> None:
@@ -440,7 +439,6 @@ def test_healthcheck_passes(
     assert verify_health.check_healthcheck(base) == "passed: jgit, querychanges"
 
 
-@pytest.mark.xfail(strict=True, reason="observability lands in #244")
 def test_healthcheck_names_the_failing_checks(
     gerrit: tuple[StubGerrit, str],
     verify_health: ModuleType,
@@ -461,7 +459,6 @@ def test_healthcheck_names_the_failing_checks(
         verify_health.check_healthcheck(base)
 
 
-@pytest.mark.xfail(strict=True, reason="observability lands in #244")
 def test_healthcheck_fails_on_an_error_status_with_passing_checks(
     gerrit: tuple[StubGerrit, str],
     verify_health: ModuleType,
@@ -472,7 +469,6 @@ def test_healthcheck_fails_on_an_error_status_with_passing_checks(
         verify_health.check_healthcheck(base)
 
 
-@pytest.mark.xfail(strict=True, reason="observability lands in #244")
 def test_healthcheck_fails_without_the_plugin(
     gerrit: tuple[StubGerrit, str],
     verify_health: ModuleType,
@@ -482,7 +478,6 @@ def test_healthcheck_fails_without_the_plugin(
         verify_health.check_healthcheck(base)
 
 
-@pytest.mark.xfail(strict=True, reason="observability lands in #244")
 def test_healthcheck_fails_on_a_report_without_checks(
     gerrit: tuple[StubGerrit, str],
     verify_health: ModuleType,
@@ -493,7 +488,6 @@ def test_healthcheck_fails_on_a_report_without_checks(
         verify_health.check_healthcheck(base)
 
 
-@pytest.mark.xfail(strict=True, reason="observability lands in #244")
 def test_parse_args_healthcheck(verify_health: ModuleType) -> None:
     args = verify_health.parse_args(["--namespace", "ns"])
     assert (args.fullname, args.url_prefix, args.local_port) == ("gerrit", "/r", 18080)

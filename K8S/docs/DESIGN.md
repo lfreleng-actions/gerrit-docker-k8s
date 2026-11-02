@@ -112,9 +112,10 @@ must succeed before the next starts:
 3. `site-init`: copies `gerrit.war` and `gerrit.sh` from the image,
    replaces the site's plugin and library jars with those named in
    `pluginCatalogue`, and installs the rendered `gerrit.config`,
-   `jgit.config`, `notedb.config`, with replication enabled
-   `replication.config`, and with its-jira enabled
-   `etc/its/actions-its-jira.config` (section 1.4). On a site without
+   `jgit.config`, `notedb.config`, `log4j.properties`, with
+   replication enabled `replication.config`, with its-jira enabled
+   `etc/its/actions-its-jira.config`, and with healthcheck enabled
+   `etc/healthcheck.config` (section 1.4). On a site without
    the repository `gerrit.allProjects` names (`All-Projects` by
    default) it then runs
    `gerrit init --batch --no-auto-start` on that configuration, so a
@@ -126,9 +127,15 @@ must succeed before the next starts:
    installs `gerrit_to_platform.ini` from its Secret with mode `0600`.
 4. `render-config`: writes `etc/secure.config` from the Secrets
    (section 1.4).
-5. `gerrit`: runs `bin/gerrit.sh run`. A startup probe allows ten
-   minutes; readiness and liveness probes call
-   `<prefix>/config/server/version`.
+5. `gerrit`: runs `bin/gerrit.sh run`. `container.javaOptions` names
+   the chart's `etc/log4j.properties` with `-Dlog4j.configuration`, so
+   Gerrit skips its built-in loggers: the error log goes to the
+   container's stderr as JSON, one object per line, and appenders named
+   `httpd_log` and `sshd_log` keep the request logs in `logs/` on the
+   site volume. A startup probe allows ten minutes for
+   `<prefix>/config/server/version`; readiness and liveness probes call
+   `<prefix>/config/server/healthcheck~status` with
+   `plugins.healthcheck.enabled`, and the version endpoint otherwise.
 
 An init container that fails stops the sequence, so Gerrit never
 starts on a site that an import left half-written or a configuration
@@ -341,7 +348,12 @@ initialises the site.
   schedule itself, where the chart enables it. The first is the
   optional git gc CronJob (#243), `gc.cronJob.enabled`: it replaces
   Gerrit's built-in gc scheduler, which the chart turns off in
-  `gerrit.config` while the CronJob is enabled.
+  `gerrit.config` while the CronJob is enabled. The second is the
+  optional log cleanup CronJob (#244), rendered when
+  `logs.retentionDays` is above zero: it deletes the rotated logs
+  under `logs/` older than that many days, and leaves the logs Gerrit
+  still writes alone. It has its own deny-all `NetworkPolicy`, as the
+  gc CronJob does.
 
 Both need the site volume, so they run on the node that holds it.
 
@@ -374,6 +386,10 @@ then allows:
 - ingress to port 8080 (HTTP), from the namespaces
   `networkPolicy.ingressNamespaceSelector` selects when it is set,
   such as the Ingress controller's, and from any source otherwise;
+  with that selector and `plugins.metrics-reporter-prometheus.enabled`
+  set, also from the namespaces
+  `networkPolicy.metricsNamespaceSelector` selects, for the
+  Prometheus that scrapes the metrics plugin;
 - ingress to port 29418 (SSH) from any source;
 - egress to cluster DNS, UDP and TCP port 53.
 
@@ -614,6 +630,7 @@ sources belong to the deployment, not this document.
 | `backup.existingSecret` | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | Backup CronJob | The encryption recipient is public and lives in values. Optional where the platform supplies workload identity. |
 | `hooks.g2p.existingSecret` | `gerrit_to_platform.ini` | `site-init` | Generated as `<fullname>-g2p` when empty, with the key empty for the operator to fill in. Mounted with mode `0400` into `site-init`, which installs it with mode `0600` as `.config/gerrit_to_platform/gerrit_to_platform.ini` on the site, where the hooks gerrit-to-platform runs read it through `XDG_CONFIG_HOME`. |
 | `plugins.its-jira.existingSecret` | `username`, `password` | `render-config` | Generated as `<fullname>-its-jira` when empty, with both keys empty for the operator to fill in. Passed as `GERRIT_ITS_JIRA_USERNAME` and `GERRIT_ITS_JIRA_PASSWORD` and written, when not empty, to `its-jira.username` and `its-jira.password` in `etc/secure.config`. The password may be a Jira API token. |
+| `metrics.existingSecret` | `token` | `render-config`, Prometheus | Generated as `<fullname>-metrics` with a random `token` when empty, with `plugins.metrics-reporter-prometheus.enabled`. Passed as `GERRIT_METRICS_BEARER_TOKEN` and written to `plugin.metrics-reporter-prometheus.prometheusBearerToken` in `etc/secure.config`; the chart's `ServiceMonitor` names the same key as the bearer token Prometheus presents. Under Argo CD it must be an `existingSecret` (section 6.2), or each sync replaces the token. |
 | `toolbox.existingSecret` | `ssh-privatekey` | Admin toolbox | Identity of an administrator account used from the toolbox. |
 
 SSH host keys are not in this table: they are site state, not
@@ -705,6 +722,8 @@ reference; each updates the section it changes.
 - #256: the export tool leaving out `.chart/` (sections 1.7 and 3.1).
 - #262: the admin toolbox and its maintenance helpers (section 1.9).
 - #268: SAML group membership sync (section 1.4).
+- #244: health checks, metrics, JSON container logs and log retention
+  (sections 1.3, 1.8, 1.10 and 5).
 - The other sub-issues of #228 cover narrowing the egress default to
   the per-feature destinations, the maintenance CronJob and the Argo
   CD example.
