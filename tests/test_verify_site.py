@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: 2026 The Linux Foundation
 
-"""Tests for verify-site.py and verify-hook.py, against a stub Gerrit."""
+"""Tests for verify-site.py and its companion scripts, against a stub Gerrit."""
 
 from __future__ import annotations
 
@@ -53,6 +53,8 @@ class StubGerrit:
     requests: list[tuple[str, str, str, str]] = field(default_factory=list)
     projects: dict[str, dict[str, object]] = field(default_factory=dict)
     changes: list[dict[str, object]] = field(default_factory=list)
+    # Status and report of the healthcheck plugin; None when not loaded
+    healthcheck: tuple[int, dict[str, object]] | None = None
 
 
 def _handler(stub: StubGerrit) -> type[BaseHTTPRequestHandler]:
@@ -131,6 +133,13 @@ def _handler(stub: StubGerrit) -> type[BaseHTTPRequestHandler]:
             elif method == "GET" and url.path == f"{p}/config/server/info":
                 payload = json.dumps(stub.server_info).encode()
                 self._reply(200, b")]}'\n" + payload)
+            elif (
+                method == "GET"
+                and url.path == f"{p}/config/server/healthcheck~status"
+                and stub.healthcheck is not None
+            ):
+                code, report = stub.healthcheck
+                self._reply(code, b")]}'\n" + json.dumps(report).encode())
             elif method == "GET" and url.path == f"{p}/a/accounts/self":
                 session = self._session()
                 if session is None:
@@ -395,3 +404,96 @@ def test_hook_parse_args(verify_hook: ModuleType) -> None:
     assert (args.hook_log, args.fullname, args.timeout) == ("/var/h.log", "gerrit", 120)
     with pytest.raises(SystemExit):
         verify_hook.parse_args(["--namespace", "ns"])
+
+
+@pytest.fixture(scope="module")
+def verify_health() -> ModuleType:
+    """Load verify-health.py, which loads its own copy of verify-site.py."""
+    spec = importlib.util.spec_from_file_location(
+        "verify_health", SCRIPT.with_name("verify-health.py")
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _check(result: str) -> dict[str, object]:
+    return {"result": result, "ts": 1, "elapsed": 2}
+
+
+@pytest.mark.xfail(strict=True, reason="observability lands in #244")
+def test_healthcheck_passes(
+    gerrit: tuple[StubGerrit, str], verify_health: ModuleType
+) -> None:
+    stub, base = gerrit
+    stub.healthcheck = (
+        200,
+        {
+            "ts": 1,
+            "elapsed": 9,
+            "querychanges": _check("passed"),
+            "jgit": _check("passed"),
+            "auth": _check("disabled"),
+        },
+    )
+    assert verify_health.check_healthcheck(base) == "passed: jgit, querychanges"
+
+
+@pytest.mark.xfail(strict=True, reason="observability lands in #244")
+def test_healthcheck_names_the_failing_checks(
+    gerrit: tuple[StubGerrit, str],
+    verify_health: ModuleType,
+) -> None:
+    stub, base = gerrit
+    stub.healthcheck = (
+        500,
+        {
+            "jgit": _check("passed"),
+            "querychanges": _check("timeout"),
+            "projectslist": _check("failed"),
+        },
+    )
+    with pytest.raises(
+        verify_health.CheckError,
+        match="HTTP 500, failing checks: projectslist failed, querychanges timeout",
+    ):
+        verify_health.check_healthcheck(base)
+
+
+@pytest.mark.xfail(strict=True, reason="observability lands in #244")
+def test_healthcheck_fails_on_an_error_status_with_passing_checks(
+    gerrit: tuple[StubGerrit, str],
+    verify_health: ModuleType,
+) -> None:
+    stub, base = gerrit
+    stub.healthcheck = (500, {"jgit": _check("passed")})
+    with pytest.raises(verify_health.CheckError, match="HTTP 500$"):
+        verify_health.check_healthcheck(base)
+
+
+@pytest.mark.xfail(strict=True, reason="observability lands in #244")
+def test_healthcheck_fails_without_the_plugin(
+    gerrit: tuple[StubGerrit, str],
+    verify_health: ModuleType,
+) -> None:
+    _, base = gerrit
+    with pytest.raises(verify_health.CheckError, match="HTTP 404"):
+        verify_health.check_healthcheck(base)
+
+
+@pytest.mark.xfail(strict=True, reason="observability lands in #244")
+def test_healthcheck_fails_on_a_report_without_checks(
+    gerrit: tuple[StubGerrit, str],
+    verify_health: ModuleType,
+) -> None:
+    stub, base = gerrit
+    stub.healthcheck = (200, {"ts": 1, "elapsed": 2})
+    with pytest.raises(verify_health.CheckError, match="reported no checks"):
+        verify_health.check_healthcheck(base)
+
+
+@pytest.mark.xfail(strict=True, reason="observability lands in #244")
+def test_parse_args_healthcheck(verify_health: ModuleType) -> None:
+    args = verify_health.parse_args(["--namespace", "ns"])
+    assert (args.fullname, args.url_prefix, args.local_port) == ("gerrit", "/r", 18080)

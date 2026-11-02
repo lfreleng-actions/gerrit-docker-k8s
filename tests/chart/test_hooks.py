@@ -11,7 +11,8 @@ and with a mixed set of plugin toggles, with
 gerrit-to-platform Secret and mounts, and the render failures for bad
 values. Then runs ``site-init.sh`` against a scratch site, with stand-ins
 for the image's files, to check the hooks directory and the INI it
-installs. The default render must carry none of it.
+installs, and that it installs ``etc/log4j.properties``. The default
+render must carry none of the hooks.
 
 After an intended change to the rendered output, regenerate the
 goldens with ``UPDATE_GOLDEN=1 uv run pytest tests/chart`` and review
@@ -285,7 +286,7 @@ def image(tmp_path: Path) -> dict[str, str]:
     rendered = tmp_path / "rendered"
     rendered.mkdir()
     (rendered / "gerrit.config").write_text("[gerrit]\n\tbasePath = git\n")
-    for name in ("jgit.config", "notedb.config"):
+    for name in ("jgit.config", "notedb.config", "log4j.properties"):
         (rendered / name).write_text("", encoding="utf-8")
     scripts = tmp_path / "hook-scripts"
     scripts.mkdir()
@@ -351,6 +352,16 @@ def test_site_init_installs_hooks_and_ini(image: dict[str, str]) -> None:
     assert os.readlink(g2p / "replication.config") == (
         "/var/gerrit/etc/replication.config"
     )
+
+
+@pytest.mark.xfail(strict=True, reason="observability lands in #244")
+def test_site_init_installs_log4j_properties(image: dict[str, str]) -> None:
+    rendered = Path(image["GERRIT_RENDERED_CONFIG"]) / "log4j.properties"
+    rendered.write_text("log4j.rootLogger=INFO, stderr\n", encoding="utf-8")
+    proc = run_site_init(image)
+    assert proc.returncode == 0, proc.stderr
+    installed = Path(image["GERRIT_SITE"]) / "etc" / "log4j.properties"
+    assert installed.read_text(encoding="utf-8") == rendered.read_text(encoding="utf-8")
 
 
 def test_site_init_removes_what_is_disabled(image: dict[str, str]) -> None:
