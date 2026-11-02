@@ -764,6 +764,16 @@ jobs:
             --namespace "$SMOKE_NAMESPACE" --fullname gerrit \
             --url-prefix /r --auth-type DEVELOPMENT_BECOME_ANY_ACCOUNT
 
+      # values-local-smoke.yaml installs a stub patchset-created hook;
+      # a change created over REST must reach it
+      - name: 'Verify the hooks'
+        shell: bash
+        run: |
+          # Verify the hooks
+          python3 "$CHART/files/scripts/verify-hook.py" \
+            --namespace "$SMOKE_NAMESPACE" --fullname gerrit --url-prefix /r \
+            --hook-log /var/gerrit/logs/smoke-hook.log
+
       # Enables the git gc CronJob with a full gc, runs it once on a
       # fixture repository of loose objects and checks it packed them
       - name: 'Run the git gc CronJob'

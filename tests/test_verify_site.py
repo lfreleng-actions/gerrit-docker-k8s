@@ -34,7 +34,6 @@ sys.modules["verify_site"] = verify_site
 _spec.loader.exec_module(verify_site)
 
 XSRF = "xsrf-token"
-NOT_YET = pytest.mark.xfail(strict=True, reason="verify-hook.py does not exist yet")
 
 
 @dataclass
@@ -310,7 +309,6 @@ def verify_hook() -> ModuleType:
     return module
 
 
-@NOT_YET
 def test_test_change_is_created_in_a_new_project(
     gerrit: tuple[StubGerrit, str], verify_hook: ModuleType
 ) -> None:
@@ -347,7 +345,6 @@ def _fake_kubectl(
     return calls
 
 
-@NOT_YET
 def test_hook_check_finds_the_project(
     gerrit: tuple[StubGerrit, str],
     verify_hook: ModuleType,
@@ -377,7 +374,6 @@ def test_hook_check_finds_the_project(
     )
 
 
-@NOT_YET
 def test_hook_check_ignores_other_projects(
     gerrit: tuple[StubGerrit, str],
     verify_hook: ModuleType,
@@ -394,7 +390,6 @@ def test_hook_check_ignores_other_projects(
         verify_hook.check_hook(base, "ns", "gerrit-0", "/var/hook.log", 0)
 
 
-@NOT_YET
 def test_hook_parse_args(verify_hook: ModuleType) -> None:
     args = verify_hook.parse_args(["--namespace", "ns", "--hook-log", "/var/h.log"])
     assert (args.hook_log, args.fullname, args.timeout) == ("/var/h.log", "gerrit", 120)

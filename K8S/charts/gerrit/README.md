@@ -970,6 +970,20 @@ python3 K8S/charts/gerrit/files/scripts/verify-site.py \
   --auth-type DEVELOPMENT_BECOME_ANY_ACCOUNT
 ```
 
+`values-local-smoke.yaml` enables `hooks` with a stub
+`patchset-created` script that appends its arguments to
+`/var/gerrit/logs/smoke-hook.log`. `files/scripts/verify-hook.py`
+creates a project with a change for review over REST, which fires the
+same event as a push to `refs/for/main`, and waits for the stub to log
+that project. It reuses the helpers of `verify-site.py` and needs the
+same development authentication:
+
+```sh
+python3 K8S/charts/gerrit/files/scripts/verify-hook.py \
+  --namespace gerrit-smoke --fullname gerrit --url-prefix /r \
+  --hook-log /var/gerrit/logs/smoke-hook.log
+```
+
 The `chart-smoke` job in `.github/workflows/testing.yaml` runs this
 sequence on every pull request. It then upgrades the release with
 `gc.cronJob.enabled`, runs the CronJob once with
