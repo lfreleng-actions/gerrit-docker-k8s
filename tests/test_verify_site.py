@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: 2026 The Linux Foundation
 
-"""Tests for verify-site.py's login and server info checks, against a stub Gerrit."""
+"""Tests for verify-site.py and verify-hook.py, against a stub Gerrit."""
 
 from __future__ import annotations
 
@@ -10,10 +10,11 @@ import json
 import sys
 import threading
 import urllib.parse
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 
@@ -50,6 +51,8 @@ class StubGerrit:
         }
     )
     requests: list[tuple[str, str, str, str]] = field(default_factory=list)
+    projects: dict[str, dict[str, object]] = field(default_factory=dict)
+    changes: list[dict[str, object]] = field(default_factory=list)
 
 
 def _handler(stub: StubGerrit) -> type[BaseHTTPRequestHandler]:
@@ -135,14 +138,41 @@ def _handler(stub: StubGerrit) -> type[BaseHTTPRequestHandler]:
                 else:
                     payload = json.dumps({"_account_id": session}).encode()
                     self._reply(200, b")]}'\n" + payload)
+            elif url.path.startswith(f"{p}/projects/") or url.path == f"{p}/changes/":
+                self._write(method, url.path.removeprefix(p), body)
             else:
                 self._reply(404)
+
+        def _write(self, method: str, path: str, body: str) -> None:
+            """Create a project or a change as the signed-in account."""
+            if self._session() is None or self.headers.get("X-Gerrit-Auth") != XSRF:
+                self._reply(403)
+                return
+            payload = json.loads(body)
+            reply: dict[str, object]
+            if method == "PUT" and path.startswith("/projects/"):
+                name = path.removeprefix("/projects/")
+                stub.projects[name] = payload
+                reply = {"id": name, "name": name}
+            elif method == "POST" and path == "/changes/":
+                if payload.get("project") not in stub.projects:
+                    self._reply(404)
+                    return
+                stub.changes.append(payload)
+                reply = {"project": payload["project"], "_number": len(stub.changes)}
+            else:
+                self._reply(405)
+                return
+            self._reply(201, b")]}'\n" + json.dumps(reply).encode())
 
         def do_GET(self) -> None:
             self._route("GET")
 
         def do_POST(self) -> None:
             self._route("POST")
+
+        def do_PUT(self) -> None:
+            self._route("PUT")
 
     return Handler
 
@@ -258,3 +288,110 @@ def test_parse_args_server_info_options() -> None:
     assert (args.auth_type, args.download_scheme) == ("HTTP", ["ssh", "http"])
     defaults = verify_site.parse_args(["--namespace", "ns"])
     assert (defaults.auth_type, defaults.download_scheme) == (None, [])
+
+
+def test_marker_project_is_created(gerrit: tuple[StubGerrit, str]) -> None:
+    stub, _ = gerrit
+    name = verify_site.create_marker(gerrit[1])
+    assert name.startswith("verify-site-")
+    assert stub.projects == {name: {"description": "verify-site.py persistence marker"}}
+
+
+@pytest.fixture(scope="module")
+def verify_hook() -> ModuleType:
+    """Load verify-hook.py, which loads its own copy of verify-site.py."""
+    spec = importlib.util.spec_from_file_location(
+        "verify_hook", SCRIPT.with_name("verify-hook.py")
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_test_change_is_created_in_a_new_project(
+    gerrit: tuple[StubGerrit, str], verify_hook: ModuleType
+) -> None:
+    stub, base = gerrit
+    name = verify_hook.create_test_change(base)
+    assert name.startswith("verify-hook-")
+    assert stub.projects[name] == {
+        "description": "verify-hook.py hook check",
+        "create_empty_commit": True,
+        "branches": ["main"],
+    }
+    assert stub.changes == [
+        {"project": name, "branch": "main", "subject": "verify-hook.py check"}
+    ]
+
+
+def _fake_kubectl(
+    verify_hook: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    log: Callable[[int], str | None],
+) -> list[tuple[str, ...]]:
+    """Serve ``log(call number)`` as the hook log, None failing; return calls."""
+    calls: list[tuple[str, ...]] = []
+
+    def fake_kubectl(namespace: str, *args: str, timeout: float = 120) -> str:
+        calls.append((namespace, *args))
+        reply = log(len(calls))
+        if reply is None:
+            raise verify_hook.CheckError("no such file")
+        return reply
+
+    monkeypatch.setattr(verify_hook.site, "kubectl", fake_kubectl)
+    monkeypatch.setattr(verify_hook.time, "sleep", lambda _: None)
+    return calls
+
+
+def test_hook_check_finds_the_project(
+    gerrit: tuple[StubGerrit, str],
+    verify_hook: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stub, base = gerrit
+
+    def log(call: int) -> str | None:
+        if call == 1:
+            return None
+        project = next(iter(stub.projects))
+        return f"--change I1 --project {project} --branch main\n"
+
+    calls = _fake_kubectl(verify_hook, monkeypatch, log)
+    project = verify_hook.check_hook(base, "ns", "gerrit-0", "/var/hook.log", 30)
+    assert project == next(iter(stub.projects))
+    assert len(calls) == 2
+    assert calls[0] == (
+        "ns",
+        "exec",
+        "gerrit-0",
+        "-c",
+        "gerrit",
+        "--",
+        "cat",
+        "/var/hook.log",
+    )
+
+
+def test_hook_check_ignores_other_projects(
+    gerrit: tuple[StubGerrit, str],
+    verify_hook: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stub, base = gerrit
+
+    def log(_: int) -> str:
+        project = next(iter(stub.projects))
+        return f"--project {project}-other --branch main\n"
+
+    _fake_kubectl(verify_hook, monkeypatch, log)
+    with pytest.raises(verify_hook.CheckError, match="no hook call in /var/hook.log"):
+        verify_hook.check_hook(base, "ns", "gerrit-0", "/var/hook.log", 0)
+
+
+def test_hook_parse_args(verify_hook: ModuleType) -> None:
+    args = verify_hook.parse_args(["--namespace", "ns", "--hook-log", "/var/h.log"])
+    assert (args.hook_log, args.fullname, args.timeout) == ("/var/h.log", "gerrit", 120)
+    with pytest.raises(SystemExit):
+        verify_hook.parse_args(["--namespace", "ns"])

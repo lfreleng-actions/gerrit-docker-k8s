@@ -112,13 +112,18 @@ must succeed before the next starts:
 3. `site-init`: copies `gerrit.war` and `gerrit.sh` from the image,
    replaces the site's plugin and library jars with those named in
    `pluginCatalogue`, and installs the rendered `gerrit.config`,
-   `jgit.config`, `notedb.config` and, with replication enabled,
-   `replication.config` (section 1.4). On a site without
+   `jgit.config`, `notedb.config`, with replication enabled
+   `replication.config`, and with its-jira enabled
+   `etc/its/actions-its-jira.config` (section 1.4). On a site without
    the repository `gerrit.allProjects` names (`All-Projects` by
    default) it then runs
    `gerrit init --batch --no-auto-start` on that configuration, so a
    restart never re-initialises a site, and installs the rendered
-   files again over whatever init added.
+   files again over whatever init added. With `hooks.enabled` it then
+   replaces the files at the top of the hooks directory with the
+   `hooks.scripts` entries and, with `hooks.g2p.enabled`, links to the
+   gerrit-to-platform entry points in `/opt/gerrit-tools/bin`, and
+   installs `gerrit_to_platform.ini` from its Secret with mode `0600`.
 4. `render-config`: writes `etc/secure.config` from the Secrets
    (section 1.4).
 5. `gerrit`: runs `bin/gerrit.sh run`. A startup probe allows ten
@@ -390,12 +395,15 @@ and `adminUrl`, or to its scheme's default (22 for SSH). So is the
 SAML rule: with `auth.saml.enabled` and `auth.saml.metadataUrl` set,
 the chart allows TCP egress to the port that URL names, or to 80 for
 `http://`; an `https://` URL on the default port needs no rule beyond
-TCP 443.
+TCP 443. So is the Jira rule: with `plugins.its-jira.enabled`, the
+chart allows TCP egress to the port of `plugins.its-jira.url`, with
+the same defaults.
 
 | Feature | Egress | Rendered when |
 | ------- | ------ | ------------- |
 | Site import and backup from an object store | HTTPS, TCP 443 | `siteImport` or `backup` reads or writes an object store |
 | SAML identity provider metadata | The port of `auth.saml.metadataUrl`; TCP 443 for an `https` URL on the default port | `auth.saml.metadataUrl` is set (#235) |
+| Jira issue tracker | The port of `plugins.its-jira.url`; TCP 443 for an `https` URL on the default port | `plugins.its-jira.enabled` |
 | Mail | The SMTP relay's port | Mail is configured |
 | Replication | SSH or HTTPS to the replication targets | Replication is configured |
 | Anything else | `networkPolicy.extraEgress`, a list of `NetworkPolicyEgressRule` objects appended as given | The operator sets it |
@@ -604,6 +612,8 @@ sources belong to the deployment, not this document.
 | `replication.sshKeySecret` | `id_ed25519` (or `id_rsa`), and optionally `known_hosts` | Gerrit pod | SSH identity for the replication remotes, and their pinned host keys. Projected with mode `0400` into `/var/gerrit/.ssh`, beside the chart's `known_hosts2` of GitHub's published host keys and `replication.knownHosts`. |
 | `siteImport.source.existingSecret` | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and `age-identity` or `gpg-private-key` | `site-import` | Reads and decrypts the archive. The object-store keys are optional where the platform supplies workload identity. |
 | `backup.existingSecret` | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | Backup CronJob | The encryption recipient is public and lives in values. Optional where the platform supplies workload identity. |
+| `hooks.g2p.existingSecret` | `gerrit_to_platform.ini` | `site-init` | Generated as `<fullname>-g2p` when empty, with the key empty for the operator to fill in. Mounted with mode `0400` into `site-init`, which installs it with mode `0600` as `.config/gerrit_to_platform/gerrit_to_platform.ini` on the site, where the hooks gerrit-to-platform runs read it through `XDG_CONFIG_HOME`. |
+| `plugins.its-jira.existingSecret` | `username`, `password` | `render-config` | Generated as `<fullname>-its-jira` when empty, with both keys empty for the operator to fill in. Passed as `GERRIT_ITS_JIRA_USERNAME` and `GERRIT_ITS_JIRA_PASSWORD` and written, when not empty, to `its-jira.username` and `its-jira.password` in `etc/secure.config`. The password may be a Jira API token. |
 | `toolbox.existingSecret` | `ssh-privatekey` | Admin toolbox | Identity of an administrator account used from the toolbox. |
 
 SSH host keys are not in this table: they are site state, not

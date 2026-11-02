@@ -169,6 +169,53 @@ gc:
 
 plugins:
   allowRemoteAdmin: false
+  # Jira integration through the its-jira plugin, which has its-base
+  # compiled in. Enabling it adds its-jira to the plugins site-init
+  # copies from the image catalogue and renders [its-jira],
+  # [plugin "its-jira"] and etc/its/actions-its-jira.config. See
+  # "Issue tracker" in the chart README.
+  its-jira:
+    enabled: false
+    url: ""                       # [its-jira] url, the Jira API URL
+    # Secret with username and password (or an API token in
+    # password). "" creates <fullname>-its-jira with empty keys the
+    # operator fills in; under Argo CD name a pre-created Secret.
+    existingSecret: ""
+    association: OPTIONAL         # MANDATORY | SUGGESTED | OPTIONAL
+    # Each adds a rule to etc/its/actions-its-jira.config that comments
+    # on the associated issues at that event
+    commentOnChangeCreated: false
+    commentOnPatchSetCreated: false
+    commentOnChangeMerged: false
+    commentOnChangeAbandoned: false
+    # Appended verbatim to etc/its/actions-its-jira.config, for rules
+    # and actions the toggles above do not cover
+    extraConfig: ""
+
+# Server-side hooks through the hooks plugin. Enabling it adds "hooks"
+# to the plugins site-init copies from the image catalogue and renders
+# the [hooks] section. See "Hooks" in the chart README.
+hooks:
+  enabled: false
+  # Hooks directory under the site; the chart owns its contents
+  path: hooks
+  syncHookTimeout: 30
+  # Hook scripts by hook name, such as ref-updated, each written to
+  # <path>/<name> with mode 0755 at every start
+  scripts: {}
+  # gerrit-to-platform, installed in the image, as the handler of the
+  # hooks listed below. Needs replication.enabled with a remote: g2p
+  # finds the platform and repositories in replication.config.
+  g2p:
+    enabled: false
+    # Secret with key gerrit_to_platform.ini. "" creates
+    # <fullname>-g2p with an empty key the operator fills in; under
+    # Argo CD name a pre-created Secret.
+    existingSecret: ""
+    hooks:
+      - patchset-created
+      - comment-added
+      - change-merged
 
 # Free-form sections; for trackingid each map is one subsection, for
 # example {jira: {match: "...", system: JIRA, link: "..."}}

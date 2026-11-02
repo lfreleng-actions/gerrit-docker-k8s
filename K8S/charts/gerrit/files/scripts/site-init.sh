@@ -3,19 +3,23 @@
 # SPDX-FileCopyrightText: 2026 The Linux Foundation
 
 # Prepare the Gerrit site on the persistent volume. Every start
-# replaces etc/gerrit.config, jgit.config, notedb.config and
-# replication.config with the files the chart rendered, and refreshes
-# the binaries and enabled plugins from the image; the first boot then
-# runs "gerrit init" on the rendered configuration. The volume is
-# mounted at GERRIT_SITE so the image's /var/gerrit stays visible.
+# replaces etc/gerrit.config, jgit.config, notedb.config,
+# replication.config and its/actions-its-jira.config with the files
+# the chart rendered, refreshes the binaries and enabled plugins from
+# the image, and installs the hooks and gerrit-to-platform
+# configuration; the first boot also runs "gerrit init" on the
+# rendered configuration. The volume is mounted at GERRIT_SITE so the
+# image's /var/gerrit stays visible.
 
 set -eu
 
 site=${GERRIT_SITE:?}
-image_bin=/var/gerrit/bin
+image_bin=${GERRIT_IMAGE_BIN:-/var/gerrit/bin}
 config="$site/etc/gerrit.config"
 rendered=${GERRIT_RENDERED_CONFIG:?}
 catalogue=${GERRIT_CATALOGUE:-/var/gerrit-catalogue}
+tools_bin=${GERRIT_TOOLS_BIN:-/opt/gerrit-tools/bin}
+hook_scripts=${GERRIT_HOOK_SCRIPTS:-/hook-scripts}
 
 # Create the directories the pod mounts by subPath before the kubelet
 # does: it would create any missing one owned by root
@@ -97,6 +101,14 @@ install_config() {
   else
     rm -f "$site/etc/replication.config"
   fi
+  # Rendered only with its-jira enabled, and owned by the chart in the
+  # same way
+  if [ -e "$rendered/actions-its-jira.config" ]; then
+    mkdir -p "$site/etc/its"
+    cp "$rendered/actions-its-jira.config" "$site/etc/its/actions-its-jira.config"
+  else
+    rm -f "$site/etc/its/actions-its-jira.config"
+  fi
 }
 
 install_config
@@ -117,5 +129,57 @@ if [ ! -d "$site/git/${all_projects:-All-Projects}.git" ]; then
   have_id=$(site_id)
   install_config
 fi
+
+# The hooks directory holds exactly the hooks the values name: links
+# to the gerrit-to-platform entry points, then hooks.scripts. Hooks
+# disabled leave the directory alone, since the plugin is not loaded.
+install_hooks() {
+  dir="$site/$GERRIT_HOOKS_PATH"
+  mkdir -p "$dir"
+  find "$dir" -mindepth 1 -maxdepth 1 ! -type d -exec rm -f {} +
+  set -f
+  # shellcheck disable=SC2086
+  for name in ${GERRIT_G2P_HOOKS:-}; do
+    target="$tools_bin/$name"
+    if [ ! -f "$target" ]; then
+      echo "ERROR: $target is not in the image" >&2
+      exit 1
+    fi
+    ln -s "$target" "$dir/$name"
+  done
+  set +f
+  if [ -d "$hook_scripts" ]; then
+    for src in "$hook_scripts"/*; do
+      [ -f "$src" ] || continue
+      cp "$src" "$dir/${src##*/}"
+      chmod 0755 "$dir/${src##*/}"
+    done
+  fi
+}
+
+# gerrit-to-platform reads its INI, and the replication.config it
+# finds remotes in, from $XDG_CONFIG_HOME/gerrit_to_platform, which
+# the Gerrit container points at the site. The INI holds credentials:
+# it is written at mode 0600 and removed once g2p is disabled.
+install_g2p() {
+  g2p_dir="$site/.config/gerrit_to_platform"
+  ini="$g2p_dir/gerrit_to_platform.ini"
+  if [ -z "${GERRIT_G2P_INI:-}" ]; then
+    rm -f "$ini" "$g2p_dir/replication.config"
+    return
+  fi
+  mkdir -p "$g2p_dir"
+  chmod 0700 "$g2p_dir"
+  rm -f "$ini.new"
+  (umask 077 && cp "$GERRIT_G2P_INI" "$ini.new")
+  chmod 0600 "$ini.new"
+  mv -f "$ini.new" "$ini"
+  ln -sfn /var/gerrit/etc/replication.config "$g2p_dir/replication.config"
+}
+
+if [ -n "${GERRIT_HOOKS_PATH:-}" ]; then
+  install_hooks
+fi
+install_g2p
 
 echo "Gerrit site in $site is ready"

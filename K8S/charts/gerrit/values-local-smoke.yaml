@@ -34,3 +34,16 @@ resources:
 ssh:
   service:
     enabled: false
+
+# The official image ships the hooks plugin in /var/gerrit/plugins,
+# which site-init still sees from the image. The stub hook logs each
+# call, so verify-hook.py --hook-log can check a change runs it.
+pluginCatalogue:
+  path: /var/gerrit
+
+hooks:
+  enabled: true
+  scripts:
+    patchset-created: |
+      #!/bin/sh
+      echo "$*" >> /var/gerrit/logs/smoke-hook.log

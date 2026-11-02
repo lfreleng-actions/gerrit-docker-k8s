@@ -29,6 +29,12 @@ if [ -n "${GERRIT_SAML_PRIVATE_KEY_PASSWORD:-}" ]; then
   git config -f "$tmp" saml.privateKeyPassword \
     "$GERRIT_SAML_PRIVATE_KEY_PASSWORD"
 fi
+if [ -n "${GERRIT_ITS_JIRA_USERNAME:-}" ]; then
+  git config -f "$tmp" its-jira.username "$GERRIT_ITS_JIRA_USERNAME"
+fi
+if [ -n "${GERRIT_ITS_JIRA_PASSWORD:-}" ]; then
+  git config -f "$tmp" its-jira.password "$GERRIT_ITS_JIRA_PASSWORD"
+fi
 mv -f "$tmp" "$secure"
 
 echo "Wrote $secure"
