@@ -891,6 +891,104 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  ### Release Image Build: Files Changed ###
+  # Decides whether release-build runs: only on a pull request that
+  # touches what the release build job builds or the egress it runs
+  # under.
+  release-build-changes:
+    name: 'Release build: files changed'
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: 'ubuntu-latest'
+    permissions:
+      contents: read
+    timeout-minutes: 5
+    outputs:
+      build: ${{ steps.changes.outputs.build }}
+    steps:
+      # yamllint disable-line rule:line-length
+      - uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
+        with:
+          egress-policy: 'audit'
+
+      - name: 'Checkout repository'
+        # yamllint disable-line rule:line-length
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: 'Check the changed files'
+        id: changes
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          # Check the changed files
+          set -euo pipefail
+          build=false
+          while IFS= read -r path; do
+            case "$path" in
+              Dockerfile|Dockerfile.chart|docker/*|.github/harden-runner/*|\
+              .github/workflows/release.yaml)
+                echo "Changed: $path"
+                build=true
+                ;;
+            esac
+          done < <(git diff --name-only "${BASE_SHA}...${HEAD_SHA}")
+          echo "build=$build" >> "$GITHUB_OUTPUT"
+          echo "Release image build needed: $build"
+
+  ### Release Image Build Under Block-Mode Egress ###
+  # Builds the release images, Dockerfile and then Dockerfile.chart,
+  # with the egress settings of release.yaml's build job, so a build
+  # that needs a host the allow-list lacks fails here rather than on a
+  # tag. It builds and does not push. Keep these steps in step with
+  # the release build job; the only intended difference is that the
+  # supplemental allow-list is read at the pull request's head commit,
+  # so a change to the list is tested with it.
+  release-build:
+    name: 'Release image build (egress blocked)'
+    needs: release-build-changes
+    if: ${{ needs.release-build-changes.outputs.build == 'true' }}
+    runs-on: 'ubuntu-24.04'
+    permissions:
+      contents: read
+    timeout-minutes: 30
+    steps:
+      # yamllint disable-line rule:line-length
+      - uses: lfreleng-actions/harden-runner-block-action@2fed66c9c36c4687c31ca349b925b81ec629673f  # v0.15.0
+        with:
+          config: '@6d4a65c5601afd6c2fbe52bda4b0024b132f265d'  # v0.19.0
+          # yamllint disable-line rule:line-length
+          supplemental_config: '${{ github.repository }}//.github/harden-runner/allow_list.txt@${{ github.event.pull_request.head.sha }}'
+          supplemental_required: 'true'
+          token: ${{ github.token }}
+
+      - name: 'Harden runner (block)'
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
+        with:
+          egress-policy: 'block'
+          allowed-endpoints: >
+            ${{ env.CONNECTION_ALLOW_LIST }}
+
+      - name: 'Checkout repository'
+        # yamllint disable-line rule:line-length
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: 'Build the image'
+        shell: bash
+        run: |
+          # Build the image
+          set -euo pipefail
+          docker build -t gerrit-base:build .
+          docker build -f Dockerfile.chart \
+            --build-arg BASE_IMAGE=gerrit-base:build \
+            -t gerrit:release-build .
+
   ### Test Summary ###
   test-summary:
     name: 'Test summary'
@@ -905,6 +1003,8 @@ jobs:
       - unit-tests
       - site-export-py38
       - chart-smoke
+      - release-build-changes
+      - release-build
     if: always()
     permissions:
       contents: read
@@ -929,6 +1029,7 @@ jobs:
             echo "| Unit Tests | ${NEEDS_UNIT_TESTS_RESULT} |"
             echo "| Site Export (Python 3.8) | ${NEEDS_SITE_EXPORT_PY38_RESULT} |"
             echo "| Helm Chart Smoke | ${NEEDS_CHART_SMOKE_RESULT} |"
+            echo "| Release Image Build | ${NEEDS_RELEASE_BUILD_RESULT} |"
           } >> "$GITHUB_STEP_SUMMARY"
         env:
           NEEDS_TEST_BASIC_RESULT: ${{ needs.test-basic.result }}
@@ -939,6 +1040,7 @@ jobs:
           NEEDS_UNIT_TESTS_RESULT: ${{ needs.unit-tests.result }}
           NEEDS_SITE_EXPORT_PY38_RESULT: ${{ needs.site-export-py38.result }}
           NEEDS_CHART_SMOKE_RESULT: ${{ needs.chart-smoke.result }}
+          NEEDS_RELEASE_BUILD_RESULT: ${{ needs.release-build.result }}
 
       - name: 'Check for failures'
         shell: bash
@@ -956,6 +1058,16 @@ jobs:
             exit 1
           fi
 
+          # The release image build runs only on pull requests that
+          # touch what it builds, so skipped passes here
+          for result in "${NEEDS_RELEASE_BUILD_CHANGES_RESULT}" \
+                        "${NEEDS_RELEASE_BUILD_RESULT}"; do
+            if [ "$result" != "success" ] && [ "$result" != "skipped" ]; then
+              echo "::error::The release image build failed ❌"
+              exit 1
+            fi
+          done
+
           echo "All tests passed! ✅"
 
         env:
@@ -967,3 +1079,5 @@ jobs:
           NEEDS_UNIT_TESTS_RESULT: ${{ needs.unit-tests.result }}
           NEEDS_SITE_EXPORT_PY38_RESULT: ${{ needs.site-export-py38.result }}
           NEEDS_CHART_SMOKE_RESULT: ${{ needs.chart-smoke.result }}
+          NEEDS_RELEASE_BUILD_CHANGES_RESULT: ${{ needs.release-build-changes.result }}
+          NEEDS_RELEASE_BUILD_RESULT: ${{ needs.release-build.result }}

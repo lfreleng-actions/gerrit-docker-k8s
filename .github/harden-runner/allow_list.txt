@@ -4,7 +4,8 @@
 # Endpoints this repository needs beyond the organisation allow-list.
 # The release workflow's build and publish-chart jobs read this file,
 # at the tagged commit, through harden-runner-block-action's
-# supplemental_config.
+# supplemental_config. The test workflow's release-build job reads it
+# at a pull request's head commit, so a change here is tested with it.
 
 # Plugin catalogue artefacts pinned in docker/plugins.lock
 gerrit-ci.gerritforge.com:443

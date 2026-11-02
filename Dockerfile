@@ -51,7 +51,15 @@ USER root
 # builds; the final check is what the build guarantees. The listing
 # is captured before it is searched so a failing keytool fails the
 # build under set -e instead of reading as "root absent".
+#
+# The base image ships GerritForge.list, a plain-HTTP apt source for
+# Ubuntu 18.04 ("bionic"). Nothing below comes from it, and the
+# release build's egress allow-list does not admit its mirrors, so
+# apt-get update would fail there. Removing the source leaves the
+# installed gerrit package alone; rm -f keeps a base image without
+# the file building. The Ubuntu sources are untouched.
 RUN set -eux; \
+    rm -f /etc/apt/sources.list.d/GerritForge.list; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
         curl \
