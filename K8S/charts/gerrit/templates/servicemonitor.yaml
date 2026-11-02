@@ -1,0 +1,43 @@
+{{/*
+SPDX-License-Identifier: Apache-2.0
+SPDX-FileCopyrightText: 2026 The Linux Foundation
+*/}}
+{{- if include "gerrit.serviceMonitorEnabled" . }}
+{{- $fullname := include "gerrit.fullname" . }}
+{{- with .Values.metrics.serviceMonitor }}
+# Scrapes the metrics plugin through the <fullname>-http Service with
+# the bearer token from the metrics Secret
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ $fullname }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "gerrit.labels" $ | nindent 4 }}
+    {{- with .labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  namespaceSelector:
+    matchNames:
+      - {{ $.Release.Namespace }}
+  selector:
+    matchLabels:
+      {{- include "gerrit.selectorLabels" $ | nindent 6 }}
+      app.kubernetes.io/component: http
+  endpoints:
+    - port: http
+      path: {{ include "gerrit.urlPrefix" $ }}/plugins/metrics-reporter-prometheus/metrics
+      {{- with .interval }}
+      interval: {{ . }}
+      {{- end }}
+      {{- with .scrapeTimeout }}
+      scrapeTimeout: {{ . }}
+      {{- end }}
+      authorization:
+        type: Bearer
+        credentials:
+          name: {{ include "gerrit.metricsSecretName" $ }}
+          key: token
+{{- end }}
+{{- end }}

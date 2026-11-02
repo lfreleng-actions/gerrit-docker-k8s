@@ -1,0 +1,38 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+---
+# Source: gerrit/templates/servicemonitor.yaml
+# Scrapes the metrics plugin through the <fullname>-http Service with
+# the bearer token from the metrics Secret
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: gerrit
+  namespace: gerrit-test
+  labels:
+    helm.sh/chart: gerrit-0.1.0
+    app.kubernetes.io/name: gerrit
+    app.kubernetes.io/instance: gerrit
+    app.kubernetes.io/version: "3.13.1"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: gerrit
+    release: prometheus
+spec:
+  namespaceSelector:
+    matchNames:
+      - gerrit-test
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: gerrit
+      app.kubernetes.io/instance: gerrit
+      app.kubernetes.io/component: http
+  endpoints:
+    - port: http
+      path: /r/plugins/metrics-reporter-prometheus/metrics
+      interval: 60s
+      scrapeTimeout: 30s
+      authorization:
+        type: Bearer
+        credentials:
+          name: gerrit-metrics
+          key: token

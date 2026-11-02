@@ -4,12 +4,12 @@
 
 # Prepare the Gerrit site on the persistent volume. Every start
 # replaces etc/gerrit.config, jgit.config, notedb.config,
-# replication.config and its/actions-its-jira.config with the files
-# the chart rendered, refreshes the binaries and enabled plugins from
-# the image, and installs the hooks and gerrit-to-platform
-# configuration; the first boot also runs "gerrit init" on the
-# rendered configuration. The volume is mounted at GERRIT_SITE so the
-# image's /var/gerrit stays visible.
+# log4j.properties, replication.config, its/actions-its-jira.config and
+# healthcheck.config with the files the chart rendered, refreshes the
+# binaries and enabled plugins from the image, and installs the hooks
+# and gerrit-to-platform configuration; the first boot also runs
+# "gerrit init" on the rendered configuration. The volume is mounted
+# at GERRIT_SITE so the image's /var/gerrit stays visible.
 
 set -eu
 
@@ -91,7 +91,7 @@ install_config() {
     git config -f "$config.new" gerrit.serverId "$have_id"
   fi
   mv -f "$config.new" "$config"
-  for name in jgit.config notedb.config; do
+  for name in jgit.config notedb.config log4j.properties; do
     cp "$rendered/$name" "$site/etc/$name"
   done
   # Rendered only with replication enabled; the chart owns the file,
@@ -108,6 +108,13 @@ install_config() {
     cp "$rendered/actions-its-jira.config" "$site/etc/its/actions-its-jira.config"
   else
     rm -f "$site/etc/its/actions-its-jira.config"
+  fi
+  # Rendered only with healthcheck enabled, and owned by the chart in
+  # the same way
+  if [ -e "$rendered/healthcheck.config" ]; then
+    cp "$rendered/healthcheck.config" "$site/etc/healthcheck.config"
+  else
+    rm -f "$site/etc/healthcheck.config"
   fi
 }
 

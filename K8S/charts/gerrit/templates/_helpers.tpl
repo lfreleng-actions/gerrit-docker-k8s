@@ -77,6 +77,37 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 app.kubernetes.io/part-of: gerrit
 {{- end -}}
 
+{{/* Name label of the log cleanup CronJob's pods: the chart name, cut
+to 51 characters so the "-log-cleanup" suffix fits the 63-character
+label limit. A name that already ends in "-log-cleanup" and would come
+out unchanged takes "-lc" instead, as gerrit.gcName does. */}}
+{{- define "gerrit.logCleanupName" -}}
+{{- $name := include "gerrit.name" . -}}
+{{- $base := $name | trunc 51 | trimSuffix "-" -}}
+{{- $cleanup := printf "%s-log-cleanup" $base -}}
+{{- if eq $cleanup $name -}}
+{{- $cleanup = printf "%s-lc" $base -}}
+{{- end -}}
+{{- $cleanup -}}
+{{- end -}}
+
+{{/* Labels of the log cleanup CronJob's pods. Their name differs from
+the Gerrit pod's, so no Service selector or Gerrit NetworkPolicy
+matches them. */}}
+{{- define "gerrit.logCleanupSelectorLabels" -}}
+app.kubernetes.io/name: {{ include "gerrit.logCleanupName" . }}
+app.kubernetes.io/instance: {{ .Release.Name }}
+app.kubernetes.io/component: log-cleanup
+{{- end -}}
+
+{{- define "gerrit.logCleanupLabels" -}}
+helm.sh/chart: {{ include "gerrit.chart" . }}
+{{ include "gerrit.logCleanupSelectorLabels" . }}
+app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+app.kubernetes.io/managed-by: {{ .Release.Service }}
+app.kubernetes.io/part-of: gerrit
+{{- end -}}
+
 {{/* Name label of the admin toolbox's pods: the chart name, cut to 55
 characters so the "-toolbox" suffix fits the 63-character label limit.
 A name that already ends in "-toolbox" and would come out unchanged
@@ -243,13 +274,14 @@ random, so a NodePort Service without either cannot be advertised. */}}
 {{- default (printf "%s-tls" (include "gerrit.fullname" .)) .Values.ingress.tls.secretName -}}
 {{- end -}}
 
-{{/* container.javaOptions: the options the image needs, a heap of 70%
-of the memory limit unless container.heapLimit is set, then the
-operator's own, as a list */}}
+{{/* container.javaOptions: the options the image needs, the chart's
+log4j configuration, a heap of 70% of the memory limit unless
+container.heapLimit is set, then the operator's own, as a list */}}
 {{- define "gerrit.javaOptions" -}}
 {{- $opts := list
   "-Dflogger.backend_factory=com.google.common.flogger.backend.log4j.Log4jBackendFactory#getInstance"
   "-Dflogger.logging_context=com.google.gerrit.server.logging.LoggingContext#getInstance"
+  "-Dlog4j.configuration=file:///var/gerrit/etc/log4j.properties"
   "-Djava.security.egd=file:/dev/./urandom"
   "--add-opens java.base/java.net=ALL-UNNAMED"
   "--add-opens java.base/java.lang.invoke=ALL-UNNAMED" -}}
@@ -444,9 +476,10 @@ github.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQCj7ndNxQowgcQnjshcLrqPEiiphnt+V
 {{- end -}}
 
 {{/* Plugin jars site-init copies from the catalogue: those
-pluginCatalogue.plugins names, plus replication, hooks and its-jira
-when each is enabled. its-base is compiled into its-jira.jar, so it
-is not a jar of its own. */}}
+pluginCatalogue.plugins names, plus replication, hooks, its-jira,
+healthcheck and metrics-reporter-prometheus when each is enabled.
+its-base is compiled into its-jira.jar, so it is not a jar of its
+own. */}}
 {{- define "gerrit.plugins" -}}
 {{- $plugins := default list .Values.pluginCatalogue.plugins -}}
 {{- if .Values.replication.enabled -}}
@@ -457,6 +490,12 @@ is not a jar of its own. */}}
 {{- end -}}
 {{- if include "gerrit.itsJiraEnabled" . -}}
 {{- $plugins = append $plugins "its-jira" -}}
+{{- end -}}
+{{- if include "gerrit.healthcheckEnabled" . -}}
+{{- $plugins = append $plugins "healthcheck" -}}
+{{- end -}}
+{{- if include "gerrit.metricsEnabled" . -}}
+{{- $plugins = append $plugins "metrics-reporter-prometheus" -}}
 {{- end -}}
 {{- join " " (uniq $plugins) -}}
 {{- end -}}
@@ -485,6 +524,97 @@ true
 {{/* "true" when plugins.its-jira is enabled, else empty */}}
 {{- define "gerrit.itsJiraEnabled" -}}
 {{- if dig "its-jira" "enabled" false (default dict .Values.plugins) }}true{{ end -}}
+{{- end -}}
+
+{{/* "true" when plugins.healthcheck is enabled, else empty */}}
+{{- define "gerrit.healthcheckEnabled" -}}
+{{- if dig "healthcheck" "enabled" false (default dict .Values.plugins) }}true{{ end -}}
+{{- end -}}
+
+{{/* Path the readiness and liveness probes call: the healthcheck
+plugin's status with the plugin enabled, else the version endpoint */}}
+{{- define "gerrit.healthProbePath" -}}
+{{- if include "gerrit.healthcheckEnabled" . -}}
+{{- printf "%s/config/server/healthcheck~status" (include "gerrit.urlPrefix" .) -}}
+{{- else -}}
+{{- printf "%s/config/server/version" (include "gerrit.urlPrefix" .) -}}
+{{- end -}}
+{{- end -}}
+
+{{/* "true" when plugins.metrics-reporter-prometheus is enabled, else
+empty */}}
+{{- define "gerrit.metricsEnabled" -}}
+{{- if dig "metrics-reporter-prometheus" "enabled" false (default dict .Values.plugins) }}true{{ end -}}
+{{- end -}}
+
+{{/* Name of the Secret holding the metrics bearer token */}}
+{{- define "gerrit.metricsSecretName" -}}
+{{- default (printf "%s-metrics" (include "gerrit.fullname" .)) .Values.metrics.existingSecret -}}
+{{- end -}}
+
+{{/* "true" when the ServiceMonitor renders: metrics.serviceMonitor is
+enabled and the cluster serves the Prometheus Operator's API, else
+empty. Fails when the toggle is on without the metrics plugin, which
+the ServiceMonitor would scrape. */}}
+{{- define "gerrit.serviceMonitorEnabled" -}}
+{{- if .Values.metrics.serviceMonitor.enabled -}}
+{{- if not (include "gerrit.metricsEnabled" .) -}}
+{{- fail "metrics.serviceMonitor.enabled needs plugins.metrics-reporter-prometheus.enabled" -}}
+{{- end -}}
+{{- if .Capabilities.APIVersions.Has "monitoring.coreos.com/v1" }}true{{ end -}}
+{{- end -}}
+{{- end -}}
+
+{{/* etc/log4j.properties, which -Dlog4j.configuration in
+container.javaOptions names. Gerrit then skips its built-in error log,
+so the root logger writes JSON to the container's stderr for the
+cluster's log pipeline. The request logs look up the appenders named
+httpd_log and sshd_log, which keep writing text to logs/ on the site
+volume, rotated daily with log.rotate. Fails on log.jsonLogging or
+log.textLogging: Gerrit ignores both for its error log under this
+file, but they rename the request log appenders it looks up, which
+can silently disable request logging. */}}
+{{- define "gerrit.log4jProperties" -}}
+{{- $log := default dict .Values.log -}}
+{{- range list "jsonLogging" "textLogging" -}}
+{{- if hasKey $log . -}}
+{{- fail (printf "log.%s is not supported: the chart configures logging through etc/log4j.properties" .) -}}
+{{- end -}}
+{{- end -}}
+{{- $level := upper (default "INFO" .Values.logs.level) -}}
+{{- if not (has $level (list "OFF" "FATAL" "ERROR" "WARN" "INFO" "DEBUG" "TRACE" "ALL")) -}}
+{{- fail (printf "logs.level must be a log4j level such as INFO, not %v" .Values.logs.level) -}}
+{{- end -}}
+{{- $rotate := ne (toString (dig "rotate" true $log)) "false" -}}
+# Rendered by the chart; site-init installs it at every start
+log4j.rootLogger={{ $level }}, stderr
+log4j.appender.stderr=org.apache.log4j.ConsoleAppender
+log4j.appender.stderr.Target=System.err
+log4j.appender.stderr.layout=com.google.gerrit.pgm.util.ErrorLogJsonLayout
+{{- range $name, $layout := dict "httpd_log" "com.google.gerrit.pgm.http.jetty.HttpLogLayout" "sshd_log" "com.google.gerrit.sshd.SshLogLayout" }}
+
+log4j.logger.{{ $name }}=INFO, {{ $name }}
+log4j.additivity.{{ $name }}=false
+{{- if $rotate }}
+log4j.appender.{{ $name }}=org.apache.log4j.DailyRollingFileAppender
+log4j.appender.{{ $name }}.DatePattern='.'yyyy-MM-dd
+{{- else }}
+log4j.appender.{{ $name }}=org.apache.log4j.FileAppender
+{{- end }}
+log4j.appender.{{ $name }}.File=/var/gerrit/logs/{{ $name }}
+log4j.appender.{{ $name }}.Encoding=UTF-8
+log4j.appender.{{ $name }}.layout={{ $layout }}
+{{- end }}
+{{- end -}}
+
+{{/* logs.retentionDays as a whole number of days; 0 when unset.
+Fails on a negative or fractional value. */}}
+{{- define "gerrit.logRetentionDays" -}}
+{{- $days := default 0 .Values.logs.retentionDays -}}
+{{- if not (regexMatch `^[0-9]+$` (toString $days)) -}}
+{{- fail (printf "logs.retentionDays must be a whole number of days, not %v" $days) -}}
+{{- end -}}
+{{- int64 $days -}}
 {{- end -}}
 
 {{/* hooks.path, relative to the site. site-init replaces the

@@ -13,10 +13,11 @@ metadata:
 data:
   {{- (.Files.Glob "files/scripts/*.sh").AsConfig | nindent 2 }}
 ---
-# etc/gerrit.config, jgit.config, notedb.config and, with replication
-# enabled, replication.config, and with its-jira enabled,
-# its/actions-its-jira.config; site-init copies each over the site's
-# own at every start
+# etc/gerrit.config, jgit.config, notedb.config, log4j.properties and,
+# with replication enabled, replication.config, with its-jira enabled,
+# its/actions-its-jira.config, and with healthcheck enabled,
+# healthcheck.config; site-init copies each over the site's own at
+# every start
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -39,6 +40,8 @@ data:
   {{- else }}
   notedb.config: ""
   {{- end }}
+  log4j.properties: |
+    {{- include "gerrit.log4jProperties" . | trim | nindent 4 }}
   {{- if .Values.replication.enabled }}
   replication.config: |
     {{- include "gerrit.replicationConfig" . | trim | nindent 4 }}
@@ -49,6 +52,14 @@ data:
     {{- . | nindent 4 }}
   {{- else }}
   actions-its-jira.config: ""
+  {{- end }}
+  {{- end }}
+  {{- if include "gerrit.healthcheckEnabled" . }}
+  {{- with include "gerrit.configSection" (dict "name" "healthcheck" "values" .Values.plugins.healthcheck.config) | trim }}
+  healthcheck.config: |
+    {{- . | nindent 4 }}
+  {{- else }}
+  healthcheck.config: ""
   {{- end }}
   {{- end }}
 {{- if .Values.replication.enabled }}

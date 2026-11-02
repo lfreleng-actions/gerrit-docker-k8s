@@ -27,6 +27,8 @@ metadata:
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "gerrit.labels" . | nindent 4 }}
+    # Tells this Service from the headless one, for the ServiceMonitor
+    app.kubernetes.io/component: http
 spec:
   type: ClusterIP
   selector:

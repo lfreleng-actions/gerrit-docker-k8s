@@ -22,7 +22,7 @@ volume holds state only.
 | `Ingress` `<fullname>`            | With `ingress.enabled`; see [Exposing Gerrit](#exposing-gerrit) |
 | `IngressRoute` `<fullname>`, `Middleware`s, `Certificate` `<fullname>-tls` | Instead of the `Ingress`, with `ingress.traefik.enabled` |
 | `ConfigMap` `<fullname>-scripts`  | `files/scripts/*.sh`                                           |
-| `ConfigMap` `<fullname>-config`   | Rendered `gerrit.config`, `jgit.config` and `notedb.config`, and `replication.config` with `replication.enabled` |
+| `ConfigMap` `<fullname>-config`   | Rendered `gerrit.config`, `jgit.config` and `notedb.config`, `replication.config` with `replication.enabled`, and `healthcheck.config` with `plugins.healthcheck.enabled` |
 | `ConfigMap` `<fullname>-hooks`    | `hooks.scripts`; with `hooks.enabled`, see [Hooks](#hooks)     |
 | `ConfigMap` `<fullname>-known-hosts` | SSH host keys of the replication remotes; with `replication.enabled`, see [Replication](#replication) |
 | `Secret` `<fullname>-admin`       | Admin credential placeholder; not consumed yet                 |
@@ -30,9 +30,12 @@ volume holds state only.
 | `Secret` `<fullname>-saml`        | SAML keystore, its passwords and the IdP metadata, created empty; with `auth.saml.enabled` and no `auth.saml.existingSecret`, see [SAML](#saml) |
 | `Secret` `<fullname>-g2p`         | `gerrit_to_platform.ini`, created empty; with `hooks.g2p.enabled` and no `hooks.g2p.existingSecret`, see [Hooks](#hooks) |
 | `Secret` `<fullname>-its-jira`    | Jira `username` and `password`, created empty; with `plugins.its-jira.enabled` and no `plugins.its-jira.existingSecret`, see [Issue tracker](#issue-tracker) |
+| `Secret` `<fullname>-metrics`     | Metrics bearer `token`, generated; with `plugins.metrics-reporter-prometheus.enabled` and no `metrics.existingSecret`, see [Metrics](#metrics) |
+| `ServiceMonitor` `<fullname>`     | With `metrics.serviceMonitor.enabled` where the cluster serves `monitoring.coreos.com/v1`; see [Metrics](#metrics) |
 | `CronJob` `<fullname>-git-gc`, `NetworkPolicy` `<fullname>-git-gc-deny` | With `gc.cronJob.enabled`; see [Garbage collection](#garbage-collection) |
+| `CronJob` `<fullname>-log-cleanup`, `NetworkPolicy` `<fullname>-log-cleanup-deny` | With `logs.retentionDays` above `0`; see [Logs](#logs) |
 | `Deployment`, `ConfigMap` and `NetworkPolicy` `<fullname>-toolbox` | With `toolbox.enabled`, at zero replicas; see [Admin toolbox](#admin-toolbox) |
-| `NetworkPolicy` (two)             | Default deny; allow ingress to 8080 (from `networkPolicy.ingressNamespaceSelector` when set) and 29418, egress to DNS, HTTPS and, with mail configured, the SMTP relay's port, with replication enabled, each remote's port, with `auth.saml.metadataUrl`, its port, and with `plugins.its-jira.enabled`, the Jira URL's port |
+| `NetworkPolicy` (two)             | Default deny; allow ingress to 8080 (from `networkPolicy.ingressNamespaceSelector` when set, and then also from `networkPolicy.metricsNamespaceSelector` with the metrics plugin) and 29418, egress to DNS, HTTPS and, with mail configured, the SMTP relay's port, with replication enabled, each remote's port, with `auth.saml.metadataUrl`, its port, and with `plugins.its-jira.enabled`, the Jira URL's port |
 
 The Secrets carry `helm.sh/resource-policy: keep` and
 `argocd.argoproj.io/sync-options: Prune=false,Delete=false`, so they
@@ -64,6 +67,7 @@ secure-config Secret.
 | `auth.saml.existingSecret`            | `idp-metadata.xml`        | With `metadataFromSecret` | Mounted read-only at `etc/saml-idp-metadata.xml` |
 | `hooks.g2p.existingSecret`            | `gerrit_to_platform.ini`  | With g2p | `$XDG_CONFIG_HOME/gerrit_to_platform/` on the site with mode `0600` |
 | `plugins.its-jira.existingSecret`     | `username`, `password`    | With its-jira | `its-jira.username` and `its-jira.password` in `secure.config` |
+| `metrics.existingSecret`              | `token`                   | With the metrics plugin | `plugin.metrics-reporter-prometheus.prometheusBearerToken` in `secure.config`, and the `ServiceMonitor`'s bearer token |
 | `toolbox.existingSecret`              | `ssh-privatekey`          | No       | Mounted in the admin toolbox at `/etc/gerrit-toolbox/ssh/id` with mode `0400` |
 
 The generated `<fullname>-secure-config` Secret carries a random
@@ -80,8 +84,9 @@ empty or absent optional key leaves its entry out of `secure.config`.
    replaces the site's plugin and library jars with those named in
    `pluginCatalogue`, plus `replication` with `replication.enabled`
    and the `saml` library with `auth.saml.enabled`, and copies the rendered `gerrit.config`, `jgit.config`,
-   `notedb.config` and `replication.config` over the site's own, and with
-   `plugins.its-jira.enabled`, `etc/its/actions-its-jira.config`. With
+   `notedb.config`, `log4j.properties` and `replication.config` over the site's own, and with
+   `plugins.its-jira.enabled`, `etc/its/actions-its-jira.config`, and
+   with `plugins.healthcheck.enabled`, `etc/healthcheck.config`. With
    replication disabled it removes the site's `etc/replication.config`. On a site
    without the repository `gerrit.allProjects` names (`All-Projects`
    unless `gerrit.extraConfig` sets it) it then runs
@@ -93,8 +98,12 @@ empty or absent optional key leaves its entry out of `secure.config`.
 3. `render-config` rewrites `etc/secure.config` from the Secrets,
    creating it with mode `0600` before writing any value.
 4. `gerrit` runs `bin/gerrit.sh run`. A startup probe allows ten
-   minutes; readiness and liveness probes call
-   `<urlPrefix>/config/server/version`.
+   minutes for `<urlPrefix>/config/server/version` to answer, since
+   the daemon loads its caches and indexes before it serves; readiness
+   and liveness probes then call
+   `<urlPrefix>/config/server/healthcheck~status` with
+   `plugins.healthcheck.enabled`, and the version endpoint otherwise.
+   See [Health checks](#health-checks).
 
 The official Gerrit image declares `cache`, `db`, `etc`, `git` and
 `index` under `/var/gerrit` as image volumes. The chart mounts each one
@@ -175,6 +184,18 @@ mounts empty anonymous volumes over them and the site disappears.
 | `plugins.its-jira.association`           | `OPTIONAL`                       | `MANDATORY`, `SUGGESTED` or `OPTIONAL`                     |
 | `plugins.its-jira.commentOn*`            | `false`                          | One comment rule each; see [Issue tracker](#issue-tracker) |
 | `plugins.its-jira.extraConfig`           | `""`                             | Appended verbatim to `etc/its/actions-its-jira.config`     |
+| `plugins.healthcheck.enabled`            | `false`                          | Adds `healthcheck` and moves the probes to it; see [Health checks](#health-checks) |
+| `plugins.healthcheck.config`             | `auth.enabled: false`            | `etc/healthcheck.config`; a map per check                  |
+| `plugins.metrics-reporter-prometheus.enabled` | `false`                     | Adds the Prometheus metrics plugin; see [Metrics](#metrics) |
+| `metrics.existingSecret`                 | `""`                             | Secret with the bearer `token`; `""` creates `<fullname>-metrics` |
+| `metrics.serviceMonitor.enabled`         | `false`                          | Renders a `ServiceMonitor` where the CRD exists            |
+| `metrics.serviceMonitor.labels`          | `{}`                             | Added to the `ServiceMonitor`'s labels                     |
+| `metrics.serviceMonitor.interval`, `.scrapeTimeout` | `60s`, `""`           | Scrape interval and timeout; `""` for Prometheus' default  |
+| `networkPolicy.metricsNamespaceSelector` | `{}`                             | Namespaces of the scraper, admitted to 8080 beside `ingressNamespaceSelector` |
+| `log.*`                                  | See [Logs](#logs)                | The `[log]` section of `gerrit.config`                     |
+| `logs.level`                             | `INFO`                           | Lowest log4j level of the JSON error log on stderr         |
+| `logs.retentionDays`                     | `0`                              | Days to keep rotated logs; `0` keeps them and adds no `CronJob` |
+| `logs.schedule`, `.timeZone`, `.resources` | `30 4 * * *`, `""`, `{}`       | The log cleanup `CronJob`                                  |
 
 ### gerrit.config
 
@@ -194,15 +215,15 @@ values:
 | `httpd.listenUrl`           | `<scheme>://*:8080<gerrit.urlPrefix>/`; the scheme is `proxy-https` behind the chart's Ingress with TLS, `proxy-http` without, and `gerrit.listenScheme` with no Ingress |
 | `sshd.advertisedAddress`    | `ssh.host`, else `gerrit.host`, without any port, then `:` and the SSH port: `ssh.port`, else `ssh.service.nodePort` on a `NodePort` Service, else `29418` |
 | `cache.directory`           | `cache`                                                       |
-| `container.javaOptions`     | The options the image needs, then `-XX:MaxRAMPercentage=70.0` unless `container.heapLimit` is set or there is no memory limit, then `container.javaOptions` from values |
+| `container.javaOptions`     | The options the image needs and `-Dlog4j.configuration` naming `etc/log4j.properties` (see [Logs](#logs)), then `-XX:MaxRAMPercentage=70.0` unless `container.heapLimit` is set or there is no memory limit, then `container.javaOptions` from values |
 | `httpd.filterClass`, `auth.type` and the `auth.http*Header` keys | The SAML filter and `HTTP` authentication, with `auth.saml.enabled`; see [SAML](#saml) |
 | `saml.keystorePath`, `saml.metadataPath`, `saml.serviceProviderEntityId` | With `auth.saml.enabled`; see [SAML](#saml) |
 
 Each of these top-level values renders the `gerrit.config` section of
 the same name, key for key, with the defaults `values.yaml` lists:
 `httpd`, `sshd`, `auth`, `sendemail`, `container`, `cache`, `change`,
-`receive`, `download`, `index`, `gc`, `plugins`, `user`, `trackingid`,
-`accounts` and `suggest`. A key set to `null` or `""` is left out, so
+`receive`, `download`, `index`, `gc`, `plugins`, `log`, `user`,
+`trackingid`, `accounts` and `suggest`. A key set to `null` or `""` is left out, so
 Gerrit's own default applies; a list repeats the key; a map renders a
 subsection, as in `cache.diff_summary.diskLimit` becoming
 `[cache "diff_summary"]`. Notable defaults:
@@ -216,6 +237,7 @@ subsection, as in `cache.diff_summary.diskLimit` becoming
 | `cache.limits`              | See [Cache limits](#cache-limits) | `diskLimit` of each persistent cache                    |
 | `gc.startTime`, `gc.interval` | `Sun 03:00`, `1 week`          | See [Garbage collection](#garbage-collection)            |
 | `plugins.allowRemoteAdmin`  | `false`                          | Plugins come from `pluginCatalogue`, not remote installs |
+| `log.rotate`, `log.compress` | `true`, `true`                  | See [Logs](#logs)                                        |
 
 `jgit` and `notedb` render `etc/jgit.config` and `etc/notedb.config`
 the same way, each top-level key a section. `jgit` defaults to
@@ -392,6 +414,22 @@ networkPolicy:
 
 Left empty, 8080 admits any source, as port 29418 always does: SSH
 clients arrive from outside the cluster through the load balancer.
+
+With the selector set, a Prometheus outside those namespaces cannot
+scrape the [metrics](#metrics) plugin. With
+`plugins.metrics-reporter-prometheus.enabled`,
+`networkPolicy.metricsNamespaceSelector` admits its namespaces to 8080
+as well:
+
+```yaml
+networkPolicy:
+  ingressNamespaceSelector:
+    matchLabels:
+      kubernetes.io/metadata.name: traefik
+  metricsNamespaceSelector:
+    matchLabels:
+      kubernetes.io/metadata.name: monitoring
+```
 
 ### Volume permissions
 
@@ -758,6 +796,166 @@ plugins:
 Disabling `hooks` or `its-jira` removes the jars at the next start but
 leaves any data the plugins wrote under the site's `data/`.
 
+## Observability
+
+A release reports its health, metrics and logs to cluster-native
+tooling, with no vendor agent in the pod. The Gerrit pod, the admin
+toolbox and the chart's CronJobs carry the
+`instrumentation.opentelemetry.io/inject-*: "false"` annotations, so
+the OpenTelemetry operator's mutating webhook does not inject an
+agent container that the `restricted` Pod Security level would
+reject.
+
+### Health checks
+
+`plugins.healthcheck.enabled` adds `healthcheck` to the jars
+`site-init` copies, so the image must hold `healthcheck.jar` under
+`<pluginCatalogue.path>/plugins/`. It is off by default because the
+image catalogue does not ship that jar yet, and `site-init` fails on
+a missing one; the default becomes `true` once the image ships it
+(#231).
+
+With the plugin enabled, the readiness and liveness probes call
+`<urlPrefix>/config/server/healthcheck~status`, which answers 200 only
+while every enabled check passes, instead of
+`<urlPrefix>/config/server/version`. The startup probe keeps the
+version endpoint and its ten minutes, since a first start loads the
+caches and indexes before it serves anything. With the plugin
+disabled, every probe calls the version endpoint.
+
+`plugins.healthcheck.config` renders `etc/healthcheck.config`: keys
+such as `timeout` go under `[healthcheck]`, and a map per check, such
+as `querychanges`, renders its `[healthcheck "<check>"]` subsection
+with `enabled`, `timeout` and the check's own keys. The default turns
+off the `auth` check, which logs in with a fixed account a site
+rarely has; enable it with an account the site holds. `site-init`
+replaces the file at each start and removes it when the plugin is
+disabled.
+
+```yaml
+plugins:
+  healthcheck:
+    enabled: true
+    config:
+      timeout: 2s
+      auth:
+        enabled: false
+      querychanges:
+        timeout: 5s
+```
+
+### Metrics
+
+`plugins.metrics-reporter-prometheus.enabled` adds the
+`metrics-reporter-prometheus` jar, which the image catalogue must
+hold, and serves Gerrit's metrics in the Prometheus format at
+`<urlPrefix>/plugins/metrics-reporter-prometheus/metrics`. Gerrit's
+own metrics include the JVM's, under `proc/jvm/`, so they are on
+whenever the plugin is.
+
+The endpoint asks for a bearer token. `render-config` writes the
+`token` key of `metrics.existingSecret` to
+`plugin.metrics-reporter-prometheus.prometheusBearerToken` in
+`secure.config`. With the value empty, the chart creates
+`<fullname>-metrics` with a random token and keeps it on upgrade;
+under Argo CD name a pre-created Secret instead, or each sync replaces
+the token (see the [Secret contract](#secret-contract)).
+
+`metrics.serviceMonitor.enabled` renders a Prometheus Operator
+`ServiceMonitor` for the `<fullname>-http` Service, presenting the
+same Secret's `token` as its bearer token, with
+`metrics.serviceMonitor.labels` added, for the label a Prometheus
+selects its monitors by. It renders only where the cluster serves
+`monitoring.coreos.com/v1`, so a cluster without the operator's CRDs
+gets none; `helm template` sees that API only with
+`--api-versions monitoring.coreos.com/v1`. The toggle needs the
+metrics plugin. With `networkPolicy.ingressNamespaceSelector` set,
+admit the Prometheus namespace through
+`networkPolicy.metricsNamespaceSelector`; see
+[Network policy](#network-policy).
+
+```yaml
+plugins:
+  metrics-reporter-prometheus:
+    enabled: true
+metrics:
+  existingSecret: gerrit-metrics
+  serviceMonitor:
+    enabled: true
+    labels:
+      release: prometheus
+```
+
+### Logs
+
+The chart renders `etc/log4j.properties`, which `site-init` installs
+at every start, and names it in `container.javaOptions` with
+`-Dlog4j.configuration`, as Gerrit's
+[`container.javaOptions`](https://gerrit-review.googlesource.com/Documentation/config-gerrit.html#container.javaOptions)
+documents. Gerrit then skips its built-in loggers:
+
+- The error log goes only to the container's stderr, as JSON with
+  Gerrit's `ErrorLogJsonLayout`, one object per line, so the
+  cluster's log pipeline collects structured entries. `logs.level`
+  sets its lowest level, `INFO` by default. There is no `error_log`
+  file in `logs/`. The `--console-log` flag `bin/gerrit.sh run`
+  passes has no effect, since Gerrit acts on it only when it sets up
+  logging itself, and then writes plain text.
+- `httpd_log` and `sshd_log`, the request logs, stay in `logs/` on
+  the site volume for audit, in Gerrit's text layouts. Gerrit attaches
+  them by appender name, so the file defines appenders with those
+  names; without them it would silently disable request logging.
+
+The `log` values render the `[log]` section of `gerrit.config`:
+
+| Value          | Default | Notes                                                       |
+| -------------- | ------- | ----------------------------------------------------------- |
+| `log.rotate`   | `true`  | Rotates each request log daily, adding the date to its name |
+| `log.compress` | `true`  | Compresses each rotated log with gzip                       |
+
+Gerrit ignores `log.rotate` for appenders a log4j file defines, so the
+chart applies it in `etc/log4j.properties`: a daily
+`DailyRollingFileAppender` when it is on, a plain `FileAppender` when
+it is off. The chart refuses `log.jsonLogging` and `log.textLogging`.
+Gerrit ignores both for its error log under a log4j file, yet they
+still decide which request log appenders it looks up: `jsonLogging`
+adds `httpd_log.json` and `sshd_log.json`, which the file does not
+define, and with `textLogging` off as well Gerrit drops `httpd_log`
+and `sshd_log`, silently disabling request logging. A
+`-Dlog4j.configuration` in `container.javaOptions`
+from values comes later on the command line and replaces the chart's
+file.
+
+To bound the request logs, set `logs.retentionDays`: the
+`<fullname>-log-cleanup` `CronJob` then runs
+`files/scripts/log-cleanup.sh` on `logs.schedule`, 04:30 daily by
+default, and deletes each file at the top of `logs/` whose name
+carries a rotation date, such as `httpd_log.2026-11-01.gz`, and that
+was last written more than that many days ago. A log Gerrit still
+writes has no date in its name, so the cleanup never touches it. The
+Job runs as the Gerrit UID on the Gerrit pod's node, with the site
+volume mounted, no service account token and, with
+`networkPolicy.enabled`, a `NetworkPolicy` that denies it all traffic,
+as the [git gc CronJob](#garbage-collection) does. With `log.rotate`
+off nothing carries a date, so there is nothing to delete.
+
+### What to alert on
+
+The metric names below are Gerrit's, as the plugin exports them with
+`/` and `-` turned into `_`; check them against the endpoint of the
+Gerrit version you run before relying on an alert. The first and last
+come from kube-state-metrics and the kubelet rather than Gerrit.
+Replace the namespace and pod names with the release's.
+
+| Condition | PromQL |
+| --------- | ------ |
+| Readiness flapping | `changes(kube_pod_status_ready{namespace="gerrit", pod="gerrit-0", condition="true"}[30m]) > 4` |
+| JVM heap pressure | `proc_jvm_memory_heap_used / proc_jvm_memory_heap_committed > 0.9` |
+| Replication queue growing | `sum({__name__=~"(?i)queue_replicateto.*_scheduled_tasks"}) > 100` |
+| SSH error rate | `rate({__name__=~"sshd_sessions_authentication_failures.*"}[5m]) > 1` |
+| HTTP error rate | `sum(rate({__name__=~"http_server_rest_api_error_count.*"}[5m])) > 1` |
+| Site volume filling | `kubelet_volume_stats_used_bytes{persistentvolumeclaim="site-gerrit-0"} / kubelet_volume_stats_capacity_bytes{persistentvolumeclaim="site-gerrit-0"} > 0.85` |
+
 ## Maintenance
 
 A long-running site on a fixed-size volume needs its repositories
@@ -984,9 +1182,31 @@ python3 K8S/charts/gerrit/files/scripts/verify-hook.py \
   --hook-log /var/gerrit/logs/smoke-hook.log
 ```
 
+`files/scripts/verify-logs.py` reads the Gerrit container's output
+and checks that the error log reaches it as JSON, with no line in
+Gerrit's text layout and no complaint from log4j, then checks that
+`logs/httpd_log` holds the probes' requests and that `logs/sshd_log`
+exists:
+
+```sh
+python3 K8S/charts/gerrit/files/scripts/verify-logs.py \
+  --namespace gerrit-smoke --fullname gerrit
+```
+
+For a release with `plugins.healthcheck.enabled`,
+`files/scripts/verify-health.py` checks that
+`<urlPrefix>/config/server/healthcheck~status` answers 200 with every
+check passed or disabled, and names any that failed. It also reuses
+the helpers of `verify-site.py`:
+
+```sh
+python3 K8S/charts/gerrit/files/scripts/verify-health.py \
+  --namespace gerrit-smoke --fullname gerrit --url-prefix /r
+```
+
 The `chart-smoke` job in `.github/workflows/testing.yaml` runs this
-sequence on every pull request. It then upgrades the release with
-`gc.cronJob.enabled`, runs the CronJob once with
+sequence, but for `verify-health.py`, on every pull request. It then
+upgrades the release with `gc.cronJob.enabled`, runs the CronJob once with
 `kubectl create job --from` on a fixture repository of loose objects,
 and checks that the Job succeeds and leaves the objects packed. It
 also lints and renders the chart
@@ -996,14 +1216,20 @@ that every container, init container and ephemeral container image
 ends in that digest.
 
 `tests/chart/` holds golden tests: each values file under `examples/`
-must render the `gerrit.config`, `jgit.config` and `notedb.config` in
+must render the `gerrit.config`, `jgit.config`, `notedb.config` and
+`log4j.properties` in
 `tests/chart/golden/<example>/`, and `templates/ingress.yaml` as a
 plain Ingress and as Traefik objects in `ingress-plain.golden` and
 `ingress-traefik.golden` there, and `render-config.sh` must write the
 `secure.config` there with mode `0600`. With `gc.cronJob.enabled`,
 `templates/gc-cronjob.yaml` must render `gc-cronjob.golden`, and with
 `toolbox.enabled`, `templates/admin-toolbox.yaml` must render
-`admin-toolbox.golden`; the toolbox helpers run against fixture sites
+`admin-toolbox.golden`. With the metrics plugin and the
+`ServiceMonitor` toggle on and `monitoring.coreos.com/v1` available,
+`templates/servicemonitor.yaml` must render `servicemonitor.golden`,
+and without that API nothing; with `logs.retentionDays` set,
+`templates/log-cleanup-cronjob.yaml` must render
+`log-cleanup-cronjob.golden`; the toolbox helpers run against fixture sites
 with the DNS lookup stubbed. After an intended change to
 the rendered output, regenerate the goldens and review the diff:
 

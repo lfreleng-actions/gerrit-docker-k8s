@@ -1,0 +1,117 @@
+{{/*
+SPDX-License-Identifier: Apache-2.0
+SPDX-FileCopyrightText: 2026 The Linux Foundation
+*/}}
+{{- $days := include "gerrit.logRetentionDays" . | int }}
+{{- if gt $days 0 }}
+{{- $fullname := include "gerrit.fullname" . }}
+{{- /* A CronJob name may hold 52 characters, leaving room for the
+Job names the controller derives from it */}}
+{{- $cleanupName := printf "%s-log-cleanup" ($fullname | trunc 40 | trimSuffix "-") }}
+{{- with .Values.logs }}
+# Deletes the rotated logs under logs/ on the site volume once they
+# are older than logs.retentionDays
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ $cleanupName }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "gerrit.logCleanupLabels" $ | nindent 4 }}
+spec:
+  schedule: {{ .schedule | quote }}
+  {{- with .timeZone }}
+  timeZone: {{ . | quote }}
+  {{- end }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      template:
+        metadata:
+          labels:
+            {{- include "gerrit.logCleanupLabels" $ | nindent 12 }}
+          annotations:
+            {{- include "gerrit.otelOptOutAnnotations" $ | nindent 12 }}
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          {{- with include "gerrit.imagePullSecrets" $ | trim }}
+          {{- . | nindent 10 }}
+          {{- end }}
+          securityContext:
+            {{- include "gerrit.podSecurityContext" $ | nindent 12 }}
+          # The site volume is usually ReadWriteOnce: run only on the
+          # node Gerrit runs on, where the volume is already attached
+          affinity:
+            podAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                - topologyKey: kubernetes.io/hostname
+                  labelSelector:
+                    matchLabels:
+                      {{- include "gerrit.selectorLabels" $ | nindent 22 }}
+          containers:
+            - name: log-cleanup
+              image: {{ include "gerrit.image" $ }}
+              imagePullPolicy: {{ $.Values.image.pullPolicy }}
+              command: ["sh", "/scripts/log-cleanup.sh"]
+              env:
+                - name: GERRIT_SITE
+                  value: /var/gerrit
+                - name: LOG_RETENTION_DAYS
+                  value: {{ $days | quote }}
+                - name: HOME
+                  value: /tmp
+              securityContext:
+                {{- include "gerrit.containerSecurityContext" $ | nindent 16 }}
+              {{- with .resources }}
+              resources:
+                {{- toYaml . | nindent 16 }}
+              {{- end }}
+              volumeMounts:
+                - name: site
+                  mountPath: /var/gerrit
+                - name: scripts
+                  mountPath: /scripts
+                  readOnly: true
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            - name: site
+              persistentVolumeClaim:
+                claimName: site-{{ $fullname }}-0
+            - name: scripts
+              configMap:
+                name: {{ $fullname }}-scripts
+            - name: tmp
+              emptyDir: {}
+          {{- with $.Values.nodeSelector }}
+          nodeSelector:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $.Values.tolerations }}
+          tolerations:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+{{- end }}
+{{- if .Values.networkPolicy.enabled }}
+---
+# The log cleanup pod needs no network: deny all ingress and egress
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $cleanupName }}-deny
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "gerrit.logCleanupLabels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "gerrit.logCleanupSelectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+{{- end }}
+{{- end }}
