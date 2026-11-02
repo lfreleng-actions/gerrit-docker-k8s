@@ -13,7 +13,7 @@ metadata:
     app.kubernetes.io/name: gerrit-git-gc
     app.kubernetes.io/instance: gerrit
     app.kubernetes.io/component: git-gc
-    app.kubernetes.io/version: "3.13.1"
+    app.kubernetes.io/version: "3.13.10"
     app.kubernetes.io/managed-by: Helm
     app.kubernetes.io/part-of: gerrit
 spec:
@@ -39,7 +39,7 @@ metadata:
     app.kubernetes.io/name: gerrit-git-gc
     app.kubernetes.io/instance: gerrit
     app.kubernetes.io/component: git-gc
-    app.kubernetes.io/version: "3.13.1"
+    app.kubernetes.io/version: "3.13.10"
     app.kubernetes.io/managed-by: Helm
     app.kubernetes.io/part-of: gerrit
 spec:
@@ -57,7 +57,7 @@ spec:
             app.kubernetes.io/name: gerrit-git-gc
             app.kubernetes.io/instance: gerrit
             app.kubernetes.io/component: git-gc
-            app.kubernetes.io/version: "3.13.1"
+            app.kubernetes.io/version: "3.13.10"
             app.kubernetes.io/managed-by: Helm
             app.kubernetes.io/part-of: gerrit
           annotations:
@@ -90,7 +90,7 @@ spec:
                       app.kubernetes.io/instance: gerrit
           containers:
             - name: git-gc
-              image: ghcr.io/lfreleng-actions/gerrit:3.13.1
+              image: ghcr.io/lfreleng-actions/gerrit-docker-k8s/gerrit:v0.0.0
               imagePullPolicy: IfNotPresent
               command: ["sh", "/scripts/git-gc.sh"]
               args:

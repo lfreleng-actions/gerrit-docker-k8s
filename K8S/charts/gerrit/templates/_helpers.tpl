@@ -147,12 +147,16 @@ It exists exactly while the pod does, ready or not. */}}
 {{- printf "%s-0.%s-headless.%s.svc.%s." $fullname $fullname .Release.Namespace (trimSuffix "." .Values.clusterDomain) -}}
 {{- end -}}
 
-{{/* Image reference; a digest takes precedence over the tag */}}
+{{/* Image reference; a digest takes precedence over the tag. Release
+images are tagged vX.Y.Z rather than with the Gerrit version in
+appVersion, so there is no fallback: one of the two must be set. */}}
 {{- define "gerrit.image" -}}
 {{- if .Values.image.digest -}}
 {{- printf "%s@%s" .Values.image.repository .Values.image.digest -}}
+{{- else if .Values.image.tag -}}
+{{- printf "%s:%s" .Values.image.repository .Values.image.tag -}}
 {{- else -}}
-{{- printf "%s:%s" .Values.image.repository (default .Chart.AppVersion .Values.image.tag) -}}
+{{- fail "set image.tag (a release tag such as v1.2.3) or image.digest; the chart published with each release sets image.digest" -}}
 {{- end -}}
 {{- end -}}
 
@@ -531,9 +535,9 @@ true
 {{- if dig "healthcheck" "enabled" false (default dict .Values.plugins) }}true{{ end -}}
 {{- end -}}
 
-{{/* Path the readiness and liveness probes call: the healthcheck
-plugin's status with the plugin enabled, else the version endpoint */}}
-{{- define "gerrit.healthProbePath" -}}
+{{/* Path the readiness probe calls: the healthcheck plugin's status
+with the plugin enabled, else the version endpoint */}}
+{{- define "gerrit.readinessProbePath" -}}
 {{- if include "gerrit.healthcheckEnabled" . -}}
 {{- printf "%s/config/server/healthcheck~status" (include "gerrit.urlPrefix" .) -}}
 {{- else -}}

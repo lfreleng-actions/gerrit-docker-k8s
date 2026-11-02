@@ -1,0 +1,144 @@
+---
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+
+# Example Argo CD AppProject and Application for the Gerrit chart that
+# each release of this repository publishes, by version, to
+# oci://ghcr.io/lfreleng-actions/gerrit-docker-k8s/charts/gerrit. The
+# published chart already pins the image by digest.
+#
+# Every name below is a placeholder: the project, the application, the
+# gerrit namespace, the values repository and the Secret names. Values
+# come from a file in the deployment's own Git repository through a
+# $values reference. K8S/docs/DESIGN.md section 6 explains the choices:
+#
+# - Every existingSecret the deployment uses is named (section 6.2):
+#   Argo CD renders without cluster access, so a Secret the chart
+#   generates would get new values on every sync. Create the Secrets in
+#   the namespace outside this application, for example with an
+#   external secrets operator or sealed Secrets. The AppProject does
+#   not let the application manage Secrets, so a forgotten
+#   existingSecret fails the sync instead of replacing a value.
+# - managedNamespaceMetadata labels the namespace for the restricted
+#   Pod Security level (section 6.3). A deployment that enables
+#   persistence.volumePermissions.enabled needs baseline instead.
+# - No automated sync (section 6.4): an operator decides when a sync
+#   runs.
+#
+# One List, so it stays one YAML document. Apply it to the namespace
+# Argo CD runs in:
+#
+#   kubectl apply -n argocd -f K8S/argocd/example-gerrit.yaml
+
+apiVersion: v1
+kind: List
+items:
+  # Argo CD reads Helm charts from an OCI registry through a repository
+  # with enableOCI. Once the package is public it needs no credentials.
+  - apiVersion: v1
+    kind: Secret
+    metadata:
+      name: gerrit-chart-repository
+      namespace: argocd
+      labels:
+        argocd.argoproj.io/secret-type: repository
+    stringData:
+      type: helm
+      name: gerrit-charts
+      url: ghcr.io/lfreleng-actions/gerrit-docker-k8s/charts
+      enableOCI: "true"
+  - apiVersion: argoproj.io/v1alpha1
+    kind: AppProject
+    metadata:
+      name: gerrit
+      namespace: argocd
+    spec:
+      description: Gerrit Code Review
+      sourceRepos:
+        - ghcr.io/lfreleng-actions/gerrit-docker-k8s/charts
+        - https://git.example.org/platform/gerrit-deployment.git
+      destinations:
+        - server: https://kubernetes.default.svc
+          namespace: gerrit
+      # CreateNamespace below needs the Namespace
+      clusterResourceWhitelist:
+        - group: ""
+          kind: Namespace
+      # What the chart renders, except Secret (see above). The cert-manager,
+      # Traefik and Prometheus operator kinds serve the chart options that
+      # render them.
+      namespaceResourceWhitelist:
+        - group: ""
+          kind: ConfigMap
+        - group: ""
+          kind: Service
+        - group: apps
+          kind: StatefulSet
+        - group: apps
+          kind: Deployment
+        - group: batch
+          kind: CronJob
+        - group: networking.k8s.io
+          kind: Ingress
+        - group: networking.k8s.io
+          kind: NetworkPolicy
+        - group: cert-manager.io
+          kind: Certificate
+        - group: traefik.io
+          kind: IngressRoute
+        - group: traefik.io
+          kind: Middleware
+        - group: monitoring.coreos.com
+          kind: ServiceMonitor
+  - apiVersion: argoproj.io/v1alpha1
+    kind: Application
+    metadata:
+      name: gerrit
+      namespace: argocd
+    spec:
+      project: gerrit
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: gerrit
+      sources:
+        - repoURL: ghcr.io/lfreleng-actions/gerrit-docker-k8s/charts
+          chart: gerrit
+          # A chart version: a release tag without its "v"
+          targetRevision: 1.2.3
+          helm:
+            releaseName: gerrit
+            valueFiles:
+              - $values/gerrit/values.yaml
+            # Here, so the values file cannot leave them out. Add
+            # auth.saml.existingSecret, hooks.g2p.existingSecret,
+            # plugins.its-jira.existingSecret and metrics.existingSecret
+            # when the values enable the feature that reads each one.
+            valuesObject:
+              secrets:
+                admin:
+                  existingSecret: gerrit-admin
+                secureConfig:
+                  existingSecret: gerrit-secure-config
+        - repoURL: https://git.example.org/platform/gerrit-deployment.git
+          targetRevision: main
+          ref: values
+      syncPolicy:
+        managedNamespaceMetadata:
+          labels:
+            pod-security.kubernetes.io/enforce: restricted
+            pod-security.kubernetes.io/audit: restricted
+            pod-security.kubernetes.io/warn: restricted
+        syncOptions:
+          - CreateNamespace=true
+          - RespectIgnoreDifferences=true
+      # The API server fills in fields of the StatefulSet's claim template
+      # that the chart leaves out, and the template cannot change once
+      # created; without this the application never shows as synced.
+      ignoreDifferences:
+        - group: apps
+          kind: StatefulSet
+          jqPathExpressions:
+            - .spec.volumeClaimTemplates[]?.apiVersion
+            - .spec.volumeClaimTemplates[]?.kind
+            - .spec.volumeClaimTemplates[]?.spec.volumeMode
+            - .spec.volumeClaimTemplates[]?.status

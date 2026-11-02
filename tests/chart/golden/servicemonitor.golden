@@ -13,7 +13,7 @@ metadata:
     helm.sh/chart: gerrit-0.1.0
     app.kubernetes.io/name: gerrit
     app.kubernetes.io/instance: gerrit
-    app.kubernetes.io/version: "3.13.1"
+    app.kubernetes.io/version: "3.13.10"
     app.kubernetes.io/managed-by: Helm
     app.kubernetes.io/part-of: gerrit
     release: prometheus

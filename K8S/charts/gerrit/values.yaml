@@ -7,10 +7,12 @@ nameOverride: ""
 fullnameOverride: ""
 
 image:
-  # Placeholder until the published image exists; build the image from
-  # this repository's Dockerfile and override repository and tag.
-  repository: ghcr.io/lfreleng-actions/gerrit
-  tag: ""                         # defaults to the chart appVersion
+  # Published by each release tag; see "Image" in the chart README.
+  # Set tag or digest: release images are tagged vX.Y.Z, not with the
+  # Gerrit version in appVersion, so the chart has no default tag. The
+  # chart each release publishes sets all three to that release.
+  repository: ghcr.io/lfreleng-actions/gerrit-docker-k8s/gerrit
+  tag: ""                         # vX.Y.Z; required unless digest is set
   digest: ""                      # sha256:...; takes precedence over tag
   pullPolicy: IfNotPresent
 
@@ -172,20 +174,27 @@ plugins:
   # Health checks through the healthcheck plugin. Enabling it adds
   # healthcheck to the plugins site-init copies from the image
   # catalogue, renders etc/healthcheck.config and points the readiness
-  # and liveness probes at <urlPrefix>/config/server/healthcheck~status
-  # instead of the version endpoint. Off until the chart points at the
-  # published image, whose catalogue ships healthcheck.jar (#246),
-  # since site-init fails on a missing jar; the default then becomes
-  # true. See "Health checks" in the chart README.
+  # probe at <urlPrefix>/config/server/healthcheck~status instead of
+  # the version endpoint. The liveness probe stays on the version
+  # endpoint, so a failing check takes the pod out of service rather
+  # than restarting Gerrit. The published image's catalogue
+  # ships healthcheck.jar; an image without it fails site-init, so
+  # turn this off there. See "Health checks" in the chart README.
   healthcheck:
-    enabled: false
+    enabled: true
     # etc/healthcheck.config: keys under [healthcheck], such as
     # timeout, and one map per check, such as querychanges, rendered
     # as its [healthcheck "<check>"] subsection with enabled, timeout
     # and the check's own keys. The auth check logs in with a fixed
-    # account a site rarely has, so it is off unless set here.
+    # account a site rarely has, so it is off unless set here. The
+    # querychanges check fails until a query for open changes returns
+    # its limit, ten by default, so it measures how much data a site
+    # holds rather than whether Gerrit is healthy, and a new site
+    # fails it; it is off too.
     config:
       auth:
+        enabled: false
+      querychanges:
         enabled: false
   # Prometheus metrics through the metrics-reporter-prometheus plugin.
   # Enabling it adds the plugin to the plugins site-init copies from

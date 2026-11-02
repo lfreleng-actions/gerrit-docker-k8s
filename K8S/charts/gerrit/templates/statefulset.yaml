@@ -4,7 +4,7 @@ SPDX-FileCopyrightText: 2026 The Linux Foundation
 */}}
 {{- $fullname := include "gerrit.fullname" . }}
 {{- $versionPath := printf "%s/config/server/version" (include "gerrit.urlPrefix" .) }}
-{{- $healthPath := include "gerrit.healthProbePath" . }}
+{{- $readinessPath := include "gerrit.readinessProbePath" . }}
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -197,8 +197,10 @@ spec:
           # First boot runs init and index creation in site-init, but
           # the daemon still loads caches and indexes before serving.
           # The startup probe waits up to ten minutes for the version
-          # endpoint; readiness and liveness then call the healthcheck
-          # plugin when it is enabled.
+          # endpoint. Readiness then calls the healthcheck plugin when it
+          # is enabled, so a failing check takes the pod out of service;
+          # liveness stays on the version endpoint, so a failing check
+          # never restarts the JVM.
           startupProbe:
             httpGet:
               path: {{ $versionPath }}
@@ -207,13 +209,13 @@ spec:
             failureThreshold: 60
           readinessProbe:
             httpGet:
-              path: {{ $healthPath }}
+              path: {{ $readinessPath }}
               port: http
             periodSeconds: 10
             failureThreshold: 3
           livenessProbe:
             httpGet:
-              path: {{ $healthPath }}
+              path: {{ $versionPath }}
               port: http
             periodSeconds: 30
             timeoutSeconds: 5

@@ -589,6 +589,8 @@ jobs:
       SMOKE_IMAGE: gerrit-local
       SMOKE_TAG: smoke
       SMOKE_NAMESPACE: gerrit-smoke
+      # The chart has no default image tag; lint and render with one
+      LINT_TAG: v0.0.0
     steps:
       # Harden the runner used by this workflow
       # yamllint disable-line rule:line-length
@@ -614,7 +616,7 @@ jobs:
           # Lint the chart
           set -euo pipefail
           shopt -s nullglob
-          helm lint "$CHART"
+          helm lint "$CHART" --set "image.tag=$LINT_TAG"
           helm lint "$CHART" -f "$CHART/values-local-smoke.yaml"
           examples=("$CHART"/examples/*.yaml)
           if [ "${#examples[@]}" -eq 0 ]; then
@@ -623,7 +625,7 @@ jobs:
           fi
           for f in "${examples[@]}"; do
             echo "Linting with $f"
-            helm lint "$CHART" -f "$f"
+            helm lint "$CHART" -f "$f" --set "image.tag=$LINT_TAG"
           done
 
       - name: 'Install uv'
@@ -665,7 +667,7 @@ jobs:
             name=$(basename "$f" .yaml)
             echo "Rendering with $f"
             helm template gerrit "$CHART" --namespace "$SMOKE_NAMESPACE" \
-              -f "$f" > "$out/$name.yaml"
+              -f "$f" --set "image.tag=$LINT_TAG" > "$out/$name.yaml"
             helm template gerrit "$CHART" --namespace "$SMOKE_NAMESPACE" \
               -f "$f" --set "image.digest=$digest" \
               > "$out/$name-digest.yaml"
@@ -771,6 +773,15 @@ jobs:
           python3 "$CHART/files/scripts/verify-site.py" \
             --namespace "$SMOKE_NAMESPACE" --fullname gerrit \
             --url-prefix /r --auth-type DEVELOPMENT_BECOME_ANY_ACCOUNT
+
+      # The healthcheck plugin is on by default, so the readiness probe
+      # already waits on it; this names any check that fails
+      - name: 'Verify the health checks'
+        shell: bash
+        run: |
+          # Verify the health checks
+          python3 "$CHART/files/scripts/verify-health.py" \
+            --namespace "$SMOKE_NAMESPACE" --fullname gerrit --url-prefix /r
 
       # values-local-smoke.yaml installs a stub patchset-created hook;
       # a change created over REST must reach it
