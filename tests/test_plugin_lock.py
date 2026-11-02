@@ -46,13 +46,11 @@ def check(tmp_path: Path, *lines: str) -> subprocess.CompletedProcess[str]:
     return run("--lock", str(lock))
 
 
-@pytest.mark.xfail(strict=True, reason="check-plugin-lock.sh not added yet")
 def test_repository_lock_is_valid() -> None:
     result = run("--lock", str(LOCK))
     assert result.returncode == 0, result.stderr
 
 
-@pytest.mark.xfail(strict=True, reason="check-plugin-lock.sh not added yet")
 def test_repository_lock_names_every_catalogue_jar() -> None:
     entries = {
         line.split()[0]
@@ -71,13 +69,11 @@ def test_repository_lock_names_every_catalogue_jar() -> None:
     }
 
 
-@pytest.mark.xfail(strict=True, reason="check-plugin-lock.sh not added yet")
 def test_valid_entries_pass(tmp_path: Path) -> None:
     result = check(tmp_path, HEALTHCHECK, SAML)
     assert result.returncode == 0, result.stderr
 
 
-@pytest.mark.xfail(strict=True, reason="check-plugin-lock.sh not added yet")
 @pytest.mark.parametrize(
     ("line", "message"),
     [
@@ -102,21 +98,18 @@ def test_malformed_entry_fails(tmp_path: Path, line: str, message: str) -> None:
     assert message in result.stderr
 
 
-@pytest.mark.xfail(strict=True, reason="check-plugin-lock.sh not added yet")
 def test_duplicate_name_fails(tmp_path: Path) -> None:
     result = check(tmp_path, HEALTHCHECK, HEALTHCHECK.replace("plugins/", "lib/", 1))
     assert result.returncode == 1
     assert "more than once" in result.stderr
 
 
-@pytest.mark.xfail(strict=True, reason="check-plugin-lock.sh not added yet")
 def test_empty_lock_fails(tmp_path: Path) -> None:
     result = check(tmp_path)
     assert result.returncode == 1
     assert "no entries" in result.stderr
 
 
-@pytest.mark.xfail(strict=True, reason="check-plugin-lock.sh not added yet")
 def test_missing_lock_is_an_error(tmp_path: Path) -> None:
     result = run("--lock", str(tmp_path / "absent.lock"))
     assert result.returncode == 2
