@@ -645,7 +645,10 @@ because nothing renders over them.
 ## 6. Argo CD integration
 
 The chart works with plain Helm; this section covers what Argo CD
-needs on top.
+needs on top. `K8S/argocd/example-gerrit.yaml` is the example
+`AppProject` and `Application` it refers to: they deploy the chart
+each release publishes, by version, with values from the deployment's
+own Git repository.
 
 ### 6.1 Sync waves
 

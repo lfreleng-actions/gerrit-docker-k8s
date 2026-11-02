@@ -158,6 +158,9 @@ gh attestation verify "oci://ghcr.io/${repo}/charts/gerrit:${version}" \
   --repo "${repo}"
 ```
 
+`K8S/argocd/example-gerrit.yaml` deploys the published chart with
+Argo CD; `K8S/docs/DESIGN.md` section 6 explains its settings.
+
 ## Values
 
 | Value                                    | Default                          | Notes                                                      |
