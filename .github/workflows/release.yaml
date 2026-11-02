@@ -16,7 +16,8 @@
 #    `--dev --batch` site init and the HTTP endpoint of a running
 #    container.
 # 3. Generates an SPDX SBOM and audits it with Grype, before anything
-#    is published, so a failing image never reaches GHCR.
+#    is published, so a failing image never reaches GHCR. The tagged
+#    .grype.yaml accepts named, version-pinned findings.
 # 4. Publishes the image to GHCR as vX.Y.Z, then, one tag run at a
 #    time, moves X.Y, X and latest to it while it is the newest final
 #    tag each covers; a pre-release tag publishes only its own tag.
@@ -335,28 +336,41 @@ jobs:
             --dev --batch --no-auto-start -d /tmp/site
           echo "gerrit init --dev --batch succeeded ✅"
 
+      # While Gerrit starts, the endpoint first resets the connection,
+      # then answers 302 with an empty body (a fresh development site
+      # redirects the first visitor to log in), and only then 200 with
+      # the version. Only that 200 shows Gerrit is serving, so any
+      # other status, or a body without the pinned version, is retried
+      # rather than followed or failed.
       - name: 'Check the HTTP endpoint'
         shell: bash
         run: |
           # Check the HTTP endpoint
           set -euo pipefail
           pinned=$(sed -n 's/^ARG GERRIT_VERSION=//p' Dockerfile)
+          want="\"${pinned%%-*}\""
           docker run -d --name gerrit-smoke -p 127.0.0.1:8080:8080 \
             gerrit:linux-amd64
           url=http://127.0.0.1:8080/config/server/version
+          body_file=$(mktemp)
+          status=000
+          body=''
           for _ in $(seq 1 60); do
-            if body=$(curl -fsS "$url" 2>/dev/null); then
+            : > "$body_file"
+            status=$(curl -sS --max-time 10 -o "$body_file" \
+              -w '%{http_code}' "$url" 2>/dev/null) || true
+            status=${status:-000}
+            body=$(cat "$body_file")
+            if [[ "$status" == 200 && "$body" == *"$want"* ]]; then
               echo "$body"
-              if [[ "$body" == *"\"${pinned%%-*}\""* ]]; then
-                echo "Gerrit answers on HTTP ✅"
-                exit 0
-              fi
-              echo "::error::Unexpected version from $url ❌"
-              exit 1
+              echo "Gerrit answers on HTTP ✅"
+              exit 0
             fi
+            echo "Not ready yet: HTTP $status, body '${body}'"
             sleep 5
           done
-          echo "::error::Gerrit did not answer on $url ❌"
+          echo "::error::Gerrit did not answer HTTP 200 with $want on" \
+            "$url; last HTTP $status, body '${body}' ❌"
           docker logs gerrit-smoke || true
           exit 1
 
@@ -459,16 +473,25 @@ jobs:
           allowed-endpoints: >
             ${{ env.CONNECTION_ALLOW_LIST }}
 
+      # The tagged commit supplies .grype.yaml. It is trusted here
+      # because it comes from the signed tag tag-validate checked.
+      - name: 'Checkout repository'
+        # yamllint disable-line rule:line-length
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
       - name: 'Download SBOM artefact'
         # yamllint disable-line rule:line-length
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
           name: sbom-gerrit
 
-      # Gates on fixable high and critical findings. The upstream
-      # Gerrit image carries Ubuntu and JVM packages this repository
-      # cannot patch, so an unfixable advisory warns rather than
-      # blocking every release. The NO_BLOCK_AUDIT_FAIL repository
+      # Gates on fixable high and critical findings. An unfixable
+      # advisory warns rather than blocking every release. .grype.yaml
+      # accepts named findings in components this repository does not
+      # build, each pinned to a package version (see the README's
+      # "Vulnerability gate"). The NO_BLOCK_AUDIT_FAIL repository
       # variable lets an urgent release publish despite findings.
       - name: 'Grype audit SBOM'
         # yamllint disable-line rule:line-length
@@ -476,6 +499,7 @@ jobs:
         with:
           sbom: 'sbom-gerrit.spdx.json'
           name: 'gerrit'
+          config: '.grype.yaml'
           fail-on: 'high'
           only-fixed: 'true'
           permit-fail: ${{ vars.NO_BLOCK_AUDIT_FAIL == 'true' }}
@@ -486,6 +510,39 @@ jobs:
           upload-artifact: 'true'
           artifact-name: 'scan-gerrit'
           retention-days: 90
+
+      # Every release records which findings .grype.yaml accepted, and
+      # why. testing.yaml's release-build job repeats this step.
+      - name: 'List accepted findings'
+        if: always()
+        shell: bash
+        run: |
+          # List accepted findings
+          set -euo pipefail
+          report=grype-gerrit.json
+          if [[ ! -f "$report" ]]; then
+            echo "::warning::No Grype JSON report to summarise"
+            exit 0
+          fi
+          rows=$(jq -r '.ignoredMatches[]?
+            | [.vulnerability.id, .vulnerability.severity,
+               .artifact.name, .artifact.version,
+               ([.appliedIgnoreRules[]?.reason
+                 | select(. != null and . != "")] | join("; ")
+                 | if . == "" then "Grype default rule" else . end)]
+            | map(tostring | gsub("\\|"; "\\|"))
+            | "| " + join(" | ") + " |"' "$report")
+          {
+            echo "## Grype: accepted findings"
+            echo ""
+            if [[ -z "$rows" ]]; then
+              echo "None."
+            else
+              echo "| Finding | Severity | Package | Version | Reason |"
+              echo "| --- | --- | --- | --- | --- |"
+              echo "$rows"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: 'Upload Grype SARIF to code scanning'
         if: always()
