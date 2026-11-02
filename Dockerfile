@@ -9,7 +9,11 @@
 # - the site export tool, scripts/gerrit-site-export.py, with rsync and zstd
 #
 # Build:
-#   docker build --build-arg GERRIT_VERSION=3.13.1-ubuntu24 -t gerrit-extended .
+#   docker build --build-arg GERRIT_VERSION=3.13.10-ubuntu24 -t gerrit-extended .
+#
+# The GitHub Action builds this file at run time with its own
+# gerrit_version. The chart image, Dockerfile.chart, starts from the
+# image this file builds and adds the plugin catalogue.
 #
 # The following plugins are already bundled in the official Gerrit image:
 # - commit-message-length-validator
@@ -27,12 +31,12 @@
 # - uploadvalidator
 # - webhooks
 
-ARG GERRIT_VERSION=3.13.1-ubuntu24
+ARG GERRIT_VERSION=3.13.10-ubuntu24
 FROM gerritcodereview/gerrit:${GERRIT_VERSION}
 
 LABEL org.opencontainers.image.title="Gerrit Extended"
 LABEL org.opencontainers.image.description="Gerrit Code Review with uv and gerrit-to-platform"
-LABEL org.opencontainers.image.source="https://github.com/lfreleng-actions/gerrit-action"
+LABEL org.opencontainers.image.source="https://github.com/lfreleng-actions/gerrit-docker-k8s"
 LABEL org.opencontainers.image.licenses="Apache-2.0"
 
 # Install dependencies as root

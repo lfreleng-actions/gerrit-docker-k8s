@@ -9,6 +9,7 @@ ci:
     - aislop
     - basedpyright
     - check-uv-checksum
+    - check-plugin-lock
   autofix_commit_msg: |
     Chore: Pre-commit autofixes
 
@@ -171,6 +172,15 @@ repos:
         language: script
         entry: scripts/check-uv-checksum.sh
         files: ^Dockerfile$
+        pass_filenames: false
+
+  - repo: local
+    hooks:
+      - id: check-plugin-lock
+        name: Check the plugin catalogue lock
+        language: system
+        entry: bash scripts/check-plugin-lock.sh
+        files: ^(docker/plugins\.lock|scripts/check-plugin-lock\.sh)$
         pass_filenames: false
 
   - repo: local

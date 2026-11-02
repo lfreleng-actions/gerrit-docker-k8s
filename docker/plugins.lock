@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+#
+# Plugin catalogue for the chart image (Dockerfile.chart). Each line
+# pins one GerritForge CI artefact by build number and sha256:
+#
+#   <dir>/<name> <url> <sha256>
+#
+# <dir> is the catalogue directory, plugins/ or lib/, under
+# /var/gerrit-catalogue, and the jar lands there as <name>.jar. Every
+# entry builds from the stable-3.13 branch, matching GERRIT_VERSION in
+# the Dockerfile. When a plugin has no green build for that line, pin
+# the newest green build from the previous line and say so in a comment
+# above its entry.
+#
+# Check:   bash scripts/check-plugin-lock.sh [--verify]
+# Refresh: bash scripts/check-plugin-lock.sh --refresh [NAME...]
+lib/saml https://gerrit-ci.gerritforge.com/job/plugin-saml-bazel-stable-3.13/1/artifact/bazel-bin/plugins/saml/saml.jar 85aa88e28acb78d98b72a0df3f69a833b2581e2141562fd4ef2a45f33368a607
+plugins/its-jira https://gerrit-ci.gerritforge.com/job/plugin-its-jira-bazel-stable-3.13/1/artifact/bazel-bin/plugins/its-jira/its-jira.jar f7c9fb1c4cc3505af522ce0226ee20829b1cc770b9d31cbbaa7986778d6d0b97
+plugins/events-log https://gerrit-ci.gerritforge.com/job/plugin-events-log-bazel-stable-3.13/1/artifact/bazel-bin/plugins/events-log/events-log.jar 832d99cf543a1c0572d6406ac25c9f5ce2b25f4365f6c2aa0522b6fc540e1833
+plugins/analytics https://gerrit-ci.gerritforge.com/job/plugin-analytics-gh-sbt-stable-3.13/2/artifact/target/scala-2.13/analytics.jar 498d5e5c701da9e5459bd7fafaa7a5b0d945a06d143848451e3f99cc975b9cf4
+plugins/reviewers https://gerrit-ci.gerritforge.com/job/plugin-reviewers-bazel-stable-3.13/1/artifact/bazel-bin/plugins/reviewers/reviewers.jar e32cec02df585ddaf5f1f6dd1e9c75ace71e7685b23b744ae5178402acc9f6d5
+plugins/lfs https://gerrit-ci.gerritforge.com/job/plugin-lfs-bazel-stable-3.13/1/artifact/bazel-bin/plugins/lfs/lfs.jar a06382b9be88004186d4e7cef3114bf58f551c0ec6673947cf1684d6579b1fe5
+plugins/healthcheck https://gerrit-ci.gerritforge.com/job/plugin-healthcheck-bazel-stable-3.13/1/artifact/bazel-bin/plugins/healthcheck/healthcheck.jar 089fb6a4ae4f1a26b7724458926a42e25ac881b25cfa1302d1e713130e175abd
+plugins/metrics-reporter-prometheus https://gerrit-ci.gerritforge.com/job/plugin-metrics-reporter-prometheus-bazel-stable-3.13/1/artifact/bazel-bin/plugins/metrics-reporter-prometheus/metrics-reporter-prometheus.jar 755ecbefa3db78e4ef440fe6d6c7e8f12cd604136e217250c8916a1fe78dfa59

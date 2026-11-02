@@ -1,0 +1,63 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+
+# Gerrit image for the Helm chart: the image Dockerfile builds, plus
+# the plugin catalogue the chart's site-init copies from.
+#
+# The catalogue lives outside the site, at /var/gerrit-catalogue (the
+# chart's pluginCatalogue.path default), as plugins/<name>.jar and
+# lib/<name>.jar:
+# - the jars docker/plugins.lock pins, downloaded and checked against
+#   their sha256; a mismatch fails the build
+# - a symlink to /var/gerrit/plugins/<name>.jar for each core plugin
+#   the official image bundles; site-init mounts the site elsewhere,
+#   so it sees the image's own /var/gerrit, and its cp follows them
+#
+# Nothing here touches /var/gerrit/plugins, so a container started
+# from this image without the chart behaves as the base image does.
+#
+# Build (the base first, then this file on top of it):
+#   docker build -t gerrit-extended:local .
+#   docker build -f Dockerfile.chart \
+#     --build-arg BASE_IMAGE=gerrit-extended:local -t gerrit-chart:local .
+
+ARG BASE_IMAGE=gerrit-extended:local
+# hadolint ignore=DL3006
+FROM ${BASE_IMAGE}
+
+LABEL org.opencontainers.image.title="Gerrit for Kubernetes"
+LABEL org.opencontainers.image.description="Gerrit Code Review with uv, gerrit-to-platform and a plugin catalogue for the Helm chart"
+LABEL org.opencontainers.image.source="https://github.com/lfreleng-actions/gerrit-docker-k8s"
+LABEL org.opencontainers.image.licenses="Apache-2.0"
+
+USER root
+
+ENV GERRIT_CATALOGUE=/var/gerrit-catalogue
+COPY docker/plugins.lock /tmp/plugins.lock
+
+# Each lock line is "<dir>/<name> <url> <sha256>"; see the lock file
+RUN set -eu; \
+    install -d -o root -g root -m 0755 \
+        "$GERRIT_CATALOGUE" "$GERRIT_CATALOGUE/plugins" "$GERRIT_CATALOGUE/lib"; \
+    grep -Ev '^[[:space:]]*(#|$)' /tmp/plugins.lock > /tmp/plugins.entries; \
+    while read -r entry url digest; do \
+        jar="$GERRIT_CATALOGUE/$entry.jar"; \
+        echo "Fetching $entry"; \
+        curl -fsSL --retry 3 --retry-delay 3 -o "$jar" "$url"; \
+        echo "$digest  $jar" | sha256sum -c -; \
+    done < /tmp/plugins.entries; \
+    test "$(find "$GERRIT_CATALOGUE" -name '*.jar' -type f | wc -l)" \
+        -eq "$(wc -l < /tmp/plugins.entries)"; \
+    for core in /var/gerrit/plugins/*.jar; do \
+        link="$GERRIT_CATALOGUE/plugins/${core##*/}"; \
+        if [ ! -e "$link" ]; then ln -s "$core" "$link"; fi; \
+    done; \
+    for name in replication hooks webhooks delete-project download-commands; do \
+        test -f "$GERRIT_CATALOGUE/plugins/$name.jar"; \
+    done; \
+    chown -R -h root:root "$GERRIT_CATALOGUE"; \
+    find "$GERRIT_CATALOGUE" -type f -exec chmod 0644 {} +; \
+    rm -f /tmp/plugins.lock /tmp/plugins.entries; \
+    ls -l "$GERRIT_CATALOGUE/plugins" "$GERRIT_CATALOGUE/lib"
+
+USER gerrit

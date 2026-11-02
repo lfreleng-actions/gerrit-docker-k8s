@@ -569,8 +569,9 @@ jobs:
 
   ### Helm Chart Smoke Test ###
   # Lints and renders K8S/charts/gerrit, then installs it on a kind
-  # cluster with an image built from this checkout and checks the site
-  # with verify-site.py.
+  # cluster with the chart image built from this checkout (Dockerfile,
+  # then Dockerfile.chart with its plugin catalogue) and checks the
+  # site with verify-site.py.
   #
   # The install uses values-local-smoke.yaml, which enables the root
   # volume-permissions init container because kind's local-path
@@ -708,26 +709,33 @@ jobs:
         with:
           path: /tmp/.buildx-cache
           # yamllint disable-line rule:line-length
-          key: gerrit-docker-${{ runner.os }}-${{ env.gerrit-version }}-chart-smoke
+          key: gerrit-docker-${{ runner.os }}-chart-smoke-${{ hashFiles('Dockerfile') }}
           restore-keys: |
-            gerrit-docker-${{ runner.os }}-${{ env.gerrit-version }}
+            gerrit-docker-${{ runner.os }}-chart-smoke-
             gerrit-docker-${{ runner.os }}-
 
       - name: 'Set up Docker Buildx'
         # yamllint disable-line rule:line-length
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
-      - name: 'Build the image from the Dockerfile'
+      # Builds what the release workflow publishes: the Dockerfile at
+      # its default GERRIT_VERSION, with buildx and the layer cache,
+      # then Dockerfile.chart on the docker driver, whose image store
+      # holds the base the first build loaded
+      - name: 'Build the chart image'
         shell: bash
-        env:
-          GERRIT_VERSION: ${{ env.gerrit-version }}
         run: |
-          # Build the image from the Dockerfile
+          # Build the chart image
           set -euo pipefail
           docker buildx build \
-            --build-arg "GERRIT_VERSION=${GERRIT_VERSION}" \
             --cache-from type=local,src=/tmp/.buildx-cache \
             --cache-to type=local,dest=/tmp/.buildx-cache-new,mode=max \
+            -t "${SMOKE_IMAGE}-base:${SMOKE_TAG}" \
+            --load \
+            .
+          docker buildx build --builder default \
+            -f Dockerfile.chart \
+            --build-arg "BASE_IMAGE=${SMOKE_IMAGE}-base:${SMOKE_TAG}" \
             -t "${SMOKE_IMAGE}:${SMOKE_TAG}" \
             --load \
             .

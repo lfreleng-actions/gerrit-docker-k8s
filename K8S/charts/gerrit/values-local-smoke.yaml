@@ -1,9 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: 2026 The Linux Foundation
 
-# Local smoke overlay for kind or Docker Desktop. Load an image built
-# from this repository's Dockerfile first, for example:
-#   docker build -t gerrit-local:dev .
+# Local smoke overlay for kind or Docker Desktop. Load the chart image
+# built from this repository's Dockerfile and Dockerfile.chart first,
+# for example:
+#   docker build -t gerrit-local-base:dev .
+#   docker build -f Dockerfile.chart \
+#     --build-arg BASE_IMAGE=gerrit-local-base:dev -t gerrit-local:dev .
 #   kind load docker-image gerrit-local:dev
 
 image:
@@ -35,12 +38,8 @@ ssh:
   service:
     enabled: false
 
-# The official image ships the hooks plugin in /var/gerrit/plugins,
-# which site-init still sees from the image. The stub hook logs each
-# call, so verify-hook.py --hook-log can check a change runs it.
-pluginCatalogue:
-  path: /var/gerrit
-
+# hooks comes from the image's plugin catalogue. The stub hook logs
+# each call, so verify-hook.py --hook-log can check a change runs it.
 hooks:
   enabled: true
   scripts:
