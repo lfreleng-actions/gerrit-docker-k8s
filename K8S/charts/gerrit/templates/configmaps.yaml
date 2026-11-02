@@ -14,7 +14,8 @@ data:
   {{- (.Files.Glob "files/scripts/*.sh").AsConfig | nindent 2 }}
 ---
 # etc/gerrit.config, jgit.config, notedb.config and, with replication
-# enabled, replication.config; site-init copies each over the site's
+# enabled, replication.config, and with its-jira enabled,
+# its/actions-its-jira.config; site-init copies each over the site's
 # own at every start
 apiVersion: v1
 kind: ConfigMap
@@ -42,6 +43,14 @@ data:
   replication.config: |
     {{- include "gerrit.replicationConfig" . | trim | nindent 4 }}
   {{- end }}
+  {{- if include "gerrit.itsJiraEnabled" . }}
+  {{- with include "gerrit.itsJiraActions" . | trim }}
+  actions-its-jira.config: |
+    {{- . | nindent 4 }}
+  {{- else }}
+  actions-its-jira.config: ""
+  {{- end }}
+  {{- end }}
 {{- if .Values.replication.enabled }}
 ---
 # Mounted in /var/gerrit/.ssh as known_hosts2, which the SSH client
@@ -59,4 +68,21 @@ data:
     {{- with .Values.replication.knownHosts | trim }}
     {{- . | nindent 4 }}
     {{- end }}
+{{- end }}
+{{- if include "gerrit.hooksEnabled" . }}
+{{- with include "gerrit.hookScripts" . | fromJson }}
+---
+# hooks.scripts; site-init writes each to the hooks directory
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $fullname }}-hooks
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "gerrit.labels" $ | nindent 4 }}
+data:
+  {{- range $name, $script := . }}
+  {{ $name }}: {{ toString $script | quote }}
+  {{- end }}
+{{- end }}
 {{- end }}

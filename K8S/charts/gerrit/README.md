@@ -23,13 +23,16 @@ volume holds state only.
 | `IngressRoute` `<fullname>`, `Middleware`s, `Certificate` `<fullname>-tls` | Instead of the `Ingress`, with `ingress.traefik.enabled` |
 | `ConfigMap` `<fullname>-scripts`  | `files/scripts/*.sh`                                           |
 | `ConfigMap` `<fullname>-config`   | Rendered `gerrit.config`, `jgit.config` and `notedb.config`, and `replication.config` with `replication.enabled` |
+| `ConfigMap` `<fullname>-hooks`    | `hooks.scripts`; with `hooks.enabled`, see [Hooks](#hooks)     |
 | `ConfigMap` `<fullname>-known-hosts` | SSH host keys of the replication remotes; with `replication.enabled`, see [Replication](#replication) |
 | `Secret` `<fullname>-admin`       | Admin credential placeholder; not consumed yet                 |
 | `Secret` `<fullname>-secure-config` | Values `render-config.sh` writes to `etc/secure.config`; see the Secret contract |
 | `Secret` `<fullname>-saml`        | SAML keystore, its passwords and the IdP metadata, created empty; with `auth.saml.enabled` and no `auth.saml.existingSecret`, see [SAML](#saml) |
+| `Secret` `<fullname>-g2p`         | `gerrit_to_platform.ini`, created empty; with `hooks.g2p.enabled` and no `hooks.g2p.existingSecret`, see [Hooks](#hooks) |
+| `Secret` `<fullname>-its-jira`    | Jira `username` and `password`, created empty; with `plugins.its-jira.enabled` and no `plugins.its-jira.existingSecret`, see [Issue tracker](#issue-tracker) |
 | `CronJob` `<fullname>-git-gc`, `NetworkPolicy` `<fullname>-git-gc-deny` | With `gc.cronJob.enabled`; see [Garbage collection](#garbage-collection) |
 | `Deployment`, `ConfigMap` and `NetworkPolicy` `<fullname>-toolbox` | With `toolbox.enabled`, at zero replicas; see [Admin toolbox](#admin-toolbox) |
-| `NetworkPolicy` (two)             | Default deny; allow ingress to 8080 (from `networkPolicy.ingressNamespaceSelector` when set) and 29418, egress to DNS, HTTPS and, with mail configured, the SMTP relay's port, with replication enabled, each remote's port, and with `auth.saml.metadataUrl`, its port |
+| `NetworkPolicy` (two)             | Default deny; allow ingress to 8080 (from `networkPolicy.ingressNamespaceSelector` when set) and 29418, egress to DNS, HTTPS and, with mail configured, the SMTP relay's port, with replication enabled, each remote's port, with `auth.saml.metadataUrl`, its port, and with `plugins.its-jira.enabled`, the Jira URL's port |
 
 The Secrets carry `helm.sh/resource-policy: keep` and
 `argocd.argoproj.io/sync-options: Prune=false,Delete=false`, so they
@@ -59,6 +62,8 @@ secure-config Secret.
 | `auth.saml.existingSecret`            | `samlKeystore.jks`        | With SAML | Mounted read-only at `etc/samlKeystore.jks` |
 | `auth.saml.existingSecret`            | `keystore-password`, `private-key-password` | With SAML | `saml.keystorePassword` and `saml.privateKeyPassword` in `secure.config` |
 | `auth.saml.existingSecret`            | `idp-metadata.xml`        | With `metadataFromSecret` | Mounted read-only at `etc/saml-idp-metadata.xml` |
+| `hooks.g2p.existingSecret`            | `gerrit_to_platform.ini`  | With g2p | `$XDG_CONFIG_HOME/gerrit_to_platform/` on the site with mode `0600` |
+| `plugins.its-jira.existingSecret`     | `username`, `password`    | With its-jira | `its-jira.username` and `its-jira.password` in `secure.config` |
 | `toolbox.existingSecret`              | `ssh-privatekey`          | No       | Mounted in the admin toolbox at `/etc/gerrit-toolbox/ssh/id` with mode `0400` |
 
 The generated `<fullname>-secure-config` Secret carries a random
@@ -75,12 +80,16 @@ empty or absent optional key leaves its entry out of `secure.config`.
    replaces the site's plugin and library jars with those named in
    `pluginCatalogue`, plus `replication` with `replication.enabled`
    and the `saml` library with `auth.saml.enabled`, and copies the rendered `gerrit.config`, `jgit.config`,
-   `notedb.config` and `replication.config` over the site's own. With
+   `notedb.config` and `replication.config` over the site's own, and with
+   `plugins.its-jira.enabled`, `etc/its/actions-its-jira.config`. With
    replication disabled it removes the site's `etc/replication.config`. On a site
    without the repository `gerrit.allProjects` names (`All-Projects`
    unless `gerrit.extraConfig` sets it) it then runs
    `gerrit init --batch --no-auto-start` on that configuration and
-   installs the rendered files again over whatever init added.
+   installs the rendered files again over whatever init added. With
+   `hooks.enabled` it then fills the hooks directory, and with
+   `hooks.g2p.enabled` installs `gerrit_to_platform.ini`; see
+   [Hooks](#hooks).
 3. `render-config` rewrites `etc/secure.config` from the Secrets,
    creating it with mode `0600` before writing any value.
 4. `gerrit` runs `bin/gerrit.sh run`. A startup probe allows ten
@@ -153,6 +162,19 @@ mounts empty anonymous volumes over them and the site disappears.
 | `toolbox.replicas`                       | `0`                              | Scale to `1` for a maintenance session                     |
 | `toolbox.existingSecret`                 | `""`                             | Secret with an administrator's `ssh-privatekey`; `""` mounts none |
 | `toolbox.resources`                      | `{}`                             | Resources of the toolbox container                         |
+| `hooks.enabled`                          | `false`                          | Adds the `hooks` plugin; see [Hooks](#hooks)               |
+| `hooks.path`                             | `hooks`                          | Hooks directory under the site; the chart owns it          |
+| `hooks.syncHookTimeout`                  | `30`                             | `hooks.syncHookTimeout`, in seconds                        |
+| `hooks.scripts`                          | `{}`                             | Hook scripts by hook name, installed with mode `0755`      |
+| `hooks.g2p.enabled`                      | `false`                          | gerrit-to-platform handles `hooks.g2p.hooks`; needs a replication remote |
+| `hooks.g2p.existingSecret`               | `""`                             | Secret with `gerrit_to_platform.ini`; `""` creates `<fullname>-g2p` |
+| `hooks.g2p.hooks`                        | `patchset-created`, `comment-added`, `change-merged` | Hooks linked to the g2p entry points |
+| `plugins.its-jira.enabled`               | `false`                          | Adds `its-jira`; see [Issue tracker](#issue-tracker)       |
+| `plugins.its-jira.url`                   | `""`                             | `its-jira.url`; required, `http` or `https`                |
+| `plugins.its-jira.existingSecret`        | `""`                             | Secret with `username` and `password`; `""` creates `<fullname>-its-jira` |
+| `plugins.its-jira.association`           | `OPTIONAL`                       | `MANDATORY`, `SUGGESTED` or `OPTIONAL`                     |
+| `plugins.its-jira.commentOn*`            | `false`                          | One comment rule each; see [Issue tracker](#issue-tracker) |
+| `plugins.its-jira.extraConfig`           | `""`                             | Appended verbatim to `etc/its/actions-its-jira.config`     |
 
 ### gerrit.config
 
@@ -631,6 +653,110 @@ metadata come from the source site and must not be regenerated: the
 identity provider trusts the source's key, and a new keystore breaks
 every login until the identity provider is updated. Fill the Secret
 with the source's keystore and passwords before the first start.
+
+## Hooks
+
+`hooks.enabled` adds the `hooks` plugin to the jars `site-init` copies
+from `pluginCatalogue.path` and renders `[hooks]` with `path` set to
+`/var/gerrit/<hooks.path>` and `syncHookTimeout`. The image must hold
+`<pluginCatalogue.path>/plugins/hooks.jar`; the official image ships
+it in `/var/gerrit/plugins`. `hooks.path` is a relative path that may
+not start with a site directory such as `etc`, `git` or `plugins`.
+
+The chart owns the hooks directory. At every start `site-init` removes
+the files and links at its top level, then installs:
+
+- each `hooks.scripts` entry, a hook name such as `ref-updated` mapped
+  to the script's text, with mode `0755`;
+- with `hooks.g2p.enabled`, a link from each hook in `hooks.g2p.hooks`
+  to the gerrit-to-platform entry point of the same name in
+  `/opt/gerrit-tools/bin`. A hook may not be both a script and a g2p
+  hook, and an entry point missing from the image fails `site-init`.
+
+gerrit-to-platform reads
+`$XDG_CONFIG_HOME/gerrit_to_platform/gerrit_to_platform.ini`. With g2p
+the chart sets `XDG_CONFIG_HOME=/var/gerrit/.config` in the `gerrit`
+container, and `site-init` installs the Secret's
+`gerrit_to_platform.ini` there with mode `0600` in a `0700` directory,
+beside a link to `etc/replication.config`, which g2p reads for the
+remotes. g2p finds the platform and repositories there, so
+`hooks.g2p.enabled` needs `replication.enabled` with at least one
+remote in `replication.remotes`, and the render fails without one.
+The generated `<fullname>-g2p` Secret holds an empty
+`gerrit_to_platform.ini`; fill it in the cluster, or under Argo CD
+name a pre-created Secret in `hooks.g2p.existingSecret`, since an
+offline render would replace it on each sync. Disabling g2p removes
+the file and the link.
+
+```yaml
+replication:
+  enabled: true
+  remotes:
+    - name: github
+      url: git@github.com:example-org/${name}.git
+hooks:
+  enabled: true
+  scripts:
+    ref-updated: |
+      #!/bin/sh
+      logger -t gerrit-hook "ref-updated $*"
+  g2p:
+    enabled: true
+    existingSecret: gerrit-g2p
+```
+
+## Issue tracker
+
+`plugins.its-jira.enabled` adds `its-jira` to the jars `site-init`
+copies, so the image must hold `its-jira.jar` under
+`<pluginCatalogue.path>/plugins/`. `its-base` is compiled into that
+jar, not installed beside it. The chart renders `[its-jira] url`
+from `plugins.its-jira.url` and `[plugin "its-jira"] association` in
+`gerrit.config`, and `render-config` writes the Secret's `username` and
+`password` (or an API token as the password) to `its-jira.username` and
+`its-jira.password` in `secure.config`. The generated
+`<fullname>-its-jira` Secret has both keys empty; fill them in the
+cluster, or under Argo CD name a pre-created Secret in
+`plugins.its-jira.existingSecret`.
+
+Each `commentOn*` toggle adds a rule to
+`etc/its/actions-its-jira.config` that comments on the associated
+issues: `commentOnChangeCreated` on the first patch set,
+`commentOnPatchSetCreated` on every patch set, and
+`commentOnChangeMerged` and `commentOnChangeAbandoned` on those
+status changes. `extraConfig` is appended verbatim, for other rules
+and actions. `site-init` replaces the file at each start and removes
+it when the plugin is disabled.
+
+The plugin acts only on projects that enable it, through
+`plugin.its-jira.enabled` in a project's `project.config` (or
+`All-Projects` for every project). It finds issue keys in commit
+messages through the `[commentlink "its-jira"]` section, whose `match`
+and `link` the chart has no typed value for: set them in
+`gerrit.extraConfig`, as below, or in a project's `project.config`.
+Without that section the plugin associates no issue, whatever the
+`association` and comment rules say. `trackingid` renders only
+`[trackingid]` sections, which index the keys for search, and does not
+configure the plugin. With a Jira URL on a port other than 443, the
+`NetworkPolicy` adds an egress rule for it.
+
+```yaml
+gerrit:
+  extraConfig: |
+    [commentlink "its-jira"]
+      match = ([A-Z][A-Z0-9]+-[0-9]+)
+      link = https://jira.example.org/browse/$1
+plugins:
+  its-jira:
+    enabled: true
+    url: https://jira.example.org
+    existingSecret: gerrit-its-jira
+    association: SUGGESTED
+    commentOnChangeMerged: true
+```
+
+Disabling `hooks` or `its-jira` removes the jars at the next start but
+leaves any data the plugins wrote under the site's `data/`.
 
 ## Maintenance
 

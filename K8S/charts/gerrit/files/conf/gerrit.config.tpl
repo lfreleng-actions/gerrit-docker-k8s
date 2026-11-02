@@ -33,10 +33,27 @@ header set. */}}
 {{- $_ := set $derived "saml" (include "gerrit.samlConfig" . | fromJson) -}}
 {{- $sections = append $sections "saml" -}}
 {{- end }}
+{{- if include "gerrit.hooksEnabled" . }}
+{{- $_ := set $derived "hooks" (dict
+  "path" (printf "/var/gerrit/%s" (include "gerrit.hooksPath" .))
+  "syncHookTimeout" $v.hooks.syncHookTimeout) -}}
+{{- $sections = append $sections "hooks" -}}
+{{- end }}
+{{- if include "gerrit.itsJiraEnabled" . }}
+{{- $jira := index $v.plugins "its-jira" -}}
+{{- $association := toString (default "" $jira.association) -}}
+{{- if and $association (not (has $association (list "MANDATORY" "SUGGESTED" "OPTIONAL"))) }}
+{{- fail "plugins.its-jira.association must be MANDATORY, SUGGESTED or OPTIONAL" -}}
+{{- end }}
+{{- $_ := set $derived "its-jira" (dict "url" (include "gerrit.itsJiraUrl" .)) -}}
+{{- $_ := set $derived "plugin" (dict "its-jira" (dict "association" $association)) -}}
+{{- $sections = concat $sections (list "its-jira" "plugin") -}}
+{{- end }}
 {{- range $sections }}
 {{- $values := deepCopy (default dict (index $v .)) -}}
-{{- if or (eq . "gerrit") (eq . "saml") }}{{ $values = dict }}{{ end -}}
+{{- if has . (list "gerrit" "saml" "hooks" "its-jira" "plugin") }}{{ $values = dict }}{{ end -}}
 {{- if eq . "auth" }}{{ $values = omit $values "saml" }}{{ end -}}
+{{- if eq . "plugins" }}{{ $values = omit $values "its-jira" }}{{ end -}}
 {{- if eq . "gc" }}
 {{- $values = omit $values "cronJob" -}}
 {{- if dig "cronJob" "enabled" false $v.gc }}

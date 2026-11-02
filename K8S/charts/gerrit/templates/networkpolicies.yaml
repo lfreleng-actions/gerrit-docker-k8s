@@ -78,4 +78,10 @@ spec:
         - protocol: TCP
           port: {{ int . }}
     {{- end }}
+    {{- with include "gerrit.itsJiraEgressPort" . }}
+    # The Jira API of plugins.its-jira.url
+    - ports:
+        - protocol: TCP
+          port: {{ int . }}
+    {{- end }}
 {{- end }}

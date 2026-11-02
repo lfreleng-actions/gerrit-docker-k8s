@@ -33,8 +33,6 @@ from chart.test_render import CHART, GOLDEN, GOLDEN_HEADER, read_golden
 from chart.test_replication import find, pod_spec, render, run_helm, site_init_env
 from chart.test_saml import container, gerrit_config
 
-NOT_YET = pytest.mark.xfail(strict=True, reason="hooks are not in the chart yet")
-
 pytestmark = pytest.mark.skipif(shutil.which("helm") is None, reason="needs helm")
 
 SITE_INIT = CHART / "files" / "scripts" / "site-init.sh"
@@ -91,7 +89,6 @@ def helm_fails(tmp_path: Path, values: dict[str, Any]) -> str:
     return str(proc.stderr)
 
 
-@NOT_YET
 def test_disabled_renders_none_of_it(tmp_path: Path) -> None:
     docs = render(tmp_path)
     config = gerrit_config(docs)
@@ -110,12 +107,10 @@ def test_disabled_renders_none_of_it(tmp_path: Path) -> None:
     assert "XDG_CONFIG_HOME" not in gerrit_env
 
 
-@NOT_YET
 def test_hooks_config_matches_golden(tmp_path: Path) -> None:
     assert_golden(gerrit_config(render(tmp_path, HOOKS)), "hooks-on.config")
 
 
-@NOT_YET
 def test_mixed_toggles_match_golden(tmp_path: Path) -> None:
     docs = render(tmp_path, MIXED)
     assert_golden(gerrit_config(docs), "plugins-mixed.config")
@@ -129,7 +124,6 @@ def test_mixed_toggles_match_golden(tmp_path: Path) -> None:
     assert site_init_env(docs)["GERRIT_HOOKS_PATH"] == "site-hooks"
 
 
-@NOT_YET
 def test_hooks_adds_only_the_hooks_plugin(tmp_path: Path) -> None:
     docs = render(tmp_path, {"hooks": {"enabled": True}})
     assert plugins(docs) == ["hooks"]
@@ -141,7 +135,6 @@ def test_hooks_adds_only_the_hooks_plugin(tmp_path: Path) -> None:
     assert "[hooks]\n\tpath = /var/gerrit/hooks\n\tsyncHookTimeout = 30\n" in config
 
 
-@NOT_YET
 def test_scripts_render_into_a_config_map(tmp_path: Path) -> None:
     docs = render(tmp_path, HOOKS)
     hooks = find(docs, "ConfigMap", "gerrit-hooks")
@@ -157,7 +150,6 @@ def test_scripts_render_into_a_config_map(tmp_path: Path) -> None:
     assert volumes == [{"name": "hook-scripts", "configMap": {"name": "gerrit-hooks"}}]
 
 
-@NOT_YET
 def test_g2p_links_hooks_and_mounts_the_ini(tmp_path: Path) -> None:
     docs = render(tmp_path, HOOKS)
     env = site_init_env(docs)
@@ -177,7 +169,6 @@ def test_g2p_links_hooks_and_mounts_the_ini(tmp_path: Path) -> None:
     assert {"name": "XDG_CONFIG_HOME", "value": "/var/gerrit/.config"} in gerrit["env"]
 
 
-@NOT_YET
 def test_g2p_chart_creates_an_empty_secret(tmp_path: Path) -> None:
     values = {
         "replication": REPLICATION,
@@ -190,7 +181,6 @@ def test_g2p_chart_creates_an_empty_secret(tmp_path: Path) -> None:
     assert annotations["helm.sh/resource-policy"] == "keep"
 
 
-@NOT_YET
 def test_g2p_hooks_may_be_narrowed(tmp_path: Path) -> None:
     values = {
         "replication": REPLICATION,
@@ -204,7 +194,6 @@ def test_g2p_hooks_may_be_narrowed(tmp_path: Path) -> None:
     )
 
 
-@NOT_YET
 @pytest.mark.parametrize(
     ("values", "message"),
     [
@@ -263,7 +252,6 @@ def test_invalid_values_fail(
     assert message in helm_fails(tmp_path, values)
 
 
-@NOT_YET
 def test_disabled_hooks_ignore_a_bad_path(tmp_path: Path) -> None:
     values = {"hooks": {"enabled": False, "path": "etc"}}
     assert site_init_env(render(tmp_path, values))["GERRIT_HOOKS_PATH"] == ""
@@ -336,7 +324,6 @@ def run_site_init(env: dict[str, str]) -> subprocess.CompletedProcess[str]:
     )
 
 
-@NOT_YET
 def test_site_init_installs_hooks_and_ini(image: dict[str, str]) -> None:
     site = Path(image["GERRIT_SITE"])
     stale = site / "hooks" / "change-abandoned"
@@ -366,7 +353,6 @@ def test_site_init_installs_hooks_and_ini(image: dict[str, str]) -> None:
     )
 
 
-@NOT_YET
 def test_site_init_removes_what_is_disabled(image: dict[str, str]) -> None:
     assert run_site_init(image).returncode == 0
     site = Path(image["GERRIT_SITE"])
@@ -379,7 +365,6 @@ def test_site_init_removes_what_is_disabled(image: dict[str, str]) -> None:
     assert list(g2p.iterdir()) == []
 
 
-@NOT_YET
 def test_site_init_leaves_hooks_alone_when_disabled(image: dict[str, str]) -> None:
     site = Path(image["GERRIT_SITE"])
     kept = site / "hooks" / "ref-updated"
@@ -390,7 +375,6 @@ def test_site_init_leaves_hooks_alone_when_disabled(image: dict[str, str]) -> No
     assert [p.name for p in (site / "hooks").iterdir()] == ["ref-updated"]
 
 
-@NOT_YET
 def test_site_init_fails_on_a_missing_entry_point(image: dict[str, str]) -> None:
     proc = run_site_init({**image, "GERRIT_G2P_HOOKS": "ref-updated"})
     assert proc.returncode != 0

@@ -32,8 +32,6 @@ from chart.test_replication import egress_ports, find, render
 from chart.test_saml import container, gerrit_config
 from chart.test_secure_config import SECRET_ENV, run_script
 
-NOT_YET = pytest.mark.xfail(strict=True, reason="its-jira is not in the chart yet")
-
 pytestmark = pytest.mark.skipif(shutil.which("helm") is None, reason="needs helm")
 
 CREDENTIAL_ENV = ("GERRIT_ITS_JIRA_USERNAME", "GERRIT_ITS_JIRA_PASSWORD")
@@ -76,7 +74,6 @@ def test_disabled_renders_none_of_it(tmp_path: Path) -> None:
     assert not {"its-base", "its-jira"} & set(plugins(docs))
 
 
-@NOT_YET
 def test_enabled_config_matches_golden(tmp_path: Path) -> None:
     docs = render(tmp_path, jira_values())
     assert_golden(gerrit_config(docs), "its-jira-on.config")
@@ -85,13 +82,11 @@ def test_enabled_config_matches_golden(tmp_path: Path) -> None:
     )
 
 
-@NOT_YET
 def test_enabled_adds_only_its_jira(tmp_path: Path) -> None:
     # its-base is compiled into its-jira.jar, not a plugin of its own
     assert plugins(render(tmp_path, jira_values())) == ["its-jira"]
 
 
-@NOT_YET
 def test_plugin_values_stay_out_of_the_plugins_section(tmp_path: Path) -> None:
     config = gerrit_config(render(tmp_path, jira_values()))
     assert '[plugins "its-jira"]' not in config
@@ -99,7 +94,6 @@ def test_plugin_values_stay_out_of_the_plugins_section(tmp_path: Path) -> None:
     assert "extraConfig" not in config
 
 
-@NOT_YET
 def test_patch_set_rule_covers_change_created(tmp_path: Path) -> None:
     values = jira_values(
         commentOnPatchSetCreated=True,
@@ -115,7 +109,6 @@ def test_patch_set_rule_covers_change_created(tmp_path: Path) -> None:
     )
 
 
-@NOT_YET
 def test_no_rules_render_an_empty_file(tmp_path: Path) -> None:
     values = jira_values(
         commentOnChangeCreated=False,
@@ -132,7 +125,6 @@ def test_url_is_left_out_when_unset(tmp_path: Path) -> None:
     assert egress_ports(docs) == {53, 443}
 
 
-@NOT_YET
 def test_chart_creates_an_empty_secret(tmp_path: Path) -> None:
     secret = find(render(tmp_path, jira_values()), "Secret", "gerrit-its-jira")
     assert secret is not None
@@ -141,7 +133,6 @@ def test_chart_creates_an_empty_secret(tmp_path: Path) -> None:
     assert annotations["helm.sh/resource-policy"] == "keep"
 
 
-@NOT_YET
 def test_existing_secret_is_used(tmp_path: Path) -> None:
     docs = render(tmp_path, jira_values(existingSecret="jira-creds"))
     assert find(docs, "Secret", "gerrit-its-jira") is None
@@ -161,8 +152,8 @@ def test_existing_secret_is_used(tmp_path: Path) -> None:
     ("url", "ports"),
     [
         ("https://jira.example.org", set()),
-        pytest.param("https://jira.example.org:8443/jira", {8443}, marks=NOT_YET),
-        pytest.param("http://jira.example.org", {80}, marks=NOT_YET),
+        ("https://jira.example.org:8443/jira", {8443}),
+        ("http://jira.example.org", {80}),
     ],
 )
 def test_egress_reaches_the_url(tmp_path: Path, url: str, ports: set[int]) -> None:
@@ -170,7 +161,6 @@ def test_egress_reaches_the_url(tmp_path: Path, url: str, ports: set[int]) -> No
     assert egress_ports(docs) == {53, 443} | ports
 
 
-@NOT_YET
 @pytest.mark.parametrize(
     ("extra", "message"),
     [
@@ -204,7 +194,6 @@ def site(tmp_path: Path) -> Path:
     return tmp_path
 
 
-@NOT_YET
 def test_credentials_land_in_private_secure_config(site: Path) -> None:
     env = {
         **SECRET_ENV,

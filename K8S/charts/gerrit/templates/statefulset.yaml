@@ -79,6 +79,14 @@ spec:
               value: {{ include "gerrit.plugins" . | quote }}
             - name: GERRIT_LIBS
               value: {{ include "gerrit.libs" . | quote }}
+            - name: GERRIT_HOOKS_PATH
+              value: {{ if include "gerrit.hooksEnabled" . }}{{ include "gerrit.hooksPath" . | quote }}{{ else }}""{{ end }}
+            - name: GERRIT_G2P_HOOKS
+              value: {{ include "gerrit.g2pHooks" . | quote }}
+            {{- if include "gerrit.g2pEnabled" . }}
+            - name: GERRIT_G2P_INI
+              value: /g2p/gerrit_to_platform.ini
+            {{- end }}
             - name: HOME
               value: /tmp
           securityContext:
@@ -96,6 +104,16 @@ spec:
               readOnly: true
             - name: tmp
               mountPath: /tmp
+            {{- if include "gerrit.hookScriptsVolume" . }}
+            - name: hook-scripts
+              mountPath: /hook-scripts
+              readOnly: true
+            {{- end }}
+            {{- if include "gerrit.g2pEnabled" . }}
+            - name: g2p
+              mountPath: /g2p
+              readOnly: true
+            {{- end }}
         - name: render-config
           image: {{ include "gerrit.image" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
@@ -128,6 +146,18 @@ spec:
                   name: {{ include "gerrit.samlSecretName" . }}
                   key: private-key-password
             {{- end }}
+            {{- if include "gerrit.itsJiraEnabled" . }}
+            - name: GERRIT_ITS_JIRA_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "gerrit.itsJiraSecretName" . }}
+                  key: username
+            - name: GERRIT_ITS_JIRA_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "gerrit.itsJiraSecretName" . }}
+                  key: password
+            {{- end }}
           securityContext:
             {{- include "gerrit.containerSecurityContext" . | nindent 12 }}
           volumeMounts:
@@ -145,6 +175,12 @@ spec:
           env:
             - name: HOME
               value: /tmp
+            {{- if include "gerrit.g2pEnabled" . }}
+            # gerrit-to-platform reads its configuration, which
+            # site-init installs, from $XDG_CONFIG_HOME
+            - name: XDG_CONFIG_HOME
+              value: /var/gerrit/.config
+            {{- end }}
           ports:
             - name: http
               containerPort: 8080
@@ -224,6 +260,17 @@ spec:
                   items:
                     - key: known_hosts
                       path: known_hosts2
+        {{- end }}
+        {{- if include "gerrit.hookScriptsVolume" . }}
+        - name: hook-scripts
+          configMap:
+            name: {{ $fullname }}-hooks
+        {{- end }}
+        {{- if include "gerrit.g2pEnabled" . }}
+        - name: g2p
+          secret:
+            secretName: {{ include "gerrit.g2pSecretName" . }}
+            defaultMode: 0400
         {{- end }}
         {{- if include "gerrit.samlEnabled" . }}
         - name: saml

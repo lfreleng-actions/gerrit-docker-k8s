@@ -444,13 +444,162 @@ github.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQCj7ndNxQowgcQnjshcLrqPEiiphnt+V
 {{- end -}}
 
 {{/* Plugin jars site-init copies from the catalogue: those
-pluginCatalogue.plugins names, plus replication when it is enabled */}}
+pluginCatalogue.plugins names, plus replication, hooks and its-jira
+when each is enabled. its-base is compiled into its-jira.jar, so it
+is not a jar of its own. */}}
 {{- define "gerrit.plugins" -}}
 {{- $plugins := default list .Values.pluginCatalogue.plugins -}}
 {{- if .Values.replication.enabled -}}
 {{- $plugins = append $plugins "replication" -}}
 {{- end -}}
+{{- if include "gerrit.hooksEnabled" . -}}
+{{- $plugins = append $plugins "hooks" -}}
+{{- end -}}
+{{- if include "gerrit.itsJiraEnabled" . -}}
+{{- $plugins = append $plugins "its-jira" -}}
+{{- end -}}
 {{- join " " (uniq $plugins) -}}
+{{- end -}}
+
+{{/* "true" when hooks is enabled, else empty */}}
+{{- define "gerrit.hooksEnabled" -}}
+{{- if dig "enabled" false (default dict .Values.hooks) }}true{{ end -}}
+{{- end -}}
+
+{{/* "true" when hooks.g2p is enabled, else empty. Fails when hooks
+itself is not, since gerrit-to-platform runs as a hook, and when
+replication has no remote, since gerrit-to-platform finds the platform
+and repositories in replication.config. */}}
+{{- define "gerrit.g2pEnabled" -}}
+{{- if dig "g2p" "enabled" false (default dict .Values.hooks) -}}
+{{- if not (include "gerrit.hooksEnabled" .) -}}
+{{- fail "hooks.g2p.enabled needs hooks.enabled" -}}
+{{- end -}}
+{{- if not (and .Values.replication.enabled .Values.replication.remotes) -}}
+{{- fail "hooks.g2p.enabled needs replication.enabled with a remote in replication.remotes" -}}
+{{- end -}}
+true
+{{- end -}}
+{{- end -}}
+
+{{/* "true" when plugins.its-jira is enabled, else empty */}}
+{{- define "gerrit.itsJiraEnabled" -}}
+{{- if dig "its-jira" "enabled" false (default dict .Values.plugins) }}true{{ end -}}
+{{- end -}}
+
+{{/* hooks.path, relative to the site. site-init replaces the
+directory's contents at every start, so it must not be, or lie under,
+a directory Gerrit or the chart keeps anything else in. */}}
+{{- define "gerrit.hooksPath" -}}
+{{- $path := trimSuffix "/" (toString (default "" .Values.hooks.path)) -}}
+{{- $segment := `[A-Za-z0-9_][A-Za-z0-9._-]*` -}}
+{{- if or (not (regexMatch (printf `^%s(/%s)*$` $segment $segment) $path)) (regexMatch `(^|/)\.\.?(/|$)` $path) -}}
+{{- fail (printf "hooks.path %q must be a relative path of plain names under the site" .Values.hooks.path) -}}
+{{- end -}}
+{{- $reserved := list "bin" "cache" "data" "db" "etc" "git" "index" "lib" "logs" "plugins" "static" "tmp" -}}
+{{- if has (first (splitList "/" $path)) $reserved -}}
+{{- fail (printf "hooks.path %q must not lie in a site directory Gerrit uses for anything else" .Values.hooks.path) -}}
+{{- end -}}
+{{- $path -}}
+{{- end -}}
+
+{{/* gerrit-to-platform hooks site-init links, space-separated; empty
+unless hooks.g2p is enabled. Fails on a hook the tool has no entry
+point for. */}}
+{{- define "gerrit.g2pHooks" -}}
+{{- if include "gerrit.g2pEnabled" . -}}
+{{- $known := list "patchset-created" "comment-added" "change-merged" -}}
+{{- $hooks := uniq (default list .Values.hooks.g2p.hooks) -}}
+{{- range $hooks }}
+{{- if not (has . $known) }}
+{{- fail (printf "hooks.g2p.hooks: gerrit-to-platform has no %q hook; use %s" . (join ", " $known)) }}
+{{- end }}
+{{- end }}
+{{- join " " $hooks -}}
+{{- end -}}
+{{- end -}}
+
+{{/* hooks.scripts, checked: each name a hook name, and none also
+listed in hooks.g2p.hooks */}}
+{{- define "gerrit.hookScripts" -}}
+{{- $g2p := splitList " " (include "gerrit.g2pHooks" .) -}}
+{{- range $name, $_ := (default dict .Values.hooks.scripts) }}
+{{- if not (regexMatch `^[a-z][a-z0-9-]*$` $name) }}
+{{- fail (printf "hooks.scripts: %q is not a hook name" $name) }}
+{{- end }}
+{{- if has $name $g2p }}
+{{- fail (printf "hooks.scripts: %q is also in hooks.g2p.hooks" $name) }}
+{{- end }}
+{{- end }}
+{{- toJson (default dict .Values.hooks.scripts) -}}
+{{- end -}}
+
+{{/* "true" when hooks is enabled with scripts, which site-init reads
+from the <fullname>-hooks ConfigMap, else empty */}}
+{{- define "gerrit.hookScriptsVolume" -}}
+{{- if and (include "gerrit.hooksEnabled" .) .Values.hooks.scripts }}true{{ end -}}
+{{- end -}}
+
+{{/* Name of the Secret holding gerrit_to_platform.ini */}}
+{{- define "gerrit.g2pSecretName" -}}
+{{- default (printf "%s-g2p" (include "gerrit.fullname" .)) .Values.hooks.g2p.existingSecret -}}
+{{- end -}}
+
+{{/* Name of the Secret holding the Jira credentials */}}
+{{- define "gerrit.itsJiraSecretName" -}}
+{{- default (printf "%s-its-jira" (include "gerrit.fullname" .)) (index .Values.plugins "its-jira").existingSecret -}}
+{{- end -}}
+
+{{/* plugins.its-jira.url, checked to be an http or https URL; empty
+when unset */}}
+{{- define "gerrit.itsJiraUrl" -}}
+{{- $url := toString (default "" (index .Values.plugins "its-jira").url) -}}
+{{- if and $url (not (regexMatch "^(?i)https?://[^/]" $url)) -}}
+{{- fail "plugins.its-jira.url must be an http:// or https:// URL" -}}
+{{- end -}}
+{{- $url -}}
+{{- end -}}
+
+{{/* etc/its/actions-its-jira.config: one rule per comment toggle
+that is on, then plugins.its-jira.extraConfig. A comment on every
+patch set covers the first, so commentOnChangeCreated adds no rule of
+its own beside commentOnPatchSetCreated. */}}
+{{- define "gerrit.itsJiraActions" -}}
+{{- $jira := index .Values.plugins "its-jira" -}}
+{{- $rules := list -}}
+{{- if and $jira.commentOnChangeCreated (not $jira.commentOnPatchSetCreated) -}}
+{{- $rules = append $rules (dict "name" "change-created" "event-type" "patchset-created" "patchSetNumber" 1) -}}
+{{- end -}}
+{{- if $jira.commentOnPatchSetCreated -}}
+{{- $rules = append $rules (dict "name" "patchset-created" "event-type" "patchset-created") -}}
+{{- end -}}
+{{- if $jira.commentOnChangeMerged -}}
+{{- $rules = append $rules (dict "name" "change-merged" "event-type" "change-merged") -}}
+{{- end -}}
+{{- if $jira.commentOnChangeAbandoned -}}
+{{- $rules = append $rules (dict "name" "change-abandoned" "event-type" "change-abandoned") -}}
+{{- end -}}
+{{- range $rules }}
+[rule "comment-on-{{ .name }}"]
+{{ printf "\tevent-type = %s" (index . "event-type") }}
+{{- with .patchSetNumber }}
+{{ printf "\tpatchSetNumber = %d" . }}
+{{- end }}
+{{ printf "\taction = add-standard-comment" }}
+{{- end }}
+{{- with $jira.extraConfig }}
+{{ trimSuffix "\n" . }}
+{{- end }}
+{{- end -}}
+
+{{/* TCP port of plugins.its-jira.url when the NetworkPolicy needs a
+rule for it: set, enabled and not 443, which is always allowed; else
+empty */}}
+{{- define "gerrit.itsJiraEgressPort" -}}
+{{- if include "gerrit.itsJiraEnabled" . -}}
+{{- $port := include "gerrit.urlPort" (include "gerrit.itsJiraUrl" .) | int -}}
+{{- if and $port (ne $port 443) }}{{ $port }}{{ end -}}
+{{- end -}}
 {{- end -}}
 
 {{/* Library names site-init copies from the image catalogue:
