@@ -930,7 +930,7 @@ jobs:
           while IFS= read -r path; do
             case "$path" in
               Dockerfile|Dockerfile.chart|docker/*|.github/harden-runner/*|\
-              .github/workflows/release.yaml)
+              .github/workflows/release.yaml|.grype.yaml)
                 echo "Changed: $path"
                 build=true
                 ;;
@@ -947,6 +947,10 @@ jobs:
   # the release build job; the only intended difference is that the
   # supplemental allow-list is read at the pull request's head commit,
   # so a change to the list is tested with it.
+  #
+  # It then repeats release.yaml's SBOM and Grype gate on the image it
+  # built, so a base-image or plugin-lock bump that changes a finding
+  # fails its own pull request rather than the next release.
   release-build:
     name: 'Release image build (egress blocked)'
     needs: release-build-changes
@@ -954,7 +958,7 @@ jobs:
     runs-on: 'ubuntu-24.04'
     permissions:
       contents: read
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       # yamllint disable-line rule:line-length
       - uses: lfreleng-actions/harden-runner-block-action@2fed66c9c36c4687c31ca349b925b81ec629673f  # v0.15.0
@@ -988,6 +992,97 @@ jobs:
           docker build -f Dockerfile.chart \
             --build-arg BASE_IMAGE=gerrit-base:build \
             -t gerrit:release-build .
+
+      # As release.yaml's sbom job generates it
+      - name: 'Generate SPDX SBOM'
+        # yamllint disable-line rule:line-length
+        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c  # v0.24.3
+        with:
+          image: 'gerrit:release-build'
+          format: spdx-json
+          output-file: sbom-gerrit.spdx.json
+          upload-artifact: false
+
+      # The same gate as release.yaml's grype job. The action treats a
+      # config from a pull request head as untrusted; here .grype.yaml
+      # only narrows what fails this pull request's own check, and is
+      # reviewed with it. The release gate reads it from the signed tag.
+      - name: 'Grype audit SBOM'
+        # yamllint disable-line rule:line-length
+        uses: lfreleng-actions/grype-scan-action@5c81b23afb2ea771b2d247807a12d90783328675  # v0.5.0
+        with:
+          sbom: 'sbom-gerrit.spdx.json'
+          name: 'gerrit'
+          config: '.grype.yaml'
+          fail-on: 'high'
+          only-fixed: 'true'
+          bypass-enabled: 'false'
+          output-formats: 'json,table'
+          output-prefix: 'grype-gerrit'
+          summary-title: 'Grype scan'
+          upload-artifact: 'false'
+
+      # Repeats release.yaml's 'List accepted findings' step, and warns
+      # about each rule that matched nothing so that an accepted
+      # finding a bump has fixed, or moved to another version, is
+      # removed from .grype.yaml.
+      - name: 'List accepted findings'
+        if: always()
+        shell: bash
+        run: |
+          # List accepted findings
+          set -euo pipefail
+          report=grype-gerrit.json
+          if [[ ! -f "$report" ]]; then
+            echo "::warning::No Grype JSON report to summarise"
+            exit 0
+          fi
+          rows=$(jq -r '.ignoredMatches[]?
+            | [.vulnerability.id, .vulnerability.severity,
+               .artifact.name, .artifact.version,
+               ([.appliedIgnoreRules[]?.reason
+                 | select(. != null and . != "")] | join("; ")
+                 | if . == "" then "Grype default rule" else . end)]
+            | map(tostring | gsub("\\|"; "\\|"))
+            | "| " + join(" | ") + " |"' "$report")
+          # The rules Grype loaded, less its built-in defaults (which
+          # name no vulnerability), that no ignored match applied
+          unused=$(jq -r '
+            [.ignoredMatches[]?.appliedIgnoreRules[]?
+              | [.vulnerability, .package.name, .package.version,
+                 .package.type]] as $used
+            | .descriptor.configuration.ignore[]?
+            | select((.vulnerability // "") != "")
+            | [.vulnerability, .package.name, .package.version,
+               .package.type] as $rule
+            | select([$used[] | select(. == $rule)] | length == 0)
+            | "\(.vulnerability) in \(.package.name) \(.package.version)"
+            ' "$report")
+          {
+            echo "## Grype: accepted findings"
+            echo ""
+            if [[ -z "$rows" ]]; then
+              echo "None."
+            else
+              echo "| Finding | Severity | Package | Version | Reason |"
+              echo "| --- | --- | --- | --- | --- |"
+              echo "$rows"
+            fi
+            if [[ -n "$unused" ]]; then
+              echo ""
+              echo "### .grype.yaml rules that matched nothing"
+              echo ""
+              while IFS= read -r rule; do
+                echo "- ⚠️ ${rule}"
+              done <<< "$unused"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [[ -n "$unused" ]]; then
+            while IFS= read -r rule; do
+              echo "::warning title=Unused Grype ignore rule::${rule}" \
+                "matched nothing; remove it from .grype.yaml"
+            done <<< "$unused"
+          fi
 
   ### Test Summary ###
   test-summary:
