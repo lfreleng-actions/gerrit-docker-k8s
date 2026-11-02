@@ -6,7 +6,9 @@
 Renders the chart with ``helm template`` and each values file under
 ``K8S/charts/gerrit/examples/``, and compares the ``<fullname>-config``
 ConfigMap data with ``tests/chart/golden/<example>/<file>``; an example
-that enables replication also has a ``replication.config`` golden.
+that enables replication also has a ``replication.config`` golden, and
+one with the healthcheck plugin on, as by default, a
+``healthcheck.config`` golden.
 Each golden starts with the two SPDX comment lines, which the
 comparison skips. Also checks that the NetworkPolicies let the
 configured mail relay through.
@@ -35,7 +37,7 @@ GOLDEN = Path(__file__).parent / "golden"
 CONFIG_FILES = ("gerrit.config", "jgit.config", "notedb.config", "log4j.properties")
 # Rendered only when a feature enables it; compared where the example's
 # golden directory holds one
-OPTIONAL_CONFIG_FILES = ("replication.config",)
+OPTIONAL_CONFIG_FILES = ("healthcheck.config", "replication.config")
 # REUSE-IgnoreStart
 GOLDEN_HEADER = (
     "# SPDX-License-Identifier: Apache-2.0\n"
@@ -43,14 +45,24 @@ GOLDEN_HEADER = (
 )
 # REUSE-IgnoreEnd
 EXAMPLE_NAMES = sorted(p.name for p in GOLDEN.iterdir() if p.is_dir())
+# The chart has no default image tag, so every render names one
+IMAGE_TAG = ("--set", "image.tag=v0.0.0")
 
 pytestmark = pytest.mark.skipif(shutil.which("helm") is None, reason="needs helm")
 
 
 def helm(*args: str) -> str:
-    """Run helm and return its standard output, failing on an error."""
+    """Run helm and return its standard output, failing on an error.
+
+    ``template`` and ``lint`` get :data:`IMAGE_TAG` added.
+    """
+    extra = IMAGE_TAG if args[:1] in (("template",), ("lint",)) else ()
     proc = subprocess.run(
-        ["helm", *args], capture_output=True, text=True, timeout=120, check=False
+        ["helm", *args, *extra],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
     )
     assert proc.returncode == 0, proc.stderr
     return proc.stdout
@@ -201,3 +213,40 @@ def test_smtp_egress_defaults_to_gerrits_port(encryption: str, port: int) -> Non
 @pytest.mark.parametrize("example", EXAMPLE_NAMES)
 def test_helm_lint(example: str) -> None:
     helm("lint", str(CHART), "-f", str(EXAMPLES / f"{example}.yaml"))
+
+
+def image_of(*args: str) -> subprocess.CompletedProcess[str]:
+    """Render the StatefulSet with *args* only, without :data:`IMAGE_TAG`."""
+    return subprocess.run(
+        [
+            "helm",
+            "template",
+            "gerrit",
+            str(CHART),
+            *args,
+            "--show-only",
+            "templates/statefulset.yaml",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+
+
+def test_image_needs_a_tag_or_digest() -> None:
+    proc = image_of()
+    assert proc.returncode != 0
+    assert "set image.tag" in proc.stderr
+
+
+def test_image_reference_uses_the_tag_or_the_digest() -> None:
+    repo = "ghcr.io/lfreleng-actions/gerrit-docker-k8s/gerrit"
+    digest = "sha256:" + "c" * 64
+    tagged = image_of("--set", "image.tag=v1.2.3")
+    assert tagged.returncode == 0, tagged.stderr
+    assert f"image: {repo}:v1.2.3\n" in tagged.stdout
+    pinned = image_of("--set", "image.tag=v1.2.3", "--set", f"image.digest={digest}")
+    assert pinned.returncode == 0, pinned.stderr
+    assert f"image: {repo}@{digest}\n" in pinned.stdout
+    assert ":v1.2.3" not in pinned.stdout

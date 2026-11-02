@@ -28,7 +28,7 @@ from typing import Any
 
 import pytest
 import yaml
-from chart.test_render import CHART, GOLDEN, GOLDEN_HEADER, read_golden
+from chart.test_render import CHART, GOLDEN, GOLDEN_HEADER, IMAGE_TAG, read_golden
 from chart.test_replication import (
     egress_ports,
     find,
@@ -395,7 +395,7 @@ def test_helm_lint(tmp_path: Path, source: str) -> None:
     path = tmp_path / "values.yaml"
     path.write_text(yaml.safe_dump(saml_values(source)), encoding="utf-8")
     proc = subprocess.run(
-        ["helm", "lint", str(CHART), "-f", str(path)],
+        ["helm", "lint", str(CHART), *IMAGE_TAG, "-f", str(path)],
         capture_output=True,
         text=True,
         timeout=120,

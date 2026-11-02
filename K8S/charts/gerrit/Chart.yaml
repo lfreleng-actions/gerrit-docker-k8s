@@ -7,7 +7,9 @@ description: Gerrit Code Review primary, one per release
 type: application
 # Placeholder; the release pipeline sets the published chart version
 version: 0.1.0
-appVersion: "3.13.1"
+# The Gerrit version the image carries (GERRIT_VERSION in Dockerfile).
+# Informational only: the image tag never defaults to it.
+appVersion: "3.13.10"
 home: https://github.com/lfreleng-actions/gerrit-docker-k8s
 sources:
   - https://github.com/lfreleng-actions/gerrit-docker-k8s

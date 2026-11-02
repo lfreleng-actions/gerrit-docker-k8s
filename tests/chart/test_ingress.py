@@ -30,6 +30,7 @@ from chart.test_render import (
     EXAMPLES,
     GOLDEN,
     GOLDEN_HEADER,
+    IMAGE_TAG,
     helm,
     read_golden,
 )
@@ -294,6 +295,7 @@ def test_node_port_ssh_service_needs_a_known_port() -> None:
             "template",
             "gerrit",
             str(CHART),
+            *IMAGE_TAG,
             "--set",
             "ssh.service.type=NodePort",
         ],
@@ -343,6 +345,7 @@ def test_external_dns_refuses_the_http_host() -> None:
             "template",
             "gerrit",
             str(CHART),
+            *IMAGE_TAG,
             "--set",
             "ingress.enabled=true",
             "--set",

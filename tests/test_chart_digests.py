@@ -219,4 +219,4 @@ def test_rendered_chart() -> None:
     assert (
         check_digests(_helm_template("--set", f"image.digest={DIGEST}"), DIGEST) == []
     )
-    assert check_digests(_helm_template(), DIGEST)
+    assert check_digests(_helm_template("--set", "image.tag=v0.0.0"), DIGEST)

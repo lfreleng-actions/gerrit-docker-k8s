@@ -99,23 +99,37 @@ empty or absent optional key leaves its entry out of `secure.config`.
    creating it with mode `0600` before writing any value.
 4. `gerrit` runs `bin/gerrit.sh run`. A startup probe allows ten
    minutes for `<urlPrefix>/config/server/version` to answer, since
-   the daemon loads its caches and indexes before it serves; readiness
-   and liveness probes then call
+   the daemon loads its caches and indexes before it serves. The
+   readiness probe then calls
    `<urlPrefix>/config/server/healthcheck~status` with
-   `plugins.healthcheck.enabled`, and the version endpoint otherwise.
-   See [Health checks](#health-checks).
+   `plugins.healthcheck.enabled`, and the version endpoint otherwise;
+   the liveness probe always calls the version endpoint. See
+   [Health checks](#health-checks).
 
 The official Gerrit image declares `cache`, `db`, `etc`, `git` and
 `index` under `/var/gerrit` as image volumes. The chart mounts each one
 from the site PVC by `subPath`; without that, the container runtime
 mounts empty anonymous volumes over them and the site disappears.
 
+## Image
+
+`image.repository` defaults to
+`ghcr.io/lfreleng-actions/gerrit-docker-k8s/gerrit`, which each
+release tag of this repository publishes, signs and attests; the
+repository README describes the image and how to verify it. Its tags
+are the release tags (`vX.Y.Z`), not the Gerrit version, so
+`appVersion` only records the Gerrit version the image carries
+(`GERRIT_VERSION` in `Dockerfile`) and the image tag never defaults to
+it. Set `image.tag` to a release tag or `image.digest` to a manifest
+digest; with neither, the chart refuses to render. A digest takes
+precedence over the tag.
+
 ## Values
 
 | Value                                    | Default                          | Notes                                                      |
 | ---------------------------------------- | -------------------------------- | ---------------------------------------------------------- |
-| `image.repository`                       | `ghcr.io/lfreleng-actions/gerrit` | Placeholder until the published image exists              |
-| `image.tag`                              | `""`                             | Defaults to the chart `appVersion`                         |
+| `image.repository`                       | `ghcr.io/lfreleng-actions/gerrit-docker-k8s/gerrit` | The image each release publishes; see [Image](#image) |
+| `image.tag`                              | `""`                             | A release tag such as `v1.2.3`; required unless `image.digest` is set |
 | `image.digest`                           | `""`                             | Takes precedence over the tag when set                     |
 | `gerrit.host`                            | `gerrit.example.org`             | Host part of `gerrit.canonicalWebUrl`                      |
 | `gerrit.urlPrefix`                       | `/r`                             | Served path prefix; `""` serves from the root              |
@@ -184,8 +198,8 @@ mounts empty anonymous volumes over them and the site disappears.
 | `plugins.its-jira.association`           | `OPTIONAL`                       | `MANDATORY`, `SUGGESTED` or `OPTIONAL`                     |
 | `plugins.its-jira.commentOn*`            | `false`                          | One comment rule each; see [Issue tracker](#issue-tracker) |
 | `plugins.its-jira.extraConfig`           | `""`                             | Appended verbatim to `etc/its/actions-its-jira.config`     |
-| `plugins.healthcheck.enabled`            | `false`                          | Adds `healthcheck` and moves the probes to it; see [Health checks](#health-checks) |
-| `plugins.healthcheck.config`             | `auth.enabled: false`            | `etc/healthcheck.config`; a map per check                  |
+| `plugins.healthcheck.enabled`            | `true`                           | Adds `healthcheck` and moves the readiness probe to it; see [Health checks](#health-checks) |
+| `plugins.healthcheck.config`             | `auth` and `querychanges` off    | `etc/healthcheck.config`; a map per check                  |
 | `plugins.metrics-reporter-prometheus.enabled` | `false`                     | Adds the Prometheus metrics plugin; see [Metrics](#metrics) |
 | `metrics.existingSecret`                 | `""`                             | Secret with the bearer `token`; `""` creates `<fullname>-metrics` |
 | `metrics.serviceMonitor.enabled`         | `false`                          | Renders a `ServiceMonitor` where the CRD exists            |
@@ -808,28 +822,34 @@ reject.
 
 ### Health checks
 
-`plugins.healthcheck.enabled` adds `healthcheck` to the jars
-`site-init` copies, so the image must hold `healthcheck.jar` under
-`<pluginCatalogue.path>/plugins/`. It is off by default because the
-chart's default image does not ship that jar yet, and `site-init`
-fails on a missing one; the published image's catalogue holds it, and
-the default becomes `true` once the chart points at that image
-(#246).
+`plugins.healthcheck.enabled`, on by default, adds `healthcheck` to
+the jars `site-init` copies, so the image must hold `healthcheck.jar`
+under `<pluginCatalogue.path>/plugins/`. The published image's
+catalogue holds it. `site-init` fails on a missing jar, so turn the
+plugin off for an image built without the catalogue.
 
-With the plugin enabled, the readiness and liveness probes call
+With the plugin enabled, the readiness probe calls
 `<urlPrefix>/config/server/healthcheck~status`, which answers 200 only
 while every enabled check passes, instead of
-`<urlPrefix>/config/server/version`. The startup probe keeps the
-version endpoint and its ten minutes, since a first start loads the
-caches and indexes before it serves anything. With the plugin
-disabled, every probe calls the version endpoint.
+`<urlPrefix>/config/server/version`, so a failing check takes the pod
+out of service. The liveness probe keeps the version endpoint: a
+failing check does not restart the JVM, which would not fix it. The
+startup probe keeps the version endpoint and its ten minutes, since a
+first start loads the caches and indexes before it serves anything.
+With the plugin disabled, every probe calls the version endpoint.
 
 `plugins.healthcheck.config` renders `etc/healthcheck.config`: keys
 such as `timeout` go under `[healthcheck]`, and a map per check, such
 as `querychanges`, renders its `[healthcheck "<check>"]` subsection
 with `enabled`, `timeout` and the check's own keys. The default turns
-off the `auth` check, which logs in with a fixed account a site
-rarely has; enable it with an account the site holds. `site-init`
+off two checks. The `auth` check logs in with a fixed account a site
+rarely has; enable it with an account the site holds. The
+`querychanges` check fails unless a query for open changes returns
+its `limit`, ten by default, so it measures how much data a site holds
+rather than whether Gerrit is healthy, and fails on a new site; see
+the plugin's
+[configuration](https://github.com/GerritCodeReview/plugins_healthcheck/blob/52ba0d27ff869e3a0d0ac09529b8e12b81b75c85/src/main/resources/Documentation/config.md).
+`site-init`
 replaces the file at each start and removes it when the plugin is
 disabled.
 
@@ -842,6 +862,7 @@ plugins:
       auth:
         enabled: false
       querychanges:
+        enabled: false
         timeout: 5s
 ```
 
@@ -1130,12 +1151,14 @@ and `NetworkPolicy` in wave `-1`.
 
 ## Quick validation
 
-Build the image from this repository's `Dockerfile` until a published
-image exists, then:
+Build the chart image from this repository's `Dockerfile` and
+`Dockerfile.chart`, as `values-local-smoke.yaml` describes, then:
 
 ```sh
-docker build -t gerrit-local:dev .
-helm lint K8S/charts/gerrit
+docker build -t gerrit-local-base:dev .
+docker build -f Dockerfile.chart \
+  --build-arg BASE_IMAGE=gerrit-local-base:dev -t gerrit-local:dev .
+helm lint K8S/charts/gerrit -f K8S/charts/gerrit/values-local-smoke.yaml
 helm template gerrit K8S/charts/gerrit --namespace gerrit-smoke \
   -f K8S/charts/gerrit/values-local-smoke.yaml
 kind create cluster
@@ -1194,7 +1217,7 @@ python3 K8S/charts/gerrit/files/scripts/verify-logs.py \
   --namespace gerrit-smoke --fullname gerrit
 ```
 
-For a release with `plugins.healthcheck.enabled`,
+With `plugins.healthcheck.enabled`, the default,
 `files/scripts/verify-health.py` checks that
 `<urlPrefix>/config/server/healthcheck~status` answers 200 with every
 check passed or disabled, and names any that failed. It also reuses
@@ -1206,19 +1229,19 @@ python3 K8S/charts/gerrit/files/scripts/verify-health.py \
 ```
 
 The `chart-smoke` job in `.github/workflows/testing.yaml` runs this
-sequence, but for `verify-health.py`, on every pull request. It then
+sequence on every pull request. It then
 upgrades the release with `gc.cronJob.enabled`, runs the CronJob once with
 `kubectl create job --from` on a fixture repository of loose objects,
 and checks that the Job succeeds and leaves the objects packed. It
 also lints and renders the chart
-with each values file under `examples/`. With `image.digest` set, it
+with each values file under `examples/`, adding an `image.tag`. With `image.digest` set, it
 parses each render with `scripts/lib/chart_digests.py` and checks
 that every container, init container and ephemeral container image
 ends in that digest.
 
 `tests/chart/` holds golden tests: each values file under `examples/`
-must render the `gerrit.config`, `jgit.config`, `notedb.config` and
-`log4j.properties` in
+must render the `gerrit.config`, `jgit.config`, `notedb.config`,
+`log4j.properties` and `healthcheck.config` in
 `tests/chart/golden/<example>/`, and `templates/ingress.yaml` as a
 plain Ingress and as Traefik objects in `ingress-plain.golden` and
 `ingress-traefik.golden` there, and `render-config.sh` must write the

@@ -30,7 +30,7 @@ from typing import Any
 
 import pytest
 import yaml
-from chart.test_render import CHART, GOLDEN, GOLDEN_HEADER, read_golden
+from chart.test_render import CHART, GOLDEN, GOLDEN_HEADER, IMAGE_TAG, read_golden
 from chart.test_replication import find, pod_spec, render, run_helm, site_init_env
 from chart.test_saml import container, gerrit_config
 
@@ -95,7 +95,8 @@ def test_disabled_renders_none_of_it(tmp_path: Path) -> None:
     config = gerrit_config(docs)
     assert "[hooks]" not in config
     assert "its-jira" not in config
-    assert plugins(docs) == []
+    # healthcheck is on by default; nothing else is
+    assert plugins(docs) == ["healthcheck"]
     env = site_init_env(docs)
     assert env["GERRIT_HOOKS_PATH"] == ""
     assert env["GERRIT_G2P_HOOKS"] == ""
@@ -117,6 +118,7 @@ def test_mixed_toggles_match_golden(tmp_path: Path) -> None:
     assert_golden(gerrit_config(docs), "plugins-mixed.config")
     assert sorted(plugins(docs)) == [
         "events-log",
+        "healthcheck",
         "hooks",
         "its-jira",
         "replication",
@@ -127,7 +129,7 @@ def test_mixed_toggles_match_golden(tmp_path: Path) -> None:
 
 def test_hooks_adds_only_the_hooks_plugin(tmp_path: Path) -> None:
     docs = render(tmp_path, {"hooks": {"enabled": True}})
-    assert plugins(docs) == ["hooks"]
+    assert plugins(docs) == ["hooks", "healthcheck"]
     env = site_init_env(docs)
     assert env["GERRIT_HOOKS_PATH"] == "hooks"
     assert env["GERRIT_G2P_HOOKS"] == ""
@@ -263,7 +265,7 @@ def test_helm_lint(tmp_path: Path, values: dict[str, Any]) -> None:
     path = tmp_path / "values.yaml"
     path.write_text(yaml.safe_dump(values), encoding="utf-8")
     proc = subprocess.run(
-        ["helm", "lint", str(CHART), "-f", str(path)],
+        ["helm", "lint", str(CHART), *IMAGE_TAG, "-f", str(path)],
         capture_output=True,
         text=True,
         timeout=120,

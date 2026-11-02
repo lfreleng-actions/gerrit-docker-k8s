@@ -121,13 +121,15 @@ def http_ingress_rule(docs: list[Any]) -> dict[str, Any]:
 
 
 @needs_helm
-def test_defaults_render_none_of_the_plugins(tmp_path: Path) -> None:
+def test_defaults_render_only_healthcheck(tmp_path: Path) -> None:
     docs = render(tmp_path)
-    assert probe_paths(docs) == dict.fromkeys(
-        ("startupProbe", "readinessProbe", "livenessProbe"), "/r/config/server/version"
-    )
-    assert not {"healthcheck", "metrics-reporter-prometheus"} & set(plugins(docs))
-    assert "healthcheck.config" not in config_data(docs)
+    assert probe_paths(docs) == {
+        "startupProbe": "/r/config/server/version",
+        "readinessProbe": "/r/config/server/healthcheck~status",
+        "livenessProbe": "/r/config/server/version",
+    }
+    assert plugins(docs) == ["healthcheck"]
+    assert "healthcheck.config" in config_data(docs)
     assert find(docs, "Secret", "gerrit-metrics") is None
     env = [e["name"] for e in container(docs, "render-config")["env"]]
     assert "GERRIT_METRICS_BEARER_TOKEN" not in env
@@ -135,25 +137,38 @@ def test_defaults_render_none_of_the_plugins(tmp_path: Path) -> None:
 
 
 @needs_helm
+def test_healthcheck_disabled_probes_the_version_endpoint(tmp_path: Path) -> None:
+    docs = render(tmp_path, {"plugins": {"healthcheck": {"enabled": False}}})
+    assert probe_paths(docs) == dict.fromkeys(
+        ("startupProbe", "readinessProbe", "livenessProbe"), "/r/config/server/version"
+    )
+    assert plugins(docs) == []
+    assert "healthcheck.config" not in config_data(docs)
+
+
+@needs_helm
 @pytest.mark.parametrize(("prefix", "path"), [("/r", "/r"), ("", "")])
-def test_healthcheck_points_readiness_and_liveness_at_status(
+def test_healthcheck_points_only_readiness_at_status(
     tmp_path: Path, prefix: str, path: str
 ) -> None:
     values = {**HEALTHCHECK, "gerrit": {"urlPrefix": prefix}}
     docs = render(tmp_path, values)
     assert plugins(docs) == ["healthcheck"]
-    status = f"{path}/config/server/healthcheck~status"
+    version = f"{path}/config/server/version"
     assert probe_paths(docs) == {
-        "startupProbe": f"{path}/config/server/version",
-        "readinessProbe": status,
-        "livenessProbe": status,
+        "startupProbe": version,
+        "readinessProbe": f"{path}/config/server/healthcheck~status",
+        "livenessProbe": version,
     }
 
 
 @needs_helm
-def test_healthcheck_config_turns_off_the_auth_check(tmp_path: Path) -> None:
+def test_healthcheck_config_turns_off_auth_and_querychanges(tmp_path: Path) -> None:
     config = config_data(render(tmp_path, HEALTHCHECK))["healthcheck.config"]
-    assert config == '[healthcheck "auth"]\n\tenabled = false\n'
+    assert config == (
+        '[healthcheck "auth"]\n\tenabled = false\n'
+        '[healthcheck "querychanges"]\n\tenabled = false\n'
+    )
 
 
 @needs_helm
@@ -191,7 +206,7 @@ def test_plugin_values_stay_out_of_the_plugins_section(tmp_path: Path) -> None:
 @needs_helm
 def test_metrics_token_comes_from_a_generated_secret(tmp_path: Path) -> None:
     docs = render(tmp_path, METRICS)
-    assert plugins(docs) == ["metrics-reporter-prometheus"]
+    assert plugins(docs) == ["healthcheck", "metrics-reporter-prometheus"]
     secret = find(docs, "Secret", "gerrit-metrics")
     assert secret is not None
     assert len(secret["data"]["token"]) > 40

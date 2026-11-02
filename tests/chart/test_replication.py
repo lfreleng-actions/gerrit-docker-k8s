@@ -19,7 +19,7 @@ from typing import Any
 
 import pytest
 import yaml
-from chart.test_render import CHART
+from chart.test_render import CHART, IMAGE_TAG
 
 pytestmark = pytest.mark.skipif(shutil.which("helm") is None, reason="needs helm")
 
@@ -57,7 +57,16 @@ REPLICATION: dict[str, Any] = {
 def run_helm(*args: str) -> subprocess.CompletedProcess[str]:
     """Run ``helm template`` on the chart with the given options."""
     return subprocess.run(
-        ["helm", "template", "gerrit", str(CHART), "--namespace", "gerrit-test", *args],
+        [
+            "helm",
+            "template",
+            "gerrit",
+            str(CHART),
+            "--namespace",
+            "gerrit-test",
+            *IMAGE_TAG,
+            *args,
+        ],
         capture_output=True,
         text=True,
         timeout=120,
@@ -180,9 +189,9 @@ def test_remote_renders_only_the_keys_it_sets(tmp_path: Path) -> None:
 def test_enabled_adds_the_plugin_once(tmp_path: Path) -> None:
     values = {**REPLICATION, "pluginCatalogue": {"plugins": ["replication", "x"]}}
     listed = site_init_env(render(tmp_path, values))["GERRIT_PLUGINS"].split()
-    assert sorted(listed) == ["replication", "x"]
+    assert sorted(listed) == ["healthcheck", "replication", "x"]
     alone = site_init_env(render(tmp_path, REPLICATION))["GERRIT_PLUGINS"].split()
-    assert alone == ["replication"]
+    assert sorted(alone) == ["healthcheck", "replication"]
 
 
 def test_known_hosts_carry_github_and_extra_keys(tmp_path: Path) -> None:

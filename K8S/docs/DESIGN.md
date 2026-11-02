@@ -133,9 +133,12 @@ must succeed before the next starts:
    container's stderr as JSON, one object per line, and appenders named
    `httpd_log` and `sshd_log` keep the request logs in `logs/` on the
    site volume. A startup probe allows ten minutes for
-   `<prefix>/config/server/version`; readiness and liveness probes call
+   `<prefix>/config/server/version`. The readiness probe calls
    `<prefix>/config/server/healthcheck~status` with
-   `plugins.healthcheck.enabled`, and the version endpoint otherwise.
+   `plugins.healthcheck.enabled`, and the version endpoint otherwise,
+   so a failing check takes the pod out of service; the liveness probe
+   always calls the version endpoint, so a failing check never
+   restarts Gerrit.
 
 An init container that fails stops the sequence, so Gerrit never
 starts on a site that an import left half-written or a configuration
