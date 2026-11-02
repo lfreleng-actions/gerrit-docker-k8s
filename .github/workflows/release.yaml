@@ -335,28 +335,41 @@ jobs:
             --dev --batch --no-auto-start -d /tmp/site
           echo "gerrit init --dev --batch succeeded ✅"
 
+      # While Gerrit starts, the endpoint first resets the connection,
+      # then answers 302 with an empty body (a fresh development site
+      # redirects the first visitor to log in), and only then 200 with
+      # the version. Only that 200 shows Gerrit is serving, so any
+      # other status, or a body without the pinned version, is retried
+      # rather than followed or failed.
       - name: 'Check the HTTP endpoint'
         shell: bash
         run: |
           # Check the HTTP endpoint
           set -euo pipefail
           pinned=$(sed -n 's/^ARG GERRIT_VERSION=//p' Dockerfile)
+          want="\"${pinned%%-*}\""
           docker run -d --name gerrit-smoke -p 127.0.0.1:8080:8080 \
             gerrit:linux-amd64
           url=http://127.0.0.1:8080/config/server/version
+          body_file=$(mktemp)
+          status=000
+          body=''
           for _ in $(seq 1 60); do
-            if body=$(curl -fsS "$url" 2>/dev/null); then
+            : > "$body_file"
+            status=$(curl -sS --max-time 10 -o "$body_file" \
+              -w '%{http_code}' "$url" 2>/dev/null) || true
+            status=${status:-000}
+            body=$(cat "$body_file")
+            if [[ "$status" == 200 && "$body" == *"$want"* ]]; then
               echo "$body"
-              if [[ "$body" == *"\"${pinned%%-*}\""* ]]; then
-                echo "Gerrit answers on HTTP ✅"
-                exit 0
-              fi
-              echo "::error::Unexpected version from $url ❌"
-              exit 1
+              echo "Gerrit answers on HTTP ✅"
+              exit 0
             fi
+            echo "Not ready yet: HTTP $status, body '${body}'"
             sleep 5
           done
-          echo "::error::Gerrit did not answer on $url ❌"
+          echo "::error::Gerrit did not answer HTTP 200 with $want on" \
+            "$url; last HTTP $status, body '${body}' ❌"
           docker logs gerrit-smoke || true
           exit 1
 
