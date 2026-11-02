@@ -210,7 +210,9 @@ jobs:
       # Dockerfile.chart starts from the image Dockerfile builds. The
       # docker driver builds both into the local image store, where the
       # second build finds the first; no registry is involved. Each
-      # matrix leg builds natively on its runner.
+      # matrix leg builds natively on its runner. The release-build
+      # job in testing.yaml repeats this job's egress steps and builds
+      # on pull requests; keep the two in step.
       - name: 'Build the image'
         shell: bash
         env:
