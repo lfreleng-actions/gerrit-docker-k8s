@@ -30,6 +30,7 @@ WARNING = "WARNING: DEVELOPMENT ACCOUNTS ARE ENABLED"
 NOT_BOOLEAN = "auth.allowDevelopmentAccounts must be a boolean"
 NOT_STRING = "auth.type must be a string"
 EXTRA_AUTH = "gerrit.extraConfig cannot carry an [auth] section"
+COOKIE_SECURE = "auth.cookieSecure was removed in Gerrit 3.13"
 CHOICES: list[dict[str, Any]] = [
     {"type": "HTTP"},
     {"type": "LDAP"},
@@ -294,3 +295,24 @@ def test_extra_config_without_auth_section_renders(
         template_with_extra(tmp_path, auth, extra), "gerrit-config", "gerrit.config"
     )
     assert extra.rstrip("\n") in config
+
+
+@pytest.mark.xfail(strict=True, reason="auth.cookieSecure not yet dropped")
+def test_values_drop_cookie_secure() -> None:
+    values = yaml.safe_load((CHART / "values.yaml").read_text(encoding="utf-8"))
+    assert "cookiesecure" not in {key.lower() for key in values["auth"]}
+
+
+@pytest.mark.xfail(strict=True, reason="auth.cookieSecure not yet refused")
+@pytest.mark.parametrize("value", [True, False, "true", ["true"]])
+@pytest.mark.parametrize("key", ["cookieSecure", "cookiesecure"])
+def test_cookie_secure_is_refused(tmp_path: Path, key: str, value: Any) -> None:
+    proc = template(tmp_path, {"type": "HTTP", key: value})
+    assert proc.returncode != 0
+    assert COOKIE_SECURE in proc.stderr
+
+
+@pytest.mark.parametrize("value", [None, "", []])
+def test_unset_cookie_secure_renders(tmp_path: Path, value: Any) -> None:
+    config = gerrit_config(tmp_path, {"type": "HTTP", "cookieSecure": value})
+    assert "cookiesecure" not in config.lower()
