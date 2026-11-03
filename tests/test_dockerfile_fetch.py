@@ -68,7 +68,6 @@ def fetch(tmp_path: Path, *lines: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-@pytest.mark.xfail(strict=True, reason="fetch-plugins.sh does not exist yet")
 def test_fetches_and_verifies_every_entry(tmp_path: Path, base_url: str) -> None:
     digest = hashlib.sha256(JAR).hexdigest()
     result = fetch(
@@ -81,7 +80,6 @@ def test_fetches_and_verifies_every_entry(tmp_path: Path, base_url: str) -> None
     assert (tmp_path / "catalogue" / "lib" / "other.jar").read_bytes() == JAR
 
 
-@pytest.mark.xfail(strict=True, reason="fetch-plugins.sh does not exist yet")
 def test_missing_artefact_names_entry_and_refresh(
     tmp_path: Path, base_url: str
 ) -> None:
@@ -100,7 +98,6 @@ def test_missing_artefact_names_entry_and_refresh(
     assert "bash scripts/check-plugin-lock.sh --refresh gone" in result.stderr
 
 
-@pytest.mark.xfail(strict=True, reason="fetch-plugins.sh does not exist yet")
 def test_digest_mismatch_fails(tmp_path: Path, base_url: str) -> None:
     result = fetch(tmp_path, f"plugins/good {base_url}/ok.jar {'0' * 64}")
     assert result.returncode != 0
