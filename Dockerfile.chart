@@ -7,8 +7,11 @@
 # The catalogue lives outside the site, at /var/gerrit-catalogue (the
 # chart's pluginCatalogue.path default), as plugins/<name>.jar and
 # lib/<name>.jar:
-# - the jars docker/plugins.lock pins, downloaded and checked against
-#   their sha256; a mismatch fails the build
+# - the jars docker/plugins.lock pins, which
+#   scripts/fetch-plugin-catalogue.sh prepares in .plugin-catalogue in
+#   the build context, from the GHCR mirror or upstream; the build
+#   copies them and checks each against its sha256, and a missing jar,
+#   a mismatch or a jar the lock does not pin fails the build
 # - a symlink to /var/gerrit/plugins/<name>.jar for each core plugin
 #   the official image bundles; site-init mounts the site elsewhere,
 #   so it sees the image's own /var/gerrit, and its cp follows them
@@ -16,8 +19,9 @@
 # Nothing here touches /var/gerrit/plugins, so a container started
 # from this image without the chart behaves as the base image does.
 #
-# Build (the base first, then this file on top of it):
+# Build (the base first, then the catalogue, then this file on top):
 #   docker build -t gerrit-extended:local .
+#   bash scripts/fetch-plugin-catalogue.sh .plugin-catalogue
 #   docker build -f Dockerfile.chart \
 #     --build-arg BASE_IMAGE=gerrit-extended:local -t gerrit-chart:local .
 
@@ -35,14 +39,13 @@ USER root
 ENV GERRIT_CATALOGUE=/var/gerrit-catalogue
 COPY docker/plugins.lock /tmp/plugins.lock
 COPY docker/fetch-plugins.sh /tmp/fetch-plugins.sh
+COPY .plugin-catalogue/ $GERRIT_CATALOGUE/
 
 # Each lock line is "<dir>/<name> <url> <sha256>"; see the lock file.
-# fetch-plugins.sh downloads and checks every entry, and names the
-# entry and the refresh command when GerritForge no longer serves it.
+# fetch-plugins.sh --check downloads nothing: it checks every copied
+# jar against the lock and that the catalogue holds no other jar.
 RUN set -eu; \
-    install -d -o root -g root -m 0755 \
-        "$GERRIT_CATALOGUE" "$GERRIT_CATALOGUE/plugins" "$GERRIT_CATALOGUE/lib"; \
-    sh /tmp/fetch-plugins.sh /tmp/plugins.lock "$GERRIT_CATALOGUE"; \
+    sh /tmp/fetch-plugins.sh --check /tmp/plugins.lock "$GERRIT_CATALOGUE"; \
     for core in /var/gerrit/plugins/*.jar; do \
         link="$GERRIT_CATALOGUE/plugins/${core##*/}"; \
         if [ ! -e "$link" ]; then ln -s "$core" "$link"; fi; \
@@ -51,6 +54,7 @@ RUN set -eu; \
         test -f "$GERRIT_CATALOGUE/plugins/$name.jar"; \
     done; \
     chown -R -h root:root "$GERRIT_CATALOGUE"; \
+    find "$GERRIT_CATALOGUE" -type d -exec chmod 0755 {} +; \
     find "$GERRIT_CATALOGUE" -type f -exec chmod 0644 {} +; \
     rm -f /tmp/plugins.lock /tmp/fetch-plugins.sh; \
     ls -l "$GERRIT_CATALOGUE/plugins" "$GERRIT_CATALOGUE/lib"

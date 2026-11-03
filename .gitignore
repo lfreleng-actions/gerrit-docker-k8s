@@ -61,3 +61,7 @@ node_modules/*
 
 # Local testing
 .env
+
+# Plugin catalogue scripts/fetch-plugin-catalogue.sh prepares for
+# Dockerfile.chart
+.plugin-catalogue/
