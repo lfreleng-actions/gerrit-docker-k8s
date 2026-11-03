@@ -745,7 +745,27 @@ jobs:
           rm -rf /tmp/.buildx-cache
           mv /tmp/.buildx-cache-new /tmp/.buildx-cache
 
+      # A shared runner fails a cluster bootstrap now and then; one
+      # more attempt on a clean slate rides that out. Nothing after
+      # this retries: an install or verification failure is real.
       - name: 'Create kind cluster'
+        id: kind
+        continue-on-error: true
+        # yamllint disable-line rule:line-length
+        uses: helm/kind-action@1544676c07bb3570fcb70166beaa07c4528fd4aa # v1.15.1
+        with:
+          cluster_name: 'chart-smoke'
+
+      - name: 'Remove the failed kind cluster'
+        if: steps.kind.outcome == 'failure'
+        shell: bash
+        run: |
+          # Remove the failed kind cluster
+          echo "::warning::Creating the kind cluster failed; retrying once"
+          kind delete cluster --name chart-smoke || true
+
+      - name: 'Create kind cluster (retry)'
+        if: steps.kind.outcome == 'failure'
         # yamllint disable-line rule:line-length
         uses: helm/kind-action@1544676c07bb3570fcb70166beaa07c4528fd4aa # v1.15.1
         with:
@@ -858,21 +878,27 @@ jobs:
           fi
           echo "The git gc Job packed $before loose objects ✅"
 
+      # Runs on any failure, including one before the cluster exists,
+      # so every command tolerates a missing cluster or tool and the
+      # upload gets whatever there is
       - name: 'Collect diagnostics'
         if: failure()
         shell: bash
         run: |
           # Collect diagnostics
           out="$RUNNER_TEMP/chart-smoke-diagnostics"
-          mkdir -p "$out"
+          mkdir -p "$out" || exit 0
           ns="$SMOKE_NAMESPACE"
+          docker images > "$out/docker-images.txt" 2>&1 || true
+          docker buildx du > "$out/buildx-du.txt" 2>&1 || true
+          kind get clusters > "$out/kind-clusters.txt" 2>&1 || true
           helm status gerrit -n "$ns" > "$out/helm-status.txt" 2>&1 || true
           kubectl get all,pvc,configmap,networkpolicy -n "$ns" -o wide \
             > "$out/resources.txt" 2>&1 || true
           kubectl describe all,pvc -n "$ns" > "$out/describe.txt" 2>&1 || true
           kubectl get events -n "$ns" --sort-by=.lastTimestamp \
             > "$out/events.txt" 2>&1 || true
-          for pod in $(kubectl get pods -n "$ns" -o name 2>/dev/null); do
+          for pod in $(kubectl get pods -n "$ns" -o name 2>/dev/null || true); do
             name=${pod#pod/}
             kubectl logs -n "$ns" "$pod" --all-containers --prefix \
               > "$out/logs-$name.txt" 2>&1 || true
