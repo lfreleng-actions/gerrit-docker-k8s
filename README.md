@@ -1255,6 +1255,12 @@ This action uses:
 
 See the main repository for contribution guidelines.
 
+pre-commit.ci runs the hooks in `.pre-commit-config.yaml` on every pull
+request, except those listed under `ci.skip`. The `Linting` workflow
+runs those instead, because they need network access at scan time,
+more room than pre-commit.ci gives a hook environment, or, like
+`actionlint-shellcheck`, longer than its 180-second limit.
+
 ## License
 
 Apache-2.0

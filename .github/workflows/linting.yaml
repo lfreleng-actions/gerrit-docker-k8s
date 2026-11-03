@@ -1,0 +1,49 @@
+---
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+
+# Run the hooks .pre-commit-config.yaml lists under ci.skip, which
+# pre-commit.ci never runs: those needing network access at scan time
+# (aislop, gha-workflow-linter, check-uv-checksum, check-plugin-lock),
+# basedpyright, and actionlint-shellcheck, which takes longer than
+# pre-commit.ci's 180-second limit. pre-commit.ci runs every other hook.
+#
+# The reusable workflow runs each skipped hook in its own job, under
+# harden-runner in block mode. Most hosts are on the organisation
+# allow-list; this repository's supplemental list adds GerritForge CI
+# for check-plugin-lock and go.dev, where prek fetches the Go toolchain
+# that builds actionlint-shellcheck. The list is read at the commit
+# under test, so a change to it is tested with it.
+name: 'Linting 🧹'
+
+# yamllint disable-line rule:truthy
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+  push:
+    branches: ['main']
+
+permissions: {}
+
+# A literal group rather than github.workflow, which resolves to the
+# workflow name. Queue rather than cancel, so a burst of events cannot
+# leave a cancelled check run beside a successful one for a head SHA.
+concurrency:
+  group: 'linting-${{ github.ref }}'
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  linting:
+    name: 'Linting'
+    permissions:
+      contents: read
+    # yamllint disable-line rule:line-length
+    uses: lfreleng-actions/generic-workflows/.github/workflows/linting.yaml@2442f8a20bb9f023e57d9396f9de4278b5e84785  # v0.7.0
+    with:
+      ci_skipped: true
+      # No package.json: prek provisions Node.js for aislop itself
+      node_setup: 'false'
+      harden_runner_egress: 'block'
+      # yamllint disable-line rule:line-length
+      harden_runner_supplemental_allowlist: '${{ github.repository }}//.github/harden-runner/allow_list.txt@${{ github.event.pull_request.head.sha || github.sha }}'

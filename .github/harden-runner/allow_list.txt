@@ -7,8 +7,13 @@
 # supplemental_config. The test workflow's release-build job reads it
 # at a pull request's head commit, so a change here is tested with it.
 # The scheduled plugin lock check reads it at the default branch.
+# The Linting workflow reads it at the commit it lints.
 
 # Plugin catalogue artefacts pinned in docker/plugins.lock
 gerrit-ci.gerritforge.com:443
 # Helm release archives that azure/setup-helm downloads
 get.helm.sh:443
+# Go release metadata and archives prek fetches to build the
+# actionlint-shellcheck hook in the Linting workflow; the archive
+# download redirects to dl.google.com, on the organisation list
+go.dev:443

@@ -10,6 +10,11 @@ ci:
     - basedpyright
     - check-uv-checksum
     - check-plugin-lock
+    # ShellCheck over every workflow 'run:' block exceeds
+    # pre-commit.ci's 180-second limit. The Linting workflow
+    # (.github/workflows/linting.yaml) runs it instead, with the
+    # rest of this list; prek still runs it locally.
+    - actionlint-shellcheck
   autofix_commit_msg: |
     Chore: Pre-commit autofixes
 
