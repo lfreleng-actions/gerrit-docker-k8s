@@ -1126,6 +1126,41 @@ digest. It is signed and attested the same way, and the packaged
 chart is attached to the GitHub release; the chart README's
 "Published chart" section shows how to install and verify it.
 
+### Plugin Catalogue
+
+`docker/plugins.lock` is the source of truth for the catalogue: it
+pins each jar by GerritForge CI build number and sha256. GerritForge
+discards old builds, so a pinned build can vanish. The
+`plugin-catalogue.yaml` workflow keeps a copy of everything the lock
+pins in GHCR, as one OCI artifact:
+
+```text
+ghcr.io/lfreleng-actions/gerrit-docker-k8s/plugin-catalogue:<sha256 of docker/plugins.lock>
+```
+
+Each jar is a layer annotated with its lock entry (`<dir>/<name>`) and
+source URL, and the lock itself is a layer too. The tag is the
+lock's own sha256, so anyone holding the lock can name its mirror
+without a recorded digest:
+
+```bash
+bash scripts/plugin-catalogue.sh tag   # same as: sha256sum docker/plugins.lock
+```
+
+The workflow runs when a push to `main` changes the lock, or on
+demand. It downloads every artefact, checks each against the lock's
+sha256, pushes the artifact with `oras`, and signs it with cosign,
+keyless, as the release workflow signs images. A tag that already
+exists is left alone. The run summary shows the reference, the
+digest and the `cosign verify` command.
+
+The mirror is a copy, not a trust anchor: consumers still check every
+jar against the sha256 in the lock they hold. Any byte change to the
+lock, a comment included, names a new tag, so the mirror for a lock
+exists only once that lock reaches `main` and the workflow has run.
+GHCR creates the `plugin-catalogue` package private; after the
+first run, a maintainer sets it public.
+
 ### Vulnerability Gate
 
 Before publishing, the release workflow scans the image's SBOM with
