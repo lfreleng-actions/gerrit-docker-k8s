@@ -239,7 +239,6 @@ def test_notes_summarise_other_auth_types(
     assert ("authenticating proxy" in text) is proxy
 
 
-@pytest.mark.xfail(strict=True, reason="extraConfig [auth] not yet refused")
 @pytest.mark.parametrize(
     "extra",
     [
