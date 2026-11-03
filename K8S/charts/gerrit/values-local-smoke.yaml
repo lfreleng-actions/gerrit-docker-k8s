@@ -5,6 +5,8 @@
 # built from this repository's Dockerfile and Dockerfile.chart first,
 # for example:
 #   docker build -t gerrit-local-base:dev .
+#   rm -rf .plugin-catalogue
+#   bash scripts/fetch-plugin-catalogue.sh .plugin-catalogue
 #   docker build -f Dockerfile.chart \
 #     --build-arg BASE_IMAGE=gerrit-local-base:dev -t gerrit-local:dev .
 #   kind load docker-image gerrit-local:dev

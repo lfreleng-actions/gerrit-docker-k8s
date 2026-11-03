@@ -1285,6 +1285,8 @@ Build the chart image from this repository's `Dockerfile` and
 
 ```sh
 docker build -t gerrit-local-base:dev .
+rm -rf .plugin-catalogue
+bash scripts/fetch-plugin-catalogue.sh .plugin-catalogue
 docker build -f Dockerfile.chart \
   --build-arg BASE_IMAGE=gerrit-local-base:dev -t gerrit-local:dev .
 helm lint K8S/charts/gerrit -f K8S/charts/gerrit/values-local-smoke.yaml

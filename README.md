@@ -1080,9 +1080,11 @@ from, at `/var/gerrit-catalogue` (`pluginCatalogue.path`):
 
 - `lib/saml.jar`, and `plugins/` holding `its-jira`, `events-log`,
   `analytics`, `reviewers`, `lfs`, `healthcheck` and
-  `metrics-reporter-prometheus`, downloaded from GerritForge CI's
-  `stable-3.13` builds and checked against the sha256 pins in
-  `docker/plugins.lock`
+  `metrics-reporter-prometheus`, GerritForge CI's `stable-3.13`
+  builds, checked against the sha256 pins in `docker/plugins.lock`;
+  the build copies them from `.plugin-catalogue` in the build context,
+  which `scripts/fetch-plugin-catalogue.sh` prepares (see
+  [Plugin Catalogue](#plugin-catalogue))
 - a link in `plugins/` to each core plugin the official image bundles
   in `/var/gerrit/plugins`, such as `replication`, `hooks`, `webhooks`,
   `delete-project` and `download-commands`
@@ -1176,6 +1178,36 @@ lock, a comment included, names a new tag, so the mirror for a lock
 exists only once that lock reaches `main` and the workflow has run.
 GHCR creates the `plugin-catalogue` package private; after the
 first run, a maintainer sets it public.
+
+Image builds take the catalogue from the mirror. Before
+`docker build -f Dockerfile.chart`, run:
+
+```bash
+bash scripts/fetch-plugin-catalogue.sh .plugin-catalogue
+```
+
+It computes the lock's tag and, when
+`ghcr.io/lfreleng-actions/gerrit-docker-k8s/plugin-catalogue:<tag>`
+exists, verifies it with `cosign verify` against the
+`plugin-catalogue.yaml` workflow's exact identity on `main` and the
+GitHub OIDC issuer, then pulls that digest anonymously with `oras`. A
+failed verification fails the build. Only when the tag does not exist
+does it print a notice and download from the lock's upstream URLs with
+`docker/fetch-plugins.sh`, which retries and names a missing build;
+any other registry error fails rather than falling back. Either way it
+checks every jar against the lock, and its last line names the source,
+`mirror` or `upstream`. The destination must be absent or empty, and
+`oras` and `cosign` must be on the `PATH`.
+
+A pull request that bumps the lock always takes the upstream
+fallback, since its tag is mirrored only once the lock reaches `main`.
+Every build of a mirrored lock, release builds included, takes the
+mirror, so GerritForge can be down or have discarded the pinned builds
+without breaking it. The `Helm chart smoke test` job fails when a
+change that leaves the lock alone does not take the mirror, or its
+fetch log mentions GerritForge. `Dockerfile.chart` downloads nothing:
+it copies `.plugin-catalogue` and checks it again with
+`docker/fetch-plugins.sh --check`.
 
 ### Vulnerability Gate
 
