@@ -124,7 +124,6 @@ def lay_out(tmp_path: Path, *entries: str) -> None:
         jar.write_bytes(JAR)
 
 
-@pytest.mark.xfail(strict=True, reason="--check not added yet")
 def test_check_accepts_a_prepared_catalogue(tmp_path: Path) -> None:
     digest = hashlib.sha256(JAR).hexdigest()
     lay_out(tmp_path, "plugins/good", "lib/other")
@@ -137,7 +136,6 @@ def test_check_accepts_a_prepared_catalogue(tmp_path: Path) -> None:
     assert "unreachable" not in result.stdout
 
 
-@pytest.mark.xfail(strict=True, reason="--check not added yet")
 def test_check_names_a_missing_jar(tmp_path: Path) -> None:
     digest = hashlib.sha256(JAR).hexdigest()
     lay_out(tmp_path, "plugins/good")
@@ -150,7 +148,6 @@ def test_check_names_a_missing_jar(tmp_path: Path) -> None:
     assert "lib/other" in result.stderr
 
 
-@pytest.mark.xfail(strict=True, reason="--check not added yet")
 def test_check_rejects_a_digest_mismatch(tmp_path: Path) -> None:
     lay_out(tmp_path, "plugins/good")
     result = check(
@@ -160,7 +157,6 @@ def test_check_rejects_a_digest_mismatch(tmp_path: Path) -> None:
     assert "sha256 mismatch for plugins/good" in result.stderr
 
 
-@pytest.mark.xfail(strict=True, reason="--check not added yet")
 def test_check_rejects_an_extra_jar(tmp_path: Path) -> None:
     digest = hashlib.sha256(JAR).hexdigest()
     lay_out(tmp_path, "plugins/good", "plugins/extra")

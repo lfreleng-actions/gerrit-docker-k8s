@@ -184,7 +184,6 @@ def assert_catalogue(dest: Path) -> None:
         assert mode == (0o755 if path.is_dir() else 0o644), path
 
 
-@pytest.mark.xfail(strict=True, reason="fetch-plugin-catalogue.sh not added yet")
 def test_uses_the_verified_mirror(
     tmp_path: Path, lock: Path, env: dict[str, str]
 ) -> None:
@@ -206,7 +205,6 @@ def test_uses_the_verified_mirror(
     assert "gerritforge" not in output.lower()
 
 
-@pytest.mark.xfail(strict=True, reason="fetch-plugin-catalogue.sh not added yet")
 def test_lowercases_the_registry_path(
     tmp_path: Path, lock: Path, env: dict[str, str]
 ) -> None:
@@ -220,7 +218,6 @@ def test_lowercases_the_registry_path(
     )
 
 
-@pytest.mark.xfail(strict=True, reason="fetch-plugin-catalogue.sh not added yet")
 def test_falls_back_when_the_tag_is_missing(
     tmp_path: Path, lock: Path, env: dict[str, str]
 ) -> None:
@@ -237,7 +234,6 @@ def test_falls_back_when_the_tag_is_missing(
     assert "Plugin catalogue source: upstream" in output
 
 
-@pytest.mark.xfail(strict=True, reason="fetch-plugin-catalogue.sh not added yet")
 def test_upstream_option_skips_the_mirror(
     tmp_path: Path, lock: Path, env: dict[str, str]
 ) -> None:
@@ -248,7 +244,6 @@ def test_upstream_option_skips_the_mirror(
     assert not [c for c in calls(env) if c.startswith(("oras", "cosign"))]
 
 
-@pytest.mark.xfail(strict=True, reason="fetch-plugin-catalogue.sh not added yet")
 def test_registry_error_fails_without_fallback(
     tmp_path: Path, lock: Path, env: dict[str, str]
 ) -> None:
@@ -261,7 +256,6 @@ def test_registry_error_fails_without_fallback(
     assert not [c for c in calls(env) if c.startswith("curl")]
 
 
-@pytest.mark.xfail(strict=True, reason="fetch-plugin-catalogue.sh not added yet")
 def test_failed_signature_check_fails(
     tmp_path: Path, lock: Path, env: dict[str, str]
 ) -> None:
@@ -275,7 +269,6 @@ def test_failed_signature_check_fails(
     assert not [c for c in log if c.startswith(("oras pull", "curl"))]
 
 
-@pytest.mark.xfail(strict=True, reason="fetch-plugin-catalogue.sh not added yet")
 def test_mirrored_jar_must_match_the_lock(
     tmp_path: Path, lock: Path, env: dict[str, str], mirror: Path
 ) -> None:
@@ -287,7 +280,6 @@ def test_mirrored_jar_must_match_the_lock(
     assert not dest.exists()
 
 
-@pytest.mark.xfail(strict=True, reason="fetch-plugin-catalogue.sh not added yet")
 def test_mirrored_lock_must_match(
     tmp_path: Path, lock: Path, env: dict[str, str], mirror: Path
 ) -> None:
@@ -299,7 +291,6 @@ def test_mirrored_lock_must_match(
     assert not dest.exists()
 
 
-@pytest.mark.xfail(strict=True, reason="fetch-plugin-catalogue.sh not added yet")
 def test_mirror_with_an_extra_file_fails(
     tmp_path: Path, lock: Path, env: dict[str, str], mirror: Path
 ) -> None:
@@ -310,7 +301,6 @@ def test_mirror_with_an_extra_file_fails(
     assert not dest.exists()
 
 
-@pytest.mark.xfail(strict=True, reason="fetch-plugin-catalogue.sh not added yet")
 def test_refuses_a_non_empty_destination(
     tmp_path: Path, lock: Path, env: dict[str, str]
 ) -> None:
@@ -322,7 +312,6 @@ def test_refuses_a_non_empty_destination(
     assert calls(env) == []
 
 
-@pytest.mark.xfail(strict=True, reason="fetch-plugin-catalogue.sh not added yet")
 def test_accepts_an_empty_destination(
     tmp_path: Path, lock: Path, env: dict[str, str]
 ) -> None:
@@ -333,7 +322,6 @@ def test_accepts_an_empty_destination(
     assert_catalogue(dest)
 
 
-@pytest.mark.xfail(strict=True, reason="fetch-plugin-catalogue.sh not added yet")
 def test_rejects_a_malformed_lock(
     tmp_path: Path, lock: Path, env: dict[str, str]
 ) -> None:
@@ -343,7 +331,6 @@ def test_rejects_a_malformed_lock(
     assert calls(env) == []
 
 
-@pytest.mark.xfail(strict=True, reason="fetch-plugin-catalogue.sh not added yet")
 @pytest.mark.parametrize(
     ("answer", "message"),
     [
