@@ -16,7 +16,7 @@
 # Check:   bash scripts/check-plugin-lock.sh [--verify]
 # Refresh: bash scripts/check-plugin-lock.sh --refresh [NAME...]
 lib/saml https://gerrit-ci.gerritforge.com/job/plugin-saml-bazel-stable-3.13/1/artifact/bazel-bin/plugins/saml/saml.jar 85aa88e28acb78d98b72a0df3f69a833b2581e2141562fd4ef2a45f33368a607
-plugins/its-jira https://gerrit-ci.gerritforge.com/job/plugin-its-jira-bazel-stable-3.13/1/artifact/bazel-bin/plugins/its-jira/its-jira.jar f7c9fb1c4cc3505af522ce0226ee20829b1cc770b9d31cbbaa7986778d6d0b97
+plugins/its-jira https://gerrit-ci.gerritforge.com/job/plugin-its-jira-bazel-stable-3.13/2/artifact/bazel-bin/plugins/its-jira/its-jira.jar a68abbaa533e3a8ca0fd0da75ee131ae896907ecfbedd47308fe28c3f1f999ee
 plugins/events-log https://gerrit-ci.gerritforge.com/job/plugin-events-log-bazel-stable-3.13/1/artifact/bazel-bin/plugins/events-log/events-log.jar 832d99cf543a1c0572d6406ac25c9f5ce2b25f4365f6c2aa0522b6fc540e1833
 plugins/analytics https://gerrit-ci.gerritforge.com/job/plugin-analytics-gh-sbt-stable-3.13/2/artifact/target/scala-2.13/analytics.jar 498d5e5c701da9e5459bd7fafaa7a5b0d945a06d143848451e3f99cc975b9cf4
 plugins/reviewers https://gerrit-ci.gerritforge.com/job/plugin-reviewers-bazel-stable-3.13/1/artifact/bazel-bin/plugins/reviewers/reviewers.jar e32cec02df585ddaf5f1f6dd1e9c75ace71e7685b23b744ae5178402acc9f6d5
