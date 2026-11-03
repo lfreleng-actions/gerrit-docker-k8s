@@ -132,7 +132,6 @@ def prepared(tmp_path: Path) -> Path:
 UNREACHABLE = "http://127.0.0.1:9/ok.jar"
 
 
-@pytest.mark.xfail(strict=True, reason="fetch-plugins.sh --check not added")
 def test_check_verifies_without_downloading(tmp_path: Path, prepared: Path) -> None:
     digest = hashlib.sha256(JAR).hexdigest()
     result = check(
@@ -144,7 +143,6 @@ def test_check_verifies_without_downloading(tmp_path: Path, prepared: Path) -> N
     assert "Fetching" not in result.stdout
 
 
-@pytest.mark.xfail(strict=True, reason="fetch-plugins.sh --check not added")
 def test_check_rejects_a_digest_mismatch(tmp_path: Path, prepared: Path) -> None:
     digest = hashlib.sha256(JAR).hexdigest()
     result = check(
@@ -156,7 +154,6 @@ def test_check_rejects_a_digest_mismatch(tmp_path: Path, prepared: Path) -> None
     assert "sha256 mismatch for lib/other" in result.stderr
 
 
-@pytest.mark.xfail(strict=True, reason="fetch-plugins.sh --check not added")
 def test_check_rejects_a_missing_jar(tmp_path: Path, prepared: Path) -> None:
     (prepared / "lib" / "other.jar").unlink()
     digest = hashlib.sha256(JAR).hexdigest()
@@ -169,7 +166,6 @@ def test_check_rejects_a_missing_jar(tmp_path: Path, prepared: Path) -> None:
     assert "lib/other" in result.stderr
 
 
-@pytest.mark.xfail(strict=True, reason="fetch-plugins.sh --check not added")
 def test_check_rejects_an_extra_jar(tmp_path: Path, prepared: Path) -> None:
     (prepared / "plugins" / "stray.jar").write_bytes(JAR)
     digest = hashlib.sha256(JAR).hexdigest()

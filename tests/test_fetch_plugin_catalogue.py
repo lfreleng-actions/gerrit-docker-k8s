@@ -72,13 +72,10 @@ done
 cp "${FIXTURES}/${1##*/}" "$out"
 """
 
-pytestmark = [
-    pytest.mark.skipif(
-        any(shutil.which(tool) is None for tool in ("bash", "sh", "sha256sum")),
-        reason="the fetch needs bash, sh and sha256sum",
-    ),
-    pytest.mark.xfail(strict=True, reason="fetch-plugin-catalogue.sh not added"),
-]
+pytestmark = pytest.mark.skipif(
+    any(shutil.which(tool) is None for tool in ("bash", "sh", "sha256sum")),
+    reason="the fetch needs bash, sh and sha256sum",
+)
 
 
 def sha256(data: bytes) -> str:
