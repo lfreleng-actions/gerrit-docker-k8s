@@ -1,0 +1,210 @@
+---
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+
+# Check the plugin catalogue pins in docker/plugins.lock against
+# GerritForge CI. GerritForge keeps only the latest build of each job,
+# so a pinned artefact disappears as soon as its plugin is rebuilt;
+# this check reports that before an image build breaks on it.
+#
+# When any entry is stale or missing, the workflow keeps one open issue
+# up to date with the findings and the --refresh command to run; when
+# every entry is current again, it closes that issue. It never pushes
+# or opens a pull request: refreshing the lock stays a reviewed change.
+name: 'Plugin Lock Check 🔌'
+
+# yamllint disable-line rule:truthy
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '23 5 * * 1'
+
+concurrency:
+  group: "${{ github.workflow }}"
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  plugin-lock-check:
+    name: 'Check plugin lock pins'
+    runs-on: 'ubuntu-24.04'
+    permissions:
+      contents: read  # Checkout, and read the supplemental allow-list
+      issues: write  # Open, update or close the tracking issue
+    timeout-minutes: 15
+    env:
+      ISSUE_TITLE: 'Plugin lock: upstream builds have moved'
+      ISSUE_LABEL: 'dependencies'
+    steps:
+      # GerritForge CI is not on the organisation allow-list; this
+      # repository's supplemental list adds it.
+      # yamllint disable-line rule:line-length
+      - uses: lfreleng-actions/harden-runner-block-action@2fed66c9c36c4687c31ca349b925b81ec629673f  # v0.15.0
+        with:
+          config: '@6d4a65c5601afd6c2fbe52bda4b0024b132f265d'  # v0.19.0
+          # yamllint disable-line rule:line-length
+          supplemental_config: '${{ github.repository }}//.github/harden-runner/allow_list.txt@${{ github.sha }}'
+          supplemental_required: 'true'
+          token: ${{ github.token }}
+
+      - name: 'Harden runner (block)'
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
+        with:
+          egress-policy: 'block'
+          allowed-endpoints: >
+            ${{ env.CONNECTION_ALLOW_LIST }}
+
+      - name: 'Checkout repository'
+        # yamllint disable-line rule:line-length
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Exit 1 means a pinned artefact is missing or mismatched, 2 a
+      # lookup failure; either way the report is still worth reading,
+      # so the job fails only in the last step.
+      - name: 'Report on the lock'
+        id: report
+        shell: bash
+        run: |
+          # Report on the lock
+          set -uo pipefail
+          report="${RUNNER_TEMP}/plugin-lock-report.json"
+          rc=0
+          bash scripts/check-plugin-lock.sh --report "$report" || rc=$?
+          echo "rc=${rc}" >> "$GITHUB_OUTPUT"
+          if [[ -s "$report" ]]; then
+            echo "report=${report}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 'Summarise the report'
+        id: summary
+        if: steps.report.outputs.report != ''
+        shell: bash
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          REPORT: ${{ steps.report.outputs.report }}
+        run: |
+          # Summarise the report
+          set -euo pipefail
+          table="${RUNNER_TEMP}/plugin-lock-table.md"
+          {
+            echo '| Entry | Pinned build | Latest build | Status |'
+            echo '| ----- | ------------ | ------------ | ------ |'
+            jq -r '.entries[] |
+              "| `\(.entry)` | \(.pinned_build) | " +
+              "\(.latest_build // "unknown") | " +
+              ({current: "✅ current",
+                newer: "⚠️ newer build",
+                missing: "❌ artefact missing",
+                mismatch: "❌ digest mismatch",
+                error: "❓ lookup failed"}[.status]) + " |"' "$REPORT"
+          } > "$table"
+          {
+            echo '## Plugin lock check'
+            echo
+            cat "$table"
+          } >> "$GITHUB_STEP_SUMMARY"
+          jq -r '.entries[] | select(.status == "newer") |
+            "::warning::\(.entry): pinned build \(.pinned_build), " +
+            "upstream build \(.latest_build)"' "$REPORT"
+          echo "table=${table}" >> "$GITHUB_OUTPUT"
+          # The tracking issue describes the default branch's lock; a
+          # manual run on another branch reports without touching it.
+          if [[ "$GITHUB_EVENT_NAME" == 'schedule' \
+              || "$GITHUB_REF" == "refs/heads/${DEFAULT_BRANCH}" ]]; then
+            echo "track=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::${GITHUB_REF} is not the default branch;" \
+              "tracking issue left as is"
+          fi
+
+      - name: 'Update the tracking issue'
+        if: steps.summary.outputs.track == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPORT: ${{ steps.report.outputs.report }}
+          TABLE: ${{ steps.summary.outputs.table }}
+        run: |
+          # Update the tracking issue
+          set -euo pipefail
+          repo="$GITHUB_REPOSITORY"
+          run_url="${GITHUB_SERVER_URL}/${repo}/actions/runs/${GITHUB_RUN_ID}"
+
+          # gh's label filter needs the label to exist
+          label_exists=false
+          if gh label list --repo "$repo" --search "$ISSUE_LABEL" \
+              --json name --limit 100 \
+              | jq -e --arg l "$ISSUE_LABEL" 'any(.[]; .name == $l)' \
+              >/dev/null; then
+            label_exists=true
+          fi
+          issue=""
+          if [[ "$label_exists" == true ]]; then
+            issue="$(gh issue list --repo "$repo" --state open \
+              --label "$ISSUE_LABEL" --limit 100 --json number,title \
+              | jq -r --arg t "$ISSUE_TITLE" \
+                  '[.[] | select(.title == $t)][0].number // empty')"
+          fi
+
+          refresh="$(jq -r '.refresh | join(" ")' "$REPORT")"
+          if [[ -n "$refresh" ]]; then
+            body="${RUNNER_TEMP}/plugin-lock-issue.md"
+            {
+              cat <<'TEXT'
+          The scheduled plugin lock check found entries in
+          `docker/plugins.lock` whose GerritForge builds have moved.
+          GerritForge keeps only the latest build of each job, so a
+          stale pin breaks the image build once its artefact disappears.
+
+          TEXT
+              cat "$TABLE"
+              echo
+              echo 'Refresh the affected entries, review the diff and'
+              echo 'open a pull request:'
+              echo
+              echo '```bash'
+              echo "bash scripts/check-plugin-lock.sh --refresh ${refresh}"
+              echo '```'
+              if jq -e 'any(.entries[]; .status == "mismatch")' \
+                  "$REPORT" >/dev/null; then
+                echo
+                echo 'A digest mismatch means an artefact changed under'
+                echo 'its pinned URL. Find out why before accepting a'
+                echo 'refreshed digest.'
+              fi
+              echo
+              echo "Last checked by ${run_url}"
+            } > "$body"
+            if [[ "$label_exists" != true ]]; then
+              gh label create "$ISSUE_LABEL" --repo "$repo" \
+                --description 'Pull requests that update a dependency file'
+            fi
+            if [[ -n "$issue" ]]; then
+              gh issue edit "$issue" --repo "$repo" --body-file "$body"
+              echo "Updated issue #${issue}"
+            else
+              gh issue create --repo "$repo" --title "$ISSUE_TITLE" \
+                --label "$ISSUE_LABEL" --body-file "$body"
+            fi
+          elif jq -e 'any(.entries[]; .status == "error")' \
+              "$REPORT" >/dev/null; then
+            echo "::notice::Some lookups failed; tracking issue left as is"
+          elif [[ -n "$issue" ]]; then
+            gh issue close "$issue" --repo "$repo" --comment \
+              "Every lock entry is pinned to its job's latest build (${run_url})."
+            echo "Closed issue #${issue}"
+          fi
+
+      - name: 'Fail on a broken pin'
+        if: steps.report.outputs.rc != '0'
+        shell: bash
+        env:
+          RC: ${{ steps.report.outputs.rc }}
+        run: |
+          # Fail on a broken pin
+          echo "::error::check-plugin-lock.sh --report exited ${RC}"
+          exit 1

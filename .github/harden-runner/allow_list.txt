@@ -6,6 +6,7 @@
 # at the tagged commit, through harden-runner-block-action's
 # supplemental_config. The test workflow's release-build job reads it
 # at a pull request's head commit, so a change here is tested with it.
+# The scheduled plugin lock check reads it at the default branch.
 
 # Plugin catalogue artefacts pinned in docker/plugins.lock
 gerrit-ci.gerritforge.com:443
