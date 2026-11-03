@@ -103,3 +103,69 @@ def test_digest_mismatch_fails(tmp_path: Path, base_url: str) -> None:
     assert result.returncode != 0
     assert "sha256 mismatch for plugins/good" in result.stderr
     assert "--refresh" not in result.stderr
+
+
+def check(tmp_path: Path, *lines: str) -> subprocess.CompletedProcess[str]:
+    lock = tmp_path / "plugins.lock"
+    lock.write_text("# A comment\n\n" + "\n".join(lines) + "\n")
+    return subprocess.run(
+        ["sh", str(SCRIPT), "--check", str(lock), str(tmp_path / "catalogue")],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=60,
+    )
+
+
+def lay_out(tmp_path: Path, *entries: str) -> None:
+    for entry in entries:
+        jar = tmp_path / "catalogue" / f"{entry}.jar"
+        jar.parent.mkdir(parents=True, exist_ok=True)
+        jar.write_bytes(JAR)
+
+
+@pytest.mark.xfail(strict=True, reason="--check not added yet")
+def test_check_accepts_a_prepared_catalogue(tmp_path: Path) -> None:
+    digest = hashlib.sha256(JAR).hexdigest()
+    lay_out(tmp_path, "plugins/good", "lib/other")
+    result = check(
+        tmp_path,
+        f"plugins/good http://unreachable.invalid/good.jar {digest}",
+        f"lib/other http://unreachable.invalid/other.jar {digest}",
+    )
+    assert result.returncode == 0, result.stderr
+    assert "unreachable" not in result.stdout
+
+
+@pytest.mark.xfail(strict=True, reason="--check not added yet")
+def test_check_names_a_missing_jar(tmp_path: Path) -> None:
+    digest = hashlib.sha256(JAR).hexdigest()
+    lay_out(tmp_path, "plugins/good")
+    result = check(
+        tmp_path,
+        f"plugins/good http://unreachable.invalid/good.jar {digest}",
+        f"lib/other http://unreachable.invalid/other.jar {digest}",
+    )
+    assert result.returncode == 1
+    assert "lib/other" in result.stderr
+
+
+@pytest.mark.xfail(strict=True, reason="--check not added yet")
+def test_check_rejects_a_digest_mismatch(tmp_path: Path) -> None:
+    lay_out(tmp_path, "plugins/good")
+    result = check(
+        tmp_path, f"plugins/good http://unreachable.invalid/good.jar {'0' * 64}"
+    )
+    assert result.returncode == 1
+    assert "sha256 mismatch for plugins/good" in result.stderr
+
+
+@pytest.mark.xfail(strict=True, reason="--check not added yet")
+def test_check_rejects_an_extra_jar(tmp_path: Path) -> None:
+    digest = hashlib.sha256(JAR).hexdigest()
+    lay_out(tmp_path, "plugins/good", "plugins/extra")
+    result = check(
+        tmp_path, f"plugins/good http://unreachable.invalid/good.jar {digest}"
+    )
+    assert result.returncode == 1
+    assert "Expected 1 jars" in result.stderr
