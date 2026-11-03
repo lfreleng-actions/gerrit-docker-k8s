@@ -63,11 +63,13 @@ USER root
 # the base image was built, so the release Grype gate does not fail on
 # fixed Ubuntu packages. It runs after the GerritForge source is gone,
 # so it cannot touch the image's Gerrit package.
+#
+# Acquire::Retries rides out short mirror outages on every apt fetch.
 RUN set -eux; \
     rm -f /etc/apt/sources.list.d/GerritForge.list; \
-    apt-get update; \
-    DEBIAN_FRONTEND=noninteractive apt-get upgrade -y; \
-    apt-get install -y --no-install-recommends \
+    apt-get -o Acquire::Retries=5 update; \
+    DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=5 upgrade -y; \
+    apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
         curl \
         ca-certificates \
         python3 \
@@ -102,7 +104,8 @@ ARG UV_CHECKSUM=2b428396f12572d4429cf210ca234dd599a33b3af0958a4d5ed569d63e3f344f
 
 RUN set -eux; \
     UV_TARBALL="uv-x86_64-unknown-linux-gnu.tar.gz"; \
-    curl -LsSf \
+    curl -fsSL --retry 5 --retry-delay 3 --retry-connrefused \
+      --retry-max-time 120 \
       "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/${UV_TARBALL}" \
       -o "/tmp/${UV_TARBALL}"; \
     echo "${UV_CHECKSUM}  /tmp/${UV_TARBALL}" | sha256sum -c -; \

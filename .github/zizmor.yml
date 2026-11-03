@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+#
+# zizmor configuration, found by `zizmor .github/workflows/`.
+#
+# secrets-outside-env: the Docker Hub credentials only raise the pull
+# rate limit for image builds. The jobs that use them run on pull
+# requests, where a deployment environment would add a deployment to
+# every run, so they stay repository secrets. Use a read-only Docker
+# Hub access token for DOCKERHUB_TOKEN.
+rules:
+  secrets-outside-env:
+    config:
+      allow:
+        - DOCKERHUB_USERNAME
+        - DOCKERHUB_TOKEN

@@ -34,20 +34,15 @@ USER root
 
 ENV GERRIT_CATALOGUE=/var/gerrit-catalogue
 COPY docker/plugins.lock /tmp/plugins.lock
+COPY docker/fetch-plugins.sh /tmp/fetch-plugins.sh
 
-# Each lock line is "<dir>/<name> <url> <sha256>"; see the lock file
+# Each lock line is "<dir>/<name> <url> <sha256>"; see the lock file.
+# fetch-plugins.sh downloads and checks every entry, and names the
+# entry and the refresh command when GerritForge no longer serves it.
 RUN set -eu; \
     install -d -o root -g root -m 0755 \
         "$GERRIT_CATALOGUE" "$GERRIT_CATALOGUE/plugins" "$GERRIT_CATALOGUE/lib"; \
-    grep -Ev '^[[:space:]]*(#|$)' /tmp/plugins.lock > /tmp/plugins.entries; \
-    while read -r entry url digest; do \
-        jar="$GERRIT_CATALOGUE/$entry.jar"; \
-        echo "Fetching $entry"; \
-        curl -fsSL --retry 3 --retry-delay 3 -o "$jar" "$url"; \
-        echo "$digest  $jar" | sha256sum -c -; \
-    done < /tmp/plugins.entries; \
-    test "$(find "$GERRIT_CATALOGUE" -name '*.jar' -type f | wc -l)" \
-        -eq "$(wc -l < /tmp/plugins.entries)"; \
+    sh /tmp/fetch-plugins.sh /tmp/plugins.lock "$GERRIT_CATALOGUE"; \
     for core in /var/gerrit/plugins/*.jar; do \
         link="$GERRIT_CATALOGUE/plugins/${core##*/}"; \
         if [ ! -e "$link" ]; then ln -s "$core" "$link"; fi; \
@@ -57,7 +52,7 @@ RUN set -eu; \
     done; \
     chown -R -h root:root "$GERRIT_CATALOGUE"; \
     find "$GERRIT_CATALOGUE" -type f -exec chmod 0644 {} +; \
-    rm -f /tmp/plugins.lock /tmp/plugins.entries; \
+    rm -f /tmp/plugins.lock /tmp/fetch-plugins.sh; \
     ls -l "$GERRIT_CATALOGUE/plugins" "$GERRIT_CATALOGUE/lib"
 
 USER gerrit
