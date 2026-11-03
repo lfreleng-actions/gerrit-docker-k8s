@@ -304,9 +304,11 @@ SAML keystore passwords come from the
 `gerrit.extraConfig` is appended verbatim, for settings with no typed
 value. A key there that a typed value also sets adds a second entry
 rather than replacing the first, so set such keys through the typed
-value. The chart does not validate `extraConfig`; the one exception
-is a best-effort check for `auth.httpDisplaynameHeader` with SAML
-enabled, described under [SAML](#saml).
+value. The chart does not validate `extraConfig`, with two
+exceptions: it refuses an `[auth]` section, as
+[Authentication](#authentication) describes, and, on a best-effort
+basis, `auth.httpDisplaynameHeader` with SAML enabled, as
+[SAML](#saml) describes.
 
 ### Server ID
 
@@ -642,13 +644,36 @@ The render fails with an error naming the fix when values:
   `auth.allowDevelopmentAccounts must be a boolean ...`. Only boolean
   `true` opts in;
 - set `auth.type` to anything but a string, such as a list:
-  `auth.type must be a string ...`.
+  `auth.type must be a string ...`;
+- carry an `[auth]` section header in `gerrit.extraConfig`, whatever
+  the choice above and whatever keys follow it, none included:
+  `gerrit.extraConfig cannot carry an [auth] section ...`;
+- set `auth.cookieSecure`, in any case: `auth.cookieSecure was removed
+  in Gerrit 3.13 ...`. Gerrit now marks the session cookie secure
+  itself whenever a request arrives over HTTPS
+  ([3.13 release notes](https://www.gerritcodereview.com/3.13.html)),
+  so the key would be silently ignored. `null`, `""` or an empty list
+  renders no key and passes.
+
+`gerrit.extraConfig` cannot carry an `[auth]` section. Every `[auth]`
+setting is set through `auth` values, which render every key they
+hold. The chart appends `extraConfig` after the `[auth]` section it
+renders, and Gerrit reads the last value of a repeated key, so a
+`type` there would replace the authentication values choose. With
+`DEVELOPMENT_BECOME_ANY_ACCOUNT`, it would let anyone sign in as any
+account on a SAML site, without the opt-in. The chart refuses the
+section header itself rather than looking for `type` under it, so a
+difference between its scan and Gerrit's parser cannot become an
+`auth.type` override. A line that starts, after whitespace, with
+`[auth]` in any case counts, even one that continues a value, with a
+carriage return or Unicode whitespace treated as a space or tab.
+Comments, named subsections such as `[auth "x"]`, and `[auth]` later
+in a line pass.
 
 `helm lint` reports these failures at `INFO` level and skips the
 templates concerned, so lint with values that choose authentication.
 `auth.allowDevelopmentAccounts` is a chart value only and never
-reaches `gerrit.config`. The guard reads `auth` values, not
-`gerrit.extraConfig`.
+reaches `gerrit.config`.
 
 After each install or upgrade, Helm prints the chart's notes: a
 prominent warning while development accounts are enabled, otherwise
@@ -686,12 +711,13 @@ Enabling it:
   values or `gerrit.extraConfig`, since the SAML filter refuses to
   start with it; `null`, `""` or an empty list in `auth` renders no
   key and passes. The `extraConfig` check is best effort only: an
-  active entry in the unqualified `[auth]` section counts, with
-  Unicode whitespace treated as a space or tab, while comments,
-  values and named subsections such as `[auth "x"]` pass. The chart
-  otherwise passes `extraConfig` through unvalidated, and the SAML
-  plugin refuses to start, with a clear error, if the header is set
-  anywhere;
+  active entry in the unqualified `[auth]` section counts, with a
+  carriage return or Unicode whitespace treated as a space or tab,
+  while comments, values and named subsections such as `[auth "x"]`
+  pass. Any other `[auth]` section in `extraConfig` fails the render
+  anyway, as [Authentication](#authentication) describes, and the
+  SAML plugin refuses to start, with a clear error, if the header is
+  set anywhere;
 - mounts the Secret's `samlKeystore.jks` read-only at
   `etc/samlKeystore.jks`, the `[saml] keystorePath`, and, with
   `metadataFromSecret`, its `idp-metadata.xml` at

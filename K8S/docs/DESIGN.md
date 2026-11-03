@@ -219,7 +219,13 @@ migrations of existing SAML sites, so they enable SAML; the Argo CD
 example does. Development accounts let anyone sign in as any account,
 the administrator included, so they stay behind that opt-in for CI,
 such as the kind smoke test, and throwaway sandboxes, and the chart
-refuses the opt-in together with SAML. Plain `HTTP` and `HTTP_LDAP`
+refuses the opt-in together with SAML. It also refuses an `[auth]`
+section in `gerrit.extraConfig` (#302): Gerrit reads the last value of
+a repeated key, so a `type` there would replace the chosen type and
+bypass the opt-in. Every `[auth]` setting has a route through `auth`
+values, so the chart refuses the section header, whatever follows,
+rather than trust a scan for `type` to match Gerrit's parser. Plain
+`HTTP` and `HTTP_LDAP`
 trust identity headers from whatever sits in front of Gerrit, so they
 are safe only behind an authenticating proxy that strips those headers
 from client requests; the chart's Ingress does not. SAML is safe there

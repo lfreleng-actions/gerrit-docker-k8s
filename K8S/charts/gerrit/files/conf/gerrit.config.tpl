@@ -18,6 +18,7 @@ ConfigMap. Keys the chart derives win over the same key in values.
   "container" (dict "javaOptions" (include "gerrit.javaOptions" . | fromJsonArray)) -}}
 {{- /* Fails the render unless values choose authentication */}}
 {{- $_ := include "gerrit.authType" . -}}
+{{- include "gerrit.refuseCookieSecure" . -}}
 {{- $sections := list "gerrit" "httpd" "sshd" "auth" "sendemail" "container" "cache" "change" "receive" "download" "index" "gc" "plugins" "log" "user" "trackingid" "accounts" "suggest" -}}
 {{- if include "gerrit.samlEnabled" . }}
 {{- /* The SAML filter authenticates each request and hands Gerrit the
@@ -35,6 +36,10 @@ header set. */}}
 {{- $_ := set $derived "saml" (include "gerrit.samlConfig" . | fromJson) -}}
 {{- $sections = append $sections "saml" -}}
 {{- end }}
+{{- /* Fails the render when gerrit.extraConfig carries an [auth]
+section, which could override the choice above. After the SAML check,
+so a display name header there gets its own message. */}}
+{{- include "gerrit.refuseExtraConfigAuth" . -}}
 {{- if include "gerrit.hooksEnabled" . }}
 {{- $_ := set $derived "hooks" (dict
   "path" (printf "/var/gerrit/%s" (include "gerrit.hooksPath" .))

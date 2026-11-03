@@ -828,41 +828,40 @@ metadata source is set. */}}
 {{- toJson $values -}}
 {{- end -}}
 
-{{/* Fails the render when values set auth.httpDisplaynameHeader, in
-auth or gerrit.extraConfig: the SAML filter refuses to start with it.
-Git config keys ignore case. An auth value of null, "" or an empty
-list renders no key, as gerrit.configKeys does, so it passes.
-extraConfig is read line by line as git config: only an active entry
-in the unqualified [auth] section counts, including one on the line
-of its section header. Comments, named subsections such as
+{{/* Scans gerrit.extraConfig, taken as the context, for the
+unqualified [auth] section. Returns a JSON object: "header" is true
+when any line, after leading whitespace, starts with an [auth] header
+in any case, even a line the scan takes for a continued value; "keys"
+lists the active entries in that section, lower-cased. Read line by
+line as git config: an entry on the line of its section header
+counts, although Gerrit ignores the rest of a header line, and never
+starts a continued value. Comments, named subsections such as
 [auth "x"], and values, quoted or continued with a trailing
-backslash, do not. Unicode whitespace, such as U+2003, counts as a
-space or tab. extraConfig follows [saml], so entries before its
-first header belong there. The check is best effort: Gerrit reads
-extraConfig unvalidated, and the SAML filter itself refuses to start
-when the header is set anywhere. */}}
-{{- define "gerrit.samlRefuseDisplayNameHeader" -}}
-{{- $message := "auth.httpDisplaynameHeader is not compatible with SAML; remove it from auth and gerrit.extraConfig" -}}
-{{- range $key, $value := (default dict .Values.auth) }}
-{{- if eq (lower $key) "httpdisplaynameheader" }}
-{{- if kindIs "slice" $value }}
-{{- if $value }}{{ fail $message }}{{ end -}}
-{{- else if not (or (kindIs "invalid" $value) (and (kindIs "string" $value) (eq $value ""))) }}
-{{- fail $message -}}
-{{- end }}
-{{- end }}
-{{- end }}
+backslash, do not count. A carriage return or Unicode whitespace,
+such as U+2003, counts as a space or tab. extraConfig follows a
+section the chart renders, never [auth], so entries before its first
+header do not count. The scan is best effort, which is why callers
+guarding authentication refuse on "header" rather than on "keys". */}}
+{{- define "gerrit.extraConfigAuth" -}}
 {{- $name := `^[A-Za-z][A-Za-z0-9-]*` -}}
-{{- $ws := `[\t\v\f\p{Z}\x{1C}-\x{1F}]` -}}
+{{- $ws := `[\t\v\f\r\p{Z}\x{1C}-\x{1F}]` -}}
 {{- $header := printf `^\[%s*([A-Za-z0-9.-]+)%s*("(?:[^"\\]|\\.)*")?%s*\]` $ws $ws $ws -}}
 {{- $quoted := `(?:[^"\\]|\\.)*` -}}
 {{- $plain := printf `(?:[^"\\#;]|\\.|"%s")*` $quoted -}}
-{{- $section := "saml" -}}
+{{- $section := "" -}}
+{{- $keys := list -}}
+{{- $authHeader := false -}}
 {{- $continued := "" -}}
-{{- range splitList "\n" (toString (default "" .Values.gerrit.extraConfig)) }}
+{{- range splitList "\n" (toString (default "" .)) }}
 {{- $text := trimSuffix "\r" . -}}
 {{- $value := "" -}}
 {{- $inValue := false -}}
+{{- $onHeader := false -}}
+{{- $line := regexReplaceAll (printf `^%s+` $ws) $text "" -}}
+{{- $lineHeader := regexFind $header $line -}}
+{{- if and $lineHeader (eq (lower (regexReplaceAll (printf `%s.*$` $header) $line "${1}")) "auth") (not (regexReplaceAll (printf `%s.*$` $header) $line "${2}")) }}
+{{- $authHeader = true -}}
+{{- end }}
 {{- if $continued }}
 {{- $value = $text -}}
 {{- $inValue = true -}}
@@ -875,12 +874,13 @@ when the header is set anywhere. */}}
 {{- $section = "" -}}
 {{- end }}
 {{- $text = regexReplaceAll (printf `^%s+` $ws) (trimPrefix $found $text) "" -}}
+{{- $onHeader = true -}}
 {{- end }}
 {{- if regexMatch (printf `%s%s*([=#;]|$)` $name $ws) $text }}
-{{- if and (eq $section "auth") (eq (lower (regexFind $name $text)) "httpdisplaynameheader") }}
-{{- fail $message -}}
+{{- if eq $section "auth" }}
+{{- $keys = append $keys (lower (regexFind $name $text)) -}}
 {{- end }}
-{{- if regexMatch (printf `%s%s*=` $name $ws) $text }}
+{{- if and (not $onHeader) (regexMatch (printf `%s%s*=` $name $ws) $text) }}
 {{- $value = regexReplaceAll (printf `%s%s*=` $name $ws) $text "" -}}
 {{- $inValue = true -}}
 {{- end }}
@@ -899,6 +899,55 @@ backslash outside a comment, inside quotes or not */}}
 {{- $continued = "quoted" -}}
 {{- else }}
 {{- $continued = "" -}}
+{{- end }}
+{{- end }}
+{{- toJson (dict "header" $authHeader "keys" (uniq $keys)) -}}
+{{- end -}}
+
+{{/* Fails the render when values set auth.httpDisplaynameHeader, in
+auth or gerrit.extraConfig: the SAML filter refuses to start with it.
+Git config keys ignore case. An auth value of null, "" or an empty
+list renders no key, as gerrit.configKeys does, so it passes.
+gerrit.extraConfigAuth reads extraConfig. The check is best
+effort: the SAML filter itself refuses to start when the header is
+set anywhere. */}}
+{{- define "gerrit.samlRefuseDisplayNameHeader" -}}
+{{- $message := "auth.httpDisplaynameHeader is not compatible with SAML; remove it from auth and gerrit.extraConfig" -}}
+{{- range $key, $value := (default dict .Values.auth) }}
+{{- if eq (lower $key) "httpdisplaynameheader" }}
+{{- if kindIs "slice" $value }}
+{{- if $value }}{{ fail $message }}{{ end -}}
+{{- else if not (or (kindIs "invalid" $value) (and (kindIs "string" $value) (eq $value ""))) }}
+{{- fail $message -}}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- if has "httpdisplaynameheader" (include "gerrit.extraConfigAuth" (toString (default "" .Values.gerrit.extraConfig)) | fromJson).keys }}
+{{- fail $message -}}
+{{- end }}
+{{- end -}}
+
+{{/* Fails the render when gerrit.extraConfig carries an [auth]
+section, whatever its keys and the typed choice. Gerrit reads the last
+value of a repeated key, so a type entry there would replace the type
+the chart renders, development accounts included, without their
+opt-in. Every [auth] setting is reached through auth values, so the
+check refuses the section header itself rather than trusting the scan
+of its keys to match Gerrit's parser; see gerrit.extraConfigAuth. */}}
+{{- define "gerrit.refuseExtraConfigAuth" -}}
+{{- if (include "gerrit.extraConfigAuth" (toString (default "" .Values.gerrit.extraConfig)) | fromJson).header }}
+{{- fail "gerrit.extraConfig cannot carry an [auth] section: every auth setting is set through auth values, and Gerrit reads the last value of a repeated key, so an [auth] entry there would replace the one values render, auth.type included; set auth.type, or auth.saml.enabled: true for SAML, and auth.allowDevelopmentAccounts: true for DEVELOPMENT_BECOME_ANY_ACCOUNT" -}}
+{{- end }}
+{{- end -}}
+
+{{/* Fails the render when values set auth.cookieSecure, in any case:
+Gerrit 3.13 removed it and marks the session cookie secure itself on
+HTTPS requests, so the key would be silently ignored. null, "" or an
+empty list renders no key, as gerrit.configKeys does, so it passes. */}}
+{{- define "gerrit.refuseCookieSecure" -}}
+{{- range $key, $value := (default dict .Values.auth) }}
+{{- if and (eq (lower $key) "cookiesecure") (not (or (kindIs "invalid" $value) (and (kindIs "string" $value) (eq $value "")) (and (kindIs "slice" $value) (empty $value)))) }}
+{{- fail "auth.cookieSecure was removed in Gerrit 3.13, which marks the session cookie secure itself on requests that arrive over HTTPS; remove it from auth" -}}
 {{- end }}
 {{- end }}
 {{- end -}}

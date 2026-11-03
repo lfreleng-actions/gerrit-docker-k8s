@@ -72,7 +72,6 @@ auth:
   gitBasicAuthPolicy: null
   contributorAgreements: null
   editableAccountFields: []
-  cookieSecure: null
   # SAML single sign-on through the saml library in the image
   # catalogue. Enabling it adds "saml" to the libraries site-init
   # copies, sets auth.type to HTTP and httpd.filterClass to the SAML
