@@ -1,0 +1,41 @@
+{{- /*
+SPDX-License-Identifier: Apache-2.0
+SPDX-FileCopyrightText: 2026 The Linux Foundation
+
+Printed after helm install and helm upgrade: a warning while
+development accounts are enabled, else the authentication in effect.
+*/ -}}
+{{- $type := include "gerrit.authType" . -}}
+{{- $url := include "gerrit.canonicalWebUrl" . -}}
+Gerrit {{ .Chart.AppVersion }} is deployed as release {{ .Release.Name }} in namespace {{ .Release.Namespace }}.
+Web URL: {{ $url }}
+{{ if include "gerrit.developmentAccounts" . }}
+######################################################################
+#  WARNING: DEVELOPMENT ACCOUNTS ARE ENABLED                         #
+######################################################################
+
+auth.type is DEVELOPMENT_BECOME_ANY_ACCOUNT, with
+auth.allowDevelopmentAccounts: true. Anyone who reaches the site can
+sign in as any account, the administrator included, without a
+password.
+
+Use this only for CI and throwaway sandboxes. For any other site,
+enable SAML (auth.saml.enabled: true) or set another auth.type, and
+remove auth.allowDevelopmentAccounts.
+{{- else if include "gerrit.samlEnabled" . }}
+Authentication: SAML single sign-on (auth.type HTTP through the SAML
+filter), with identity provider metadata from
+{{- if .Values.auth.saml.metadataFromSecret }} idp-metadata.xml in the
+Secret {{ include "gerrit.samlSecretName" . }}.
+{{- else }}
+{{ .Values.auth.saml.metadataUrl }}.
+{{- end }}
+{{- else }}
+Authentication: auth.type {{ $type }}.
+{{- if has $type (list "HTTP" "HTTP_LDAP") }}
+
+{{ $type }} trusts the identity headers of each request. It is safe only
+behind an authenticating proxy that removes those headers from client
+requests; the chart's own Ingress does not.
+{{- end }}
+{{- end }}

@@ -28,7 +28,14 @@ from typing import Any
 
 import pytest
 import yaml
-from chart.test_render import CHART, GOLDEN, GOLDEN_HEADER, IMAGE_TAG, read_golden
+from chart.test_render import (
+    CHART,
+    DEVELOPMENT_AUTH,
+    GOLDEN,
+    GOLDEN_HEADER,
+    IMAGE_TAG,
+    read_golden,
+)
 from chart.test_replication import (
     egress_ports,
     find,
@@ -64,9 +71,13 @@ SOURCES: dict[str, dict[str, Any]] = {
 
 
 def saml_values(source: str, **extra: Any) -> dict[str, Any]:
-    """Return values enabling SAML with the given metadata *source*."""
+    """Return values enabling SAML with the given metadata *source*.
+
+    They turn off the development accounts these tests otherwise render
+    with, which the chart refuses alongside SAML.
+    """
     saml = {"enabled": True, **SAML_ATTRS, **SOURCES[source], **extra}
-    return {"auth": {"saml": saml}}
+    return {"auth": {"allowDevelopmentAccounts": False, "saml": saml}}
 
 
 def gerrit_config(docs: list[Any]) -> str:
@@ -382,7 +393,14 @@ def test_invalid_metadata_fails(
 ) -> None:
     path = tmp_path / "values.yaml"
     path.write_text(
-        yaml.safe_dump({"auth": {"saml": {"enabled": True, **saml}}}),
+        yaml.safe_dump(
+            {
+                "auth": {
+                    "allowDevelopmentAccounts": False,
+                    "saml": {"enabled": True, **saml},
+                }
+            }
+        ),
         encoding="utf-8",
     )
     proc = run_helm("-f", str(path))
@@ -395,7 +413,7 @@ def test_helm_lint(tmp_path: Path, source: str) -> None:
     path = tmp_path / "values.yaml"
     path.write_text(yaml.safe_dump(saml_values(source)), encoding="utf-8")
     proc = subprocess.run(
-        ["helm", "lint", str(CHART), *IMAGE_TAG, "-f", str(path)],
+        ["helm", "lint", str(CHART), *DEVELOPMENT_AUTH, *IMAGE_TAG, "-f", str(path)],
         capture_output=True,
         text=True,
         timeout=120,

@@ -751,6 +751,55 @@ pluginCatalogue.libs, plus saml when auth.saml is enabled */}}
 {{- if dig "saml" "enabled" false (default dict .Values.auth) }}true{{ end -}}
 {{- end -}}
 
+{{/* "true" when auth.allowDevelopmentAccounts is boolean true, else
+empty. Fails on any value but a boolean or null, so a string such as
+"false" cannot pass for the opt-in. */}}
+{{- define "gerrit.developmentAccountsAllowed" -}}
+{{- $allow := dig "allowDevelopmentAccounts" false (default dict .Values.auth) -}}
+{{- if not (or (kindIs "bool" $allow) (kindIs "invalid" $allow)) -}}
+{{- fail (printf "auth.allowDevelopmentAccounts must be a boolean, true or false, not %s %q; with --set-string or a quoted value it is a string" (kindOf $allow) (toString $allow)) -}}
+{{- end -}}
+{{- if eq $allow true }}true{{ end -}}
+{{- end -}}
+
+{{/* auth.type from values, upper-cased with spaces and hyphens as
+underscores, the way Gerrit reads an enum; empty when unset. Fails on
+any value but a string or null: gerrit.config would render each item
+of a list as its own type key. */}}
+{{- define "gerrit.authTypeValue" -}}
+{{- $type := dig "type" "" (default dict .Values.auth) -}}
+{{- if not (or (kindIs "string" $type) (kindIs "invalid" $type)) -}}
+{{- fail (printf "auth.type must be a string naming one Gerrit auth type, not %s" (kindOf $type)) -}}
+{{- end -}}
+{{- default "" $type | trim | upper | replace " " "_" | replace "-" "_" -}}
+{{- end -}}
+
+{{/* The [auth] type the chart renders: HTTP with SAML, else auth.type.
+Fails the render unless values choose authentication on purpose: no
+auth.type without SAML, DEVELOPMENT_BECOME_ANY_ACCOUNT without
+auth.allowDevelopmentAccounts, or that opt-in together with SAML. */}}
+{{- define "gerrit.authType" -}}
+{{- $type := include "gerrit.authTypeValue" . -}}
+{{- $development := include "gerrit.developmentAccountsAllowed" . -}}
+{{- if include "gerrit.samlEnabled" . -}}
+{{- if $development -}}
+{{- fail "auth.allowDevelopmentAccounts cannot be combined with auth.saml.enabled: SAML signs users in through the identity provider; remove one of them" -}}
+{{- end -}}
+HTTP
+{{- else if not $type -}}
+{{- fail "choose authentication: set auth.saml.enabled: true for SAML, auth.type to another Gerrit auth type, or auth.type: DEVELOPMENT_BECOME_ANY_ACCOUNT with auth.allowDevelopmentAccounts: true for CI and sandboxes; see Authentication in the chart README" -}}
+{{- else if and (eq $type "DEVELOPMENT_BECOME_ANY_ACCOUNT") (not $development) -}}
+{{- fail "auth.type DEVELOPMENT_BECOME_ANY_ACCOUNT lets anyone sign in as any account, the administrator included; set auth.allowDevelopmentAccounts: true to use it on purpose, and never in production" -}}
+{{- else -}}
+{{- $type -}}
+{{- end -}}
+{{- end -}}
+
+{{/* "true" when the render enables DEVELOPMENT_BECOME_ANY_ACCOUNT */}}
+{{- define "gerrit.developmentAccounts" -}}
+{{- if eq (include "gerrit.authType" .) "DEVELOPMENT_BECOME_ANY_ACCOUNT" }}true{{ end -}}
+{{- end -}}
+
 {{/* Name of the Secret holding the SAML keystore and its passwords */}}
 {{- define "gerrit.samlSecretName" -}}
 {{- default (printf "%s-saml" (include "gerrit.fullname" .)) .Values.auth.saml.existingSecret -}}

@@ -110,15 +110,28 @@ items:
             valueFiles:
               - $values/gerrit/values.yaml
             # Here, so the values file cannot leave them out. Add
-            # auth.saml.existingSecret, hooks.g2p.existingSecret,
-            # plugins.its-jira.existingSecret and metrics.existingSecret
-            # when the values enable the feature that reads each one.
+            # hooks.g2p.existingSecret, plugins.its-jira.existingSecret
+            # and metrics.existingSecret when the values enable the
+            # feature that reads each one.
             valuesObject:
               secrets:
                 admin:
                   existingSecret: gerrit-admin
                 secureConfig:
                   existingSecret: gerrit-secure-config
+              # Production authentication: SAML single sign-on. The
+              # chart has no default and never enables development
+              # accounts unless asked.
+              auth:
+                saml:
+                  enabled: true
+                  existingSecret: gerrit-saml
+                  metadataUrl: https://idp.example.org/app/gerrit/sso/saml/metadata
+                  # Group sync into saml/<name> groups. An adopted site
+                  # keeps its saml/... groups and the access rules that
+                  # name them, so the identity provider must keep
+                  # sending the same group names.
+                  memberOfAttr: memberOf
         - repoURL: https://git.example.org/platform/gerrit-deployment.git
           targetRevision: main
           ref: values

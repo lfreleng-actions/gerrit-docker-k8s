@@ -19,6 +19,12 @@ gerrit:
   webScheme: http
   listenScheme: http
 
+# Development accounts, on purpose: verify-site.py and verify-hook.py
+# sign in as the site's first account through them
+auth:
+  type: DEVELOPMENT_BECOME_ANY_ACCOUNT
+  allowDevelopmentAccounts: true
+
 persistence:
   size: 2Gi
   volumePermissions:

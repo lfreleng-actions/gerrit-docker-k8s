@@ -60,7 +60,7 @@ def render(tmp_path: Path, *args: str) -> list[dict[str, Any]]:
     source = documents()["Application"]["spec"]["sources"][0]
     path = tmp_path / "values.yaml"
     path.write_text(yaml.safe_dump(source["helm"]["valuesObject"]), encoding="utf-8")
-    out = helm("template", "gerrit", str(CHART), "-f", str(path), *args)
+    out = helm("template", "gerrit", str(CHART), "-f", str(path), *args, auth=False)
     return [d for d in yaml.safe_load_all(out) if d]
 
 
@@ -87,6 +87,22 @@ def test_project_admits_what_the_chart_renders(
 
 def test_project_leaves_secrets_out() -> None:
     assert ("", "Secret") not in admitted()
+
+
+def test_example_authenticates_with_saml(tmp_path: Path) -> None:
+    source = documents()["Application"]["spec"]["sources"][0]
+    auth = source["helm"]["valuesObject"]["auth"]
+    assert auth["saml"]["enabled"] is True
+    assert auth["saml"]["existingSecret"]
+    assert "allowDevelopmentAccounts" not in auth
+    (config,) = [
+        d["data"]["gerrit.config"]
+        for d in render(tmp_path)
+        if d["kind"] == "ConfigMap" and d["metadata"]["name"] == "gerrit-config"
+    ]
+    assert "\ttype = HTTP\n" in config
+    assert "DEVELOPMENT_BECOME_ANY_ACCOUNT" not in config
+    assert f"\tmemberOfAttr = {auth['saml']['memberOfAttr']}\n" in config
 
 
 def test_application_matches_section_six() -> None:

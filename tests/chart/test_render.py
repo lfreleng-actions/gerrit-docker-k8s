@@ -47,18 +47,26 @@ GOLDEN_HEADER = (
 EXAMPLE_NAMES = sorted(p.name for p in GOLDEN.iterdir() if p.is_dir())
 # The chart has no default image tag, so every render names one
 IMAGE_TAG = ("--set", "image.tag=v0.0.0")
+# Nor a default authentication: renders that do not choose one use
+# development accounts from this values file. It goes before a test's
+# own values files, which override it.
+DEVELOPMENT_AUTH = ("-f", str(Path(__file__).with_name("values-development-auth.yaml")))
 
 pytestmark = pytest.mark.skipif(shutil.which("helm") is None, reason="needs helm")
 
 
-def helm(*args: str) -> str:
+def helm(*args: str, auth: bool = True) -> str:
     """Run helm and return its standard output, failing on an error.
 
-    ``template`` and ``lint`` get :data:`IMAGE_TAG` added.
+    ``template`` and ``lint`` get :data:`IMAGE_TAG` added and, unless
+    *auth* is false, :data:`DEVELOPMENT_AUTH` ahead of *args*.
     """
-    extra = IMAGE_TAG if args[:1] in (("template",), ("lint",)) else ()
+    command = ["helm", *args]
+    if args[:1] in (("template",), ("lint",)):
+        base = (*DEVELOPMENT_AUTH, *IMAGE_TAG) if auth else IMAGE_TAG
+        command = ["helm", args[0], *base, *args[1:]]
     proc = subprocess.run(
-        ["helm", *args, *extra],
+        command,
         capture_output=True,
         text=True,
         timeout=120,
@@ -223,6 +231,7 @@ def image_of(*args: str) -> subprocess.CompletedProcess[str]:
             "template",
             "gerrit",
             str(CHART),
+            *DEVELOPMENT_AUTH,
             *args,
             "--show-only",
             "templates/statefulset.yaml",

@@ -27,7 +27,7 @@ from typing import Any
 import pytest
 import yaml
 from chart.test_hooks import assert_golden, helm_fails, plugins
-from chart.test_render import CHART, IMAGE_TAG
+from chart.test_render import CHART, DEVELOPMENT_AUTH, IMAGE_TAG
 from chart.test_replication import egress_ports, find, render
 from chart.test_saml import container, gerrit_config
 from chart.test_secure_config import SECRET_ENV, run_script
@@ -178,7 +178,7 @@ def test_helm_lint(tmp_path: Path) -> None:
     path = tmp_path / "values.yaml"
     path.write_text(yaml.safe_dump(jira_values()), encoding="utf-8")
     proc = subprocess.run(
-        ["helm", "lint", str(CHART), *IMAGE_TAG, "-f", str(path)],
+        ["helm", "lint", str(CHART), *DEVELOPMENT_AUTH, *IMAGE_TAG, "-f", str(path)],
         capture_output=True,
         text=True,
         timeout=120,

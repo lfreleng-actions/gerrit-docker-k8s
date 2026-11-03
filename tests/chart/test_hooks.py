@@ -30,7 +30,14 @@ from typing import Any
 
 import pytest
 import yaml
-from chart.test_render import CHART, GOLDEN, GOLDEN_HEADER, IMAGE_TAG, read_golden
+from chart.test_render import (
+    CHART,
+    DEVELOPMENT_AUTH,
+    GOLDEN,
+    GOLDEN_HEADER,
+    IMAGE_TAG,
+    read_golden,
+)
 from chart.test_replication import find, pod_spec, render, run_helm, site_init_env
 from chart.test_saml import container, gerrit_config
 
@@ -265,7 +272,7 @@ def test_helm_lint(tmp_path: Path, values: dict[str, Any]) -> None:
     path = tmp_path / "values.yaml"
     path.write_text(yaml.safe_dump(values), encoding="utf-8")
     proc = subprocess.run(
-        ["helm", "lint", str(CHART), *IMAGE_TAG, "-f", str(path)],
+        ["helm", "lint", str(CHART), *DEVELOPMENT_AUTH, *IMAGE_TAG, "-f", str(path)],
         capture_output=True,
         text=True,
         timeout=120,

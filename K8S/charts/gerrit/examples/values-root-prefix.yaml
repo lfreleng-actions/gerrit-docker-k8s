@@ -12,6 +12,12 @@ gerrit:
   urlPrefix: ""
   serverId: 00000000-0000-4000-8000-000000000000
 
+# Development accounts keep the example short; a real site enables
+# SAML instead (see "Authentication" in the chart README)
+auth:
+  type: DEVELOPMENT_BECOME_ANY_ACCOUNT
+  allowDevelopmentAccounts: true
+
 ingress:
   enabled: true
   className: traefik

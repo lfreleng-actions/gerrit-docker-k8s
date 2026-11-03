@@ -14,6 +14,7 @@ from types import ModuleType
 
 import pytest
 import yaml
+from chart.test_render import DEVELOPMENT_AUTH
 from chart_digests import check_digests
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -207,7 +208,15 @@ def test_pinned_chart_renders_every_image_at_the_digest(
     shutil.copytree(CHART, chart)
     assert run(pin, chart / "values.yaml") == 0
     proc = subprocess.run(
-        ["helm", "template", "gerrit", str(chart), "--set", "toolbox.enabled=true"],
+        [
+            "helm",
+            "template",
+            "gerrit",
+            str(chart),
+            *DEVELOPMENT_AUTH,
+            "--set",
+            "toolbox.enabled=true",
+        ],
         capture_output=True,
         text=True,
         timeout=120,
