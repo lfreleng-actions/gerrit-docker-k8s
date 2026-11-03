@@ -29,6 +29,13 @@ OPT_IN = "set auth.allowDevelopmentAccounts: true to use it on purpose"
 WARNING = "WARNING: DEVELOPMENT ACCOUNTS ARE ENABLED"
 NOT_BOOLEAN = "auth.allowDevelopmentAccounts must be a boolean"
 NOT_STRING = "auth.type must be a string"
+EXTRA_AUTH = "gerrit.extraConfig cannot carry an [auth] section"
+CHOICES: list[dict[str, Any]] = [
+    {"type": "HTTP"},
+    {"type": "LDAP"},
+    {"saml": SAML},
+    {"type": DEVELOPMENT, "allowDevelopmentAccounts": True},
+]
 
 pytestmark = pytest.mark.skipif(shutil.which("helm") is None, reason="needs helm")
 
@@ -45,6 +52,22 @@ def template(
     path.write_text(yaml.safe_dump(values), encoding="utf-8")
     return subprocess.run(
         ["helm", "template", "gerrit", str(chart), *IMAGE_TAG, "-f", str(path), *args],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+
+
+def template_with_extra(
+    tmp_path: Path, auth: dict[str, Any], extra: str
+) -> subprocess.CompletedProcess[str]:
+    """Run ``helm template`` with *auth* and *extra* as ``gerrit.extraConfig``."""
+    path = tmp_path / "values.yaml"
+    values = {"auth": auth, "gerrit": {"extraConfig": extra}}
+    path.write_text(yaml.safe_dump(values), encoding="utf-8")
+    return subprocess.run(
+        ["helm", "template", "gerrit", str(CHART), *IMAGE_TAG, "-f", str(path)],
         capture_output=True,
         text=True,
         timeout=120,
@@ -214,3 +237,61 @@ def test_notes_summarise_other_auth_types(
     assert WARNING not in text
     assert f"Authentication: auth.type {auth_type}." in text
     assert ("authenticating proxy" in text) is proxy
+
+
+@pytest.mark.xfail(strict=True, reason="extraConfig [auth] not yet refused")
+@pytest.mark.parametrize(
+    "extra",
+    [
+        f"[auth]\n\ttype = {DEVELOPMENT}\n",
+        f"[auth] type = {DEVELOPMENT}\n",
+        "[AUTH]\n  TYPE = development_become_any_account\n",
+        "[auth]\n\ttype=LDAP # set\n",
+        '[auth "x"]\n[auth]\ntype =\n',
+        f"[auth]\n\u2003type = {DEVELOPMENT}\n",
+        f"[auth]\u2003type\u2003= {DEVELOPMENT}\n",
+        f"[auth]\n\tlogoutUrl = a\\\\\ntype = {DEVELOPMENT}\n",
+        f"[auth]\n\rtype = {DEVELOPMENT}\n",
+        f"[auth]\r\n\ttype = {DEVELOPMENT}\r\n",
+        f"[auth] logoutUrl = a \\\ntype = {DEVELOPMENT}\n",
+        f"[auth]\n; type = {DEVELOPMENT}\n",
+        f"[auth]\n\t# type = {DEVELOPMENT}\n",
+        f"[auth]\n\tlogoutUrl = a \\\ntype = {DEVELOPMENT}\n",
+        '[auth]\n\tlogoutUrl = "a \\\ntype = \\\nb"\n',
+        f'[plugin "x"]\n\tnote = a \\\n[auth]\ntype = {DEVELOPMENT}\n',
+        "[auth]\n",
+        " [Auth ]\n",
+        "\r[AUTH]\n\tlogoutUrl = https://example.org\n",
+    ],
+)
+@pytest.mark.parametrize("auth", CHOICES)
+def test_extra_config_auth_section_is_refused(
+    tmp_path: Path, auth: dict[str, Any], extra: str
+) -> None:
+    proc = template_with_extra(tmp_path, auth, extra)
+    assert proc.returncode != 0
+    assert EXTRA_AUTH in proc.stderr
+    assert "auth.saml.enabled" in proc.stderr
+    assert "auth.allowDevelopmentAccounts" in proc.stderr
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        f"# [auth] type = {DEVELOPMENT}\n",
+        f'[auth "example"]\n\ttype = {DEVELOPMENT}\n',
+        f"[auth.example]\n\ttype = {DEVELOPMENT}\n",
+        f"[sendemail]\n\ttype = {DEVELOPMENT}\n",
+        f'[plugin "x"]\n\tnote = "a] type = {DEVELOPMENT}"\n',
+        f'[plugin "x"]\n\tnote = a ; [auth] type = {DEVELOPMENT}\n',
+        f"type = {DEVELOPMENT}\n",
+    ],
+)
+@pytest.mark.parametrize("auth", CHOICES)
+def test_extra_config_without_auth_section_renders(
+    tmp_path: Path, auth: dict[str, Any], extra: str
+) -> None:
+    config = configmap_data(
+        template_with_extra(tmp_path, auth, extra), "gerrit-config", "gerrit.config"
+    )
+    assert extra.rstrip("\n") in config
