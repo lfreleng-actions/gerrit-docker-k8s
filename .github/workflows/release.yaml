@@ -196,6 +196,32 @@ jobs:
         with:
           persist-credentials: false
 
+      # Pulls from Docker Hub count against an account, when the
+      # repository has one, rather than the runner's shared anonymous
+      # rate limit. Without Docker Hub secrets the login skips and the
+      # images pull anonymously.
+      - name: 'Check for Docker Hub credentials'
+        id: dockerhub
+        shell: bash
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+        run: |
+          # Check for Docker Hub credentials
+          if [ -n "$DOCKERHUB_USERNAME" ]; then
+            echo "login=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "login=false" >> "$GITHUB_OUTPUT"
+            echo "No Docker Hub credentials; pulling anonymously"
+          fi
+
+      - name: 'Log in to Docker Hub'
+        if: steps.dockerhub.outputs.login == 'true'
+        # yamllint disable-line rule:line-length
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6  # v4.7.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
       # The standard OCI label set (revision, version, created and so
       # on) from the workflow context; it survives the tar export
       - name: 'Compute OCI image metadata'
