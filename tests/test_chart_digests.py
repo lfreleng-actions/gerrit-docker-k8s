@@ -11,6 +11,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from chart.test_render import DEVELOPMENT_AUTH
 from chart_digests import check_digests, main
 
 DIGEST = "sha256:" + "a" * 64
@@ -207,7 +208,7 @@ def test_script_runs_standalone(tmp_path: Path) -> None:
 
 def _helm_template(*args: str) -> str:
     return subprocess.run(
-        ["helm", "template", "gerrit", str(CHART), *args],
+        ["helm", "template", "gerrit", str(CHART), *DEVELOPMENT_AUTH, *args],
         capture_output=True,
         text=True,
         check=True,

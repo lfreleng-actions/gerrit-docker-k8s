@@ -616,7 +616,12 @@ jobs:
           # Lint the chart
           set -euo pipefail
           shopt -s nullglob
-          helm lint "$CHART" --set "image.tag=$LINT_TAG"
+          # The chart has no default authentication, and helm lint
+          # skips a template that fails; choose one so the defaults
+          # lint renders every template
+          helm lint "$CHART" --set "image.tag=$LINT_TAG" \
+            --set auth.type=DEVELOPMENT_BECOME_ANY_ACCOUNT \
+            --set auth.allowDevelopmentAccounts=true
           helm lint "$CHART" -f "$CHART/values-local-smoke.yaml"
           examples=("$CHART"/examples/*.yaml)
           if [ "${#examples[@]}" -eq 0 ]; then

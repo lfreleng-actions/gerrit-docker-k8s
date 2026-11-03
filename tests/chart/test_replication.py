@@ -19,7 +19,7 @@ from typing import Any
 
 import pytest
 import yaml
-from chart.test_render import CHART, IMAGE_TAG
+from chart.test_render import CHART, DEVELOPMENT_AUTH, IMAGE_TAG
 
 pytestmark = pytest.mark.skipif(shutil.which("helm") is None, reason="needs helm")
 
@@ -64,6 +64,7 @@ def run_helm(*args: str) -> subprocess.CompletedProcess[str]:
             str(CHART),
             "--namespace",
             "gerrit-test",
+            *DEVELOPMENT_AUTH,
             *IMAGE_TAG,
             *args,
         ],

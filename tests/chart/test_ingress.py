@@ -26,6 +26,7 @@ import pytest
 import yaml
 from chart.test_render import (
     CHART,
+    DEVELOPMENT_AUTH,
     EXAMPLE_NAMES,
     EXAMPLES,
     GOLDEN,
@@ -295,6 +296,7 @@ def test_node_port_ssh_service_needs_a_known_port() -> None:
             "template",
             "gerrit",
             str(CHART),
+            *DEVELOPMENT_AUTH,
             *IMAGE_TAG,
             "--set",
             "ssh.service.type=NodePort",
@@ -345,6 +347,7 @@ def test_external_dns_refuses_the_http_host() -> None:
             "template",
             "gerrit",
             str(CHART),
+            *DEVELOPMENT_AUTH,
             *IMAGE_TAG,
             "--set",
             "ingress.enabled=true",

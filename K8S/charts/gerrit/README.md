@@ -137,7 +137,8 @@ container image carries that digest. It then pushes the chart, signs
 it with cosign (keyless, through GitHub OIDC) and attests its build
 provenance, as it does the image, and attaches the packaged `.tgz` to
 the GitHub release. The published chart therefore needs no image
-values:
+values, but `my-values.yaml` must choose the authentication, as
+[Authentication](#authentication) describes:
 
 ```sh
 version=1.2.3
@@ -203,6 +204,8 @@ Argo CD; `K8S/docs/DESIGN.md` section 6 explains its settings.
 | `ssh.service.externalTrafficPolicy`      | `Local`                          | Set on `LoadBalancer` and `NodePort` Services only         |
 | `ssh.service.externalDNS`                | `false`                          | Adds `external-dns.alpha.kubernetes.io/hostname: <ssh.host>` |
 | `networkPolicy.enabled`                  | `true`                           |                                                            |
+| `auth.type`                              | `""`                             | Required unless SAML is on; see [Authentication](#authentication) |
+| `auth.allowDevelopmentAccounts`          | `false`                          | Opt-in for `DEVELOPMENT_BECOME_ANY_ACCOUNT`; see [Authentication](#authentication) |
 | `auth.saml.enabled`                      | `false`                          | See [SAML](#saml)                                          |
 | `auth.saml.existingSecret`               | `""`                             | Pre-created Secret with the SAML keys; `""` creates `<fullname>-saml` |
 | `auth.saml.metadataUrl`                  | `""`                             | IdP metadata URL; set this or `metadataFromSecret`         |
@@ -281,7 +284,7 @@ subsection, as in `cache.diff_summary.diskLimit` becoming
 
 | Value                       | Default                          | Notes                                                    |
 | --------------------------- | -------------------------------- | -------------------------------------------------------- |
-| `auth.type`                 | `DEVELOPMENT_BECOME_ANY_ACCOUNT` | Smoke default only; never use it in production           |
+| `auth.type`                 | `""`                             | No default: values must choose; see [Authentication](#authentication) |
 | `sendemail.enable`          | `false`                          | Gerrit's default relays through `localhost`, which the pod lacks |
 | `sshd.listenAddress`        | `*:29418`                        |                                                          |
 | `container.user`            | `gerrit`                         |                                                          |
@@ -599,11 +602,72 @@ ssh -p 29418 <user>@<ssh.host> replication start --all --wait
 
 `logs/replication_log` on the site volume records each push.
 
+## Authentication
+
+The chart has no default authentication: the render fails until values
+choose one of:
+
+- **SAML**, with `auth.saml.enabled: true`: single sign-on through an
+  identity provider, as [SAML](#saml) describes. Production sites,
+  which are migrations of existing SAML sites, use this.
+- **Another Gerrit auth type** in `auth.type`, such as `LDAP` or
+  `OAUTH`, with the keys it needs in `auth` and the other sections
+  ([config-gerrit: auth.type](https://gerrit-review.googlesource.com/Documentation/config-gerrit.html#auth.type)).
+- **Development accounts**, with `auth.type:
+  DEVELOPMENT_BECOME_ANY_ACCOUNT` and `auth.allowDevelopmentAccounts:
+  true`. Anyone who reaches the site can sign in as any account, the
+  administrator included, without a password. They serve CI, such as
+  the kind smoke test and `values-local-smoke.yaml`, and throwaway
+  sandboxes; never a site with real users or data.
+
+```yaml
+auth:
+  type: DEVELOPMENT_BECOME_ANY_ACCOUNT
+  allowDevelopmentAccounts: true
+```
+
+The render fails with an error naming the fix when values:
+
+- set neither SAML nor `auth.type`: `choose authentication: ...`;
+- set `auth.type: DEVELOPMENT_BECOME_ANY_ACCOUNT` without
+  `auth.allowDevelopmentAccounts: true`, in any case or with hyphens
+  for underscores, as Gerrit reads it: `auth.type
+  DEVELOPMENT_BECOME_ANY_ACCOUNT lets anyone sign in as any account
+  ...`;
+- set `auth.allowDevelopmentAccounts: true` with `auth.saml.enabled`:
+  `auth.allowDevelopmentAccounts cannot be combined with
+  auth.saml.enabled ...`;
+- set `auth.allowDevelopmentAccounts` to anything but a boolean, such
+  as the quoted `"false"` or `--set-string` gives:
+  `auth.allowDevelopmentAccounts must be a boolean ...`. Only boolean
+  `true` opts in;
+- set `auth.type` to anything but a string, such as a list:
+  `auth.type must be a string ...`.
+
+`helm lint` reports these failures at `INFO` level and skips the
+templates concerned, so lint with values that choose authentication.
+`auth.allowDevelopmentAccounts` is a chart value only and never
+reaches `gerrit.config`. The guard reads `auth` values, not
+`gerrit.extraConfig`.
+
+After each install or upgrade, Helm prints the chart's notes: a
+prominent warning while development accounts are enabled, otherwise
+the authentication in effect.
+
+**`HTTP` and `HTTP_LDAP` need an authenticating proxy.** Without SAML,
+these types trust the identity headers on each request, such as
+`Authorization` or the header `auth.httpHeader` names. They are safe
+only behind an authenticating proxy that removes those headers from
+client requests and sets them itself; the chart's own Ingress does
+not, so behind it any client can claim any account. SAML is safe here
+because its filter discards client-supplied `X-SAML-*` headers before
+it sets them from the verified assertion.
+
 ## SAML
 
 `auth.saml.enabled` turns on SAML single sign-on through Gerrit's
-`saml` library module, in place of the smoke-only
-`DEVELOPMENT_BECOME_ANY_ACCOUNT`. Enabling it:
+`saml` library module, the authentication production sites use.
+Enabling it:
 
 - adds `saml` to the libraries `site-init` copies from the image
   catalogue, so the image must provide
@@ -616,6 +680,8 @@ ssh -p 29418 <user>@<ssh.host> replication start --all --wait
   com.googlesource.gerrit.plugins.saml.SamlWebFilter` and a `[saml]`
   section in `gerrit.config`. These win over the same keys in values,
   so `auth.type` from values no longer applies;
+- fails the render with `auth.allowDevelopmentAccounts: true`, as
+  [Authentication](#authentication) describes;
 - fails the render when `auth.httpDisplaynameHeader` is set in `auth`
   values or `gerrit.extraConfig`, since the SAML filter refuses to
   start with it; `null`, `""` or an empty list in `auth` renders no

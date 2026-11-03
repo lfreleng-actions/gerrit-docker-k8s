@@ -59,8 +59,16 @@ sshd:
 
 # auth.registerEmailPrivateKey comes from secrets.secureConfig
 auth:
-  # Smoke default only; never use it in production
-  type: DEVELOPMENT_BECOME_ANY_ACCOUNT
+  # No default: the render fails until values choose one. Enable SAML
+  # below, or set a Gerrit auth type here. HTTP and HTTP_LDAP trust
+  # identity headers and need an authenticating proxy in front that
+  # strips them; the chart's Ingress does not. See "Authentication" in
+  # the chart README.
+  type: ""
+  # DEVELOPMENT_BECOME_ANY_ACCOUNT lets anyone sign in as any account,
+  # the administrator included. It renders only with this set to true,
+  # for CI and throwaway sandboxes; never with SAML or in production.
+  allowDevelopmentAccounts: false
   gitBasicAuthPolicy: null
   contributorAgreements: null
   editableAccountFields: []

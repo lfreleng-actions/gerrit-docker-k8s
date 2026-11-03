@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+
+# The chart has no default authentication. Tests that do not choose it
+# themselves render with development accounts, on purpose, from this
+# file; a test's own values files come after it and override it.
+auth:
+  type: DEVELOPMENT_BECOME_ANY_ACCOUNT
+  allowDevelopmentAccounts: true

@@ -954,7 +954,9 @@ jobs:
 
       # Check the archive, not the source tree: what is pushed is what
       # is checked. Rendering turns on every optional workload, so
-      # each pod spec the chart can produce is covered.
+      # each pod spec the chart can produce is covered. The chart has
+      # no default authentication, and helm lint skips a template that
+      # fails, so both choose one.
       - name: 'Lint and render the packaged chart'
         shell: bash
         env:
@@ -963,9 +965,11 @@ jobs:
         run: |
           # Lint and render the packaged chart
           set -euo pipefail
-          helm lint "${PACKAGE}"
+          auth=(--set auth.type=DEVELOPMENT_BECOME_ANY_ACCOUNT
+            --set auth.allowDevelopmentAccounts=true)
+          helm lint "${PACKAGE}" "${auth[@]}"
           rendered="${RUNNER_TEMP}/chart-rendered.yaml"
-          helm template gerrit "${PACKAGE}" \
+          helm template gerrit "${PACKAGE}" "${auth[@]}" \
             --set persistence.volumePermissions.enabled=true \
             --set gc.cronJob.enabled=true \
             --set logs.retentionDays=7 \

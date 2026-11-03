@@ -211,6 +211,20 @@ prefix the Ingress serves. Behind the chart's Ingress the schemes are
 `gerrit.listenScheme`
 ([config-gerrit: httpd.listenUrl][gc-listenurl]).
 
+**Authentication is an explicit choice.** The chart has no default
+`auth.type`: the render fails until values enable SAML, set another
+Gerrit auth type, or set `DEVELOPMENT_BECOME_ANY_ACCOUNT` together with
+`auth.allowDevelopmentAccounts: true` (#299). Production sites are
+migrations of existing SAML sites, so they enable SAML; the Argo CD
+example does. Development accounts let anyone sign in as any account,
+the administrator included, so they stay behind that opt-in for CI,
+such as the kind smoke test, and throwaway sandboxes, and the chart
+refuses the opt-in together with SAML. Plain `HTTP` and `HTTP_LDAP`
+trust identity headers from whatever sits in front of Gerrit, so they
+are safe only behind an authenticating proxy that strips those headers
+from client requests; the chart's Ingress does not. SAML is safe there
+because its filter discards client-supplied `X-SAML-*` headers.
+
 **Group membership from the SSO.** With SAML and
 `auth.saml.memberOfAttr` set, Gerrit takes group membership from the
 SSO: the SAML module creates a `saml/<name>` group for each group the
@@ -728,6 +742,8 @@ reference; each updates the section it changes.
 - #256: the export tool leaving out `.chart/` (sections 1.7 and 3.1).
 - #262: the admin toolbox and its maintenance helpers (section 1.9).
 - #268: SAML group membership sync (section 1.4).
+- #299: authentication as an explicit choice, with development
+  accounts behind an opt-in (section 1.4).
 - #244: health checks, metrics, JSON container logs and log retention
   (sections 1.3, 1.8, 1.10 and 5).
 - The other sub-issues of #228 cover narrowing the egress default to
