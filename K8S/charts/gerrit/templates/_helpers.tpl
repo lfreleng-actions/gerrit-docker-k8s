@@ -940,6 +940,18 @@ of its keys to match Gerrit's parser; see gerrit.extraConfigAuth. */}}
 {{- end }}
 {{- end -}}
 
+{{/* Fails the render when values set auth.cookieSecure, in any case:
+Gerrit 3.13 removed it and marks the session cookie secure itself on
+HTTPS requests, so the key would be silently ignored. null, "" or an
+empty list renders no key, as gerrit.configKeys does, so it passes. */}}
+{{- define "gerrit.refuseCookieSecure" -}}
+{{- range $key, $value := (default dict .Values.auth) }}
+{{- if and (eq (lower $key) "cookiesecure") (not (or (kindIs "invalid" $value) (and (kindIs "string" $value) (eq $value "")) (and (kindIs "slice" $value) (empty $value)))) }}
+{{- fail "auth.cookieSecure was removed in Gerrit 3.13, which marks the session cookie secure itself on requests that arrive over HTTPS; remove it from auth" -}}
+{{- end }}
+{{- end }}
+{{- end -}}
+
 {{/* TCP port of auth.saml.metadataUrl when the NetworkPolicy needs a
 rule for it: set, enabled and not 443, which is always allowed; else
 empty */}}

@@ -297,13 +297,11 @@ def test_extra_config_without_auth_section_renders(
     assert extra.rstrip("\n") in config
 
 
-@pytest.mark.xfail(strict=True, reason="auth.cookieSecure not yet dropped")
 def test_values_drop_cookie_secure() -> None:
     values = yaml.safe_load((CHART / "values.yaml").read_text(encoding="utf-8"))
     assert "cookiesecure" not in {key.lower() for key in values["auth"]}
 
 
-@pytest.mark.xfail(strict=True, reason="auth.cookieSecure not yet refused")
 @pytest.mark.parametrize("value", [True, False, "true", ["true"]])
 @pytest.mark.parametrize("key", ["cookieSecure", "cookiesecure"])
 def test_cookie_secure_is_refused(tmp_path: Path, key: str, value: Any) -> None:

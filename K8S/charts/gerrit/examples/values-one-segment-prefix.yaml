@@ -20,7 +20,6 @@ auth:
   editableAccountFields:
     - FULL_NAME
     - USER_NAME
-  cookieSecure: true
 
 sendemail:
   enable: true

@@ -647,7 +647,13 @@ The render fails with an error naming the fix when values:
   `auth.type must be a string ...`;
 - carry an `[auth]` section header in `gerrit.extraConfig`, whatever
   the choice above and whatever keys follow it, none included:
-  `gerrit.extraConfig cannot carry an [auth] section ...`.
+  `gerrit.extraConfig cannot carry an [auth] section ...`;
+- set `auth.cookieSecure`, in any case: `auth.cookieSecure was removed
+  in Gerrit 3.13 ...`. Gerrit now marks the session cookie secure
+  itself whenever a request arrives over HTTPS
+  ([3.13 release notes](https://www.gerritcodereview.com/3.13.html)),
+  so the key would be silently ignored. `null`, `""` or an empty list
+  renders no key and passes.
 
 `gerrit.extraConfig` cannot carry an `[auth]` section. Every `[auth]`
 setting is set through `auth` values, which render every key they
