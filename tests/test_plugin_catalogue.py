@@ -60,15 +60,10 @@ done
 exec "${REAL_JQ}" "$@"
 """
 
-pytestmark = [
-    pytest.mark.skipif(
-        shutil.which("bash") is None or shutil.which("jq") is None,
-        reason="the script needs bash and jq",
-    ),
-    pytest.mark.xfail(
-        strict=True, reason="scripts/plugin-catalogue.sh is not written yet"
-    ),
-]
+pytestmark = pytest.mark.skipif(
+    shutil.which("bash") is None or shutil.which("jq") is None,
+    reason="the script needs bash and jq",
+)
 
 
 def sha256(data: bytes) -> str:
