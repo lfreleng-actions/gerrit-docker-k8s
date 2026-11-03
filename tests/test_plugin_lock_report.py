@@ -6,8 +6,8 @@
 A stand-in ``curl`` placed first on PATH serves recorded GerritForge
 responses, so these tests never touch the network: any URL without a
 recorded response fails as an unreachable host would. Like the real
-curl, it prints ``--write-out``'s ``%{http_code}`` even when a request
-fails.
+curl, it rejects a URL holding brackets unless globbing is off, and
+prints ``--write-out``'s ``%{http_code}`` even when a request fails.
 """
 
 from __future__ import annotations
@@ -69,6 +69,12 @@ while i < len(args):
     i += 1
 with open(os.environ["FAKE_CURL_LOG"], "a") as log:
     log.write(f"{url}\\n")
+if "[" in url and not any(
+    a == "--globoff" or (a.startswith("-") and not a.startswith("--") and "g" in a)
+    for a in args
+):
+    sys.stderr.write(f"curl: (3) bad range in URL: {url}\\n")
+    sys.exit(3)
 
 
 def finish(code, status):
@@ -92,12 +98,9 @@ else:
 finish(0, "200")
 """
 
-pytestmark = [
-    pytest.mark.skipif(
-        shutil.which("bash") is None, reason="the checker is a bash script"
-    ),
-    pytest.mark.xfail(strict=True, reason="--report is not implemented yet"),
-]
+pytestmark = pytest.mark.skipif(
+    shutil.which("bash") is None, reason="the checker is a bash script"
+)
 
 
 class Harness:
