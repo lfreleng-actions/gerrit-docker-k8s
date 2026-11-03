@@ -103,3 +103,80 @@ def test_digest_mismatch_fails(tmp_path: Path, base_url: str) -> None:
     assert result.returncode != 0
     assert "sha256 mismatch for plugins/good" in result.stderr
     assert "--refresh" not in result.stderr
+
+
+def check(tmp_path: Path, *lines: str) -> subprocess.CompletedProcess[str]:
+    lock = tmp_path / "plugins.lock"
+    lock.write_text("# A comment\n\n" + "\n".join(lines) + "\n")
+    return subprocess.run(
+        ["sh", str(SCRIPT), "--check", str(lock), str(tmp_path / "catalogue")],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=60,
+    )
+
+
+@pytest.fixture
+def prepared(tmp_path: Path) -> Path:
+    """A catalogue already laid out, as the build context holds it."""
+    catalogue = tmp_path / "catalogue"
+    (catalogue / "plugins").mkdir(parents=True)
+    (catalogue / "lib").mkdir()
+    (catalogue / "plugins" / "good.jar").write_bytes(JAR)
+    (catalogue / "lib" / "other.jar").write_bytes(JAR)
+    return catalogue
+
+
+# Nothing listens here, so a check that tried to download would fail
+UNREACHABLE = "http://127.0.0.1:9/ok.jar"
+
+
+@pytest.mark.xfail(strict=True, reason="fetch-plugins.sh --check not added")
+def test_check_verifies_without_downloading(tmp_path: Path, prepared: Path) -> None:
+    digest = hashlib.sha256(JAR).hexdigest()
+    result = check(
+        tmp_path,
+        f"plugins/good {UNREACHABLE} {digest}",
+        f"lib/other {UNREACHABLE} {digest}",
+    )
+    assert result.returncode == 0, result.stderr
+    assert "Fetching" not in result.stdout
+
+
+@pytest.mark.xfail(strict=True, reason="fetch-plugins.sh --check not added")
+def test_check_rejects_a_digest_mismatch(tmp_path: Path, prepared: Path) -> None:
+    digest = hashlib.sha256(JAR).hexdigest()
+    result = check(
+        tmp_path,
+        f"plugins/good {UNREACHABLE} {digest}",
+        f"lib/other {UNREACHABLE} {'0' * 64}",
+    )
+    assert result.returncode == 1
+    assert "sha256 mismatch for lib/other" in result.stderr
+
+
+@pytest.mark.xfail(strict=True, reason="fetch-plugins.sh --check not added")
+def test_check_rejects_a_missing_jar(tmp_path: Path, prepared: Path) -> None:
+    (prepared / "lib" / "other.jar").unlink()
+    digest = hashlib.sha256(JAR).hexdigest()
+    result = check(
+        tmp_path,
+        f"plugins/good {UNREACHABLE} {digest}",
+        f"lib/other {UNREACHABLE} {digest}",
+    )
+    assert result.returncode == 1
+    assert "lib/other" in result.stderr
+
+
+@pytest.mark.xfail(strict=True, reason="fetch-plugins.sh --check not added")
+def test_check_rejects_an_extra_jar(tmp_path: Path, prepared: Path) -> None:
+    (prepared / "plugins" / "stray.jar").write_bytes(JAR)
+    digest = hashlib.sha256(JAR).hexdigest()
+    result = check(
+        tmp_path,
+        f"plugins/good {UNREACHABLE} {digest}",
+        f"lib/other {UNREACHABLE} {digest}",
+    )
+    assert result.returncode == 1
+    assert "Expected 2 jars" in result.stderr
