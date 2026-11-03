@@ -9,8 +9,13 @@
 # The scheduled plugin lock check reads it at the default branch.
 # The Linting workflow reads it at the commit it lints.
 
-# Plugin catalogue artefacts pinned in docker/plugins.lock
+# Plugin catalogue artefacts pinned in docker/plugins.lock, fetched
+# when the lock has no GHCR mirror yet
 gerrit-ci.gerritforge.com:443
+# The plugin catalogue mirror, which the image build pulls; GHCR
+# redirects blob downloads to pkg-containers.githubusercontent.com
+ghcr.io:443
+pkg-containers.githubusercontent.com:443
 # Helm release archives that azure/setup-helm downloads
 get.helm.sh:443
 # Go release metadata and archives prek fetches to build the
