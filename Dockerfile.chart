@@ -7,8 +7,11 @@
 # The catalogue lives outside the site, at /var/gerrit-catalogue (the
 # chart's pluginCatalogue.path default), as plugins/<name>.jar and
 # lib/<name>.jar:
-# - the jars docker/plugins.lock pins, downloaded and checked against
-#   their sha256; a mismatch fails the build
+# - the jars docker/plugins.lock pins, which this build does not
+#   download: scripts/fetch-plugin-catalogue.sh prepares them in
+#   build/plugin-catalogue, from the signed GHCR mirror or, for a lock
+#   not yet mirrored, from GerritForge. The build checks them against
+#   the lock's sha256 again; a mismatch fails it
 # - a symlink to /var/gerrit/plugins/<name>.jar for each core plugin
 #   the official image bundles; site-init mounts the site elsewhere,
 #   so it sees the image's own /var/gerrit, and its cp follows them
@@ -16,8 +19,9 @@
 # Nothing here touches /var/gerrit/plugins, so a container started
 # from this image without the chart behaves as the base image does.
 #
-# Build (the base first, then this file on top of it):
+# Build (the base first, then the catalogue, then this file):
 #   docker build -t gerrit-extended:local .
+#   bash scripts/fetch-plugin-catalogue.sh build/plugin-catalogue
 #   docker build -f Dockerfile.chart \
 #     --build-arg BASE_IMAGE=gerrit-extended:local -t gerrit-chart:local .
 
@@ -35,14 +39,24 @@ USER root
 ENV GERRIT_CATALOGUE=/var/gerrit-catalogue
 COPY docker/plugins.lock /tmp/plugins.lock
 COPY docker/fetch-plugins.sh /tmp/fetch-plugins.sh
+# COPY makes everything root-owned and keeps the modes the fetch
+# script set (0644 files, 0755 directories); the RUN below checks them
+# rather than changing them, which would copy every jar into a second
+# layer.
+COPY build/plugin-catalogue/ ${GERRIT_CATALOGUE}/
 
 # Each lock line is "<dir>/<name> <url> <sha256>"; see the lock file.
-# fetch-plugins.sh downloads and checks every entry, and names the
-# entry and the refresh command when GerritForge no longer serves it.
+# fetch-plugins.sh --check downloads nothing: it checks every jar
+# against the lock and that no other jar is present.
 RUN set -eu; \
-    install -d -o root -g root -m 0755 \
-        "$GERRIT_CATALOGUE" "$GERRIT_CATALOGUE/plugins" "$GERRIT_CATALOGUE/lib"; \
-    sh /tmp/fetch-plugins.sh /tmp/plugins.lock "$GERRIT_CATALOGUE"; \
+    sh /tmp/fetch-plugins.sh --check /tmp/plugins.lock "$GERRIT_CATALOGUE"; \
+    bad=$(find "$GERRIT_CATALOGUE" \( ! -user root -o ! -group root \
+        -o \( -type d ! -perm 0755 \) -o \( ! -type d ! -perm 0644 \) \) -print); \
+    if [ -n "$bad" ]; then \
+        echo "Not root-owned with mode 0644 (files) or 0755 (directories):" >&2; \
+        echo "$bad" >&2; \
+        exit 1; \
+    fi; \
     for core in /var/gerrit/plugins/*.jar; do \
         link="$GERRIT_CATALOGUE/plugins/${core##*/}"; \
         if [ ! -e "$link" ]; then ln -s "$core" "$link"; fi; \
@@ -50,8 +64,6 @@ RUN set -eu; \
     for name in replication hooks webhooks delete-project download-commands; do \
         test -f "$GERRIT_CATALOGUE/plugins/$name.jar"; \
     done; \
-    chown -R -h root:root "$GERRIT_CATALOGUE"; \
-    find "$GERRIT_CATALOGUE" -type f -exec chmod 0644 {} +; \
     rm -f /tmp/plugins.lock /tmp/fetch-plugins.sh; \
     ls -l "$GERRIT_CATALOGUE/plugins" "$GERRIT_CATALOGUE/lib"
 

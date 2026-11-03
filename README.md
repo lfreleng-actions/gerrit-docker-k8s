@@ -1080,9 +1080,8 @@ from, at `/var/gerrit-catalogue` (`pluginCatalogue.path`):
 
 - `lib/saml.jar`, and `plugins/` holding `its-jira`, `events-log`,
   `analytics`, `reviewers`, `lfs`, `healthcheck` and
-  `metrics-reporter-prometheus`, downloaded from GerritForge CI's
-  `stable-3.13` builds and checked against the sha256 pins in
-  `docker/plugins.lock`
+  `metrics-reporter-prometheus`, GerritForge CI's `stable-3.13`
+  builds, checked against the sha256 pins in `docker/plugins.lock`
 - a link in `plugins/` to each core plugin the official image bundles
   in `/var/gerrit/plugins`, such as `replication`, `hooks`, `webhooks`,
   `delete-project` and `download-commands`
@@ -1176,6 +1175,39 @@ lock, a comment included, names a new tag, so the mirror for a lock
 exists only once that lock reaches `main` and the workflow has run.
 GHCR creates the `plugin-catalogue` package private; after the
 first run, a maintainer sets it public.
+
+`Dockerfile.chart` downloads nothing: it copies the catalogue from
+`build/plugin-catalogue` in the build context and checks every jar
+against the lock again. Prepare that directory first:
+
+```bash
+bash scripts/fetch-plugin-catalogue.sh build/plugin-catalogue
+docker build -f Dockerfile.chart \
+  --build-arg BASE_IMAGE=gerrit-extended:local -t gerrit-chart:local .
+```
+
+The script chooses the source from the lock it holds:
+
+- **Mirror.** When the lock's tag exists in GHCR, it checks the
+  artifact's cosign signature against the `plugin-catalogue.yaml`
+  workflow's identity on `main`, then pulls it anonymously with
+  `oras`. A failed signature check, a mirrored lock that differs from
+  the local one, or any registry error other than a missing tag fails
+  the fetch; it never falls back. A rebuild or outage at GerritForge
+  cannot break a build that uses the mirror.
+- **Fallback.** When the tag does not exist, the script says so and
+  downloads each jar from the lock's GerritForge URL, with retries.
+  This is expected only for a lock not yet on `main`, so a pull
+  request that bumps the lock always uses the fallback: its own build
+  proves the new pins still download, and the mirror follows once it
+  merges.
+
+Either way it checks every jar against the lock's sha256, and its last
+log line, `Plugin catalogue source: mirror <ref>@<digest>` or
+`Plugin catalogue source: upstream`, names the source. The chart smoke
+test fails if a fetch from the mirror logged any GerritForge request.
+The mirror path needs `oras` and `cosign`; `--upstream` skips it, for
+a local build without them.
 
 ### Vulnerability Gate
 
