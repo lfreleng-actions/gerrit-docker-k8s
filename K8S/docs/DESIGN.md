@@ -217,8 +217,8 @@ SSO: the SAML module creates a `saml/<name>` group for each group the
 assertion names and updates the user's membership at each web login
 (#268). Access rules on the adopted sites name these groups, so an
 import keeps them and the SSO must keep sending the same group names.
-The SSO's source for that membership is moving from LDAP to LFX
-committees; Gerrit is unaffected as long as the names stay the same.
+Gerrit is unaffected by changes to the identity provider's source of
+group membership, as long as the group names it sends stay the same.
 
 ### 1.5 HTTP: ClusterIP Service behind an Ingress
 
