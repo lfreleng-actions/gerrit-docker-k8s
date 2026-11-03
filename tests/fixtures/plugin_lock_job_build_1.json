@@ -1,0 +1,7 @@
+{
+  "_class": "hudson.model.FreeStyleProject",
+  "lastSuccessfulBuild": {
+    "_class": "hudson.model.FreeStyleBuild",
+    "number": 1
+  }
+}

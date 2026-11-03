@@ -1092,6 +1092,22 @@ pre-commit hook runs it), `--verify` downloads and compares every
 jar, and `--refresh [NAME...]` moves entries to their CI job's last
 successful build.
 
+GerritForge keeps only the latest build of each job, so a pin goes
+stale, and its artefact disappears, as soon as a plugin is rebuilt.
+The `Plugin Lock Check` workflow runs `--report FILE` every week: it
+downloads each pinned jar, compares its digest, and records the job's
+latest build, in a JSON report and a step summary table. A newer build
+is a warning; a missing or mismatched jar fails the run. While any
+entry on the default branch is stale, missing or mismatched, the
+workflow keeps one open issue, `Plugin lock: upstream builds have
+moved`, with the table and the `--refresh` command for those entries,
+and closes it once every entry is current; a manual run on another
+branch reports without touching that issue. To act on it, run that
+command, review the diff, and open a pull request; the workflow never
+changes the lock itself. A digest mismatch at an unchanged build means
+the artefact changed under its URL, so find out why before accepting
+the new digest.
+
 The image's entrypoint starts Gerrit whatever the arguments, so
 override it for one-off commands:
 
