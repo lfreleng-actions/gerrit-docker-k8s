@@ -11,16 +11,20 @@ from __future__ import annotations
 import hashlib
 import io
 import math
+import re
 import shutil
 import subprocess
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 PROG = "site-import"
 MODES = ("auto", "force", "skip")
-SOURCES = ("none", "pvc", "https")
+SOURCES = ("none", "pvc", "https", "s3")
+# s3://<bucket>[/<prefix>], with no empty bucket and no ".." segment
+S3_URL = re.compile(r"s3://[^/]+(/.*)?")
 VERSION_JAR = "WEB-INF/lib/com_google_gerrit_common_libversion.jar"
 VERSION_RESOURCE = "com/google/gerrit/common/Version"
 
@@ -59,6 +63,26 @@ def cpu_threads(value: str) -> int | None:
     return max(1, math.ceil(cores))
 
 
+def endpoint_ok(endpoint: str) -> bool:
+    """Whether an S3 endpoint is http(s)://<host>[:<port>] and nothing more."""
+    if any(c.isspace() for c in endpoint):
+        return False
+    try:
+        parts = urlsplit(endpoint)
+        port = parts.port
+    except ValueError:
+        return False
+    return (
+        parts.scheme in ("http", "https")
+        and bool(parts.hostname)
+        and parts.username is None
+        and port != 0
+        and not parts.netloc.endswith(":")
+        and not (parts.path or parts.query or parts.fragment)
+        and not endpoint.endswith(("?", "#"))
+    )
+
+
 @dataclass
 class Settings:
     """What the chart asked for, from the environment."""
@@ -82,6 +106,9 @@ class Settings:
     java: str = "java"
     java_heap: list[str] = field(default_factory=list)
     reindex_threads: int | None = None
+    s3_endpoint: str = ""
+    s3_region: str = ""
+    s3_provider: str = "AWS"
 
     @classmethod
     def from_env(cls, env: dict[str, str]) -> Settings:
@@ -115,6 +142,9 @@ class Settings:
             java=env.get("SITE_IMPORT_JAVA", "java"),
             java_heap=env.get("SITE_IMPORT_JAVA_HEAP", "").split(),
             reindex_threads=cpu_threads(env.get("SITE_IMPORT_CPU_LIMIT", "")),
+            s3_endpoint=env.get("SITE_IMPORT_S3_ENDPOINT", "").strip(),
+            s3_region=env.get("SITE_IMPORT_S3_REGION", "").strip(),
+            s3_provider=env.get("SITE_IMPORT_S3_PROVIDER", "AWS").strip(),
         )
         if settings.mode not in MODES:
             raise SiteImportError(
@@ -128,7 +158,25 @@ class Settings:
             raise SiteImportError(
                 f"siteImport.source.type {settings.source} needs a url"
             )
+        if settings.source == "s3":
+            settings.check_s3()
         return settings
+
+    def check_s3(self) -> None:
+        if not S3_URL.fullmatch(self.url) or ".." in self.url.split("/"):
+            raise SiteImportError(
+                "siteImport.source.url must be s3://<bucket>/<prefix> for an s3 source"
+            )
+        if self.s3_endpoint and not endpoint_ok(self.s3_endpoint):
+            raise SiteImportError(
+                "siteImport.source.s3.endpoint must be an http:// or https:// URL"
+                " with a host and an optional port, and no user, path, query"
+                " or fragment"
+            )
+        if not self.s3_provider:
+            raise SiteImportError(
+                "siteImport.source.s3.provider must name an rclone S3 provider"
+            )
 
     @property
     def source_label(self) -> str:

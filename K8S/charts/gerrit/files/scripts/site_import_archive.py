@@ -25,6 +25,7 @@ from site_import_common import (
     say,
     sha256_of,
 )
+from site_import_s3 import fetch_s3
 
 ARCHIVES = ("git.tar.zst", "site.tar.zst")
 ENCRYPTED = (".age", ".gpg")
@@ -60,6 +61,8 @@ def fetch(settings: Settings, name: str) -> Path:
         if not path.is_file():
             raise SiteImportError(f"{path} does not exist")
         return path
+    if settings.source == "s3":
+        return fetch_s3(settings, name, os.environ)
     if override and override.is_file():
         url, shown = (
             override.read_text(encoding="utf-8").strip(),

@@ -30,6 +30,9 @@ spec:
         {{- toYaml . | nindent 8 }}
         {{- end }}
     spec:
+      {{- with include "gerrit.serviceAccountName" . }}
+      serviceAccountName: {{ . }}
+      {{- end }}
       automountServiceAccountToken: false
       {{- include "gerrit.imagePullSecrets" . | nindent 6 }}
       securityContext:
@@ -87,6 +90,25 @@ spec:
             {{- if and (eq $importSource "https") .Values.siteImport.source.existingSecret }}
             - name: SITE_IMPORT_URLS
               value: /import-urls
+            {{- end }}
+            {{- if eq $importSource "s3" }}
+            {{- $s3 := default dict .Values.siteImport.source.s3 }}
+            - name: SITE_IMPORT_S3_ENDPOINT
+              value: {{ $s3.endpoint | default "" | quote }}
+            - name: SITE_IMPORT_S3_REGION
+              value: {{ $s3.region | default "" | quote }}
+            - name: SITE_IMPORT_S3_PROVIDER
+              value: {{ $s3.provider | quote }}
+            {{- with .Values.siteImport.source.existingSecret }}
+            # Static keys for rclone's env_auth; only this container gets them
+            {{- range list "AWS_ACCESS_KEY_ID" "AWS_SECRET_ACCESS_KEY" }}
+            - name: {{ . }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.siteImport.source.existingSecret }}
+                  key: {{ . }}
+            {{- end }}
+            {{- end }}
             {{- end }}
             - name: SITE_IMPORT_EXPECTED_MANIFEST_SHA256
               value: {{ .Values.siteImport.source.expectedManifestSha256 | quote }}

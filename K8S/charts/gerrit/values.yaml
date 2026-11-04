@@ -369,17 +369,29 @@ siteImport:
   forceToken: ""
   source:
     # none: start a fresh site; pvc: an export directory on a volume
-    # mounted from source.volume; https: a URL prefix serving the export
+    # mounted from source.volume; https: a URL prefix serving the export;
+    # s3: an S3 bucket and prefix holding the export, fetched with rclone
     type: none
-    # pvc: the export directory, under /mnt/import; https: the base URL
+    # pvc: the export directory, under /mnt/import; https: the base URL;
+    # s3: s3://<bucket>/<prefix>
     url: ""
     # pvc: a volume source mounted read-only at /mnt/import, for example
     # {persistentVolumeClaim: {claimName: gerrit-export}}
     volume: {}
     # https: a Secret whose keys manifest.json, site.tar.zst and
     # git.tar.zst each hold a full URL, such as a pre-signed S3 URL,
-    # used instead of <url>/<name>
+    # used instead of <url>/<name>. s3: a Secret with keys
+    # AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY; leave it empty to use
+    # the pod's workload identity, such as IRSA through serviceAccount
     existingSecret: ""
+    # s3: endpoint is empty for AWS, or http(s)://<host>[:<port>] of an
+    # S3-compatible store, with no path; provider is the rclone S3
+    # provider, such as AWS, Minio or Ceph, which rclone checks; region
+    # is the bucket's region
+    s3:
+      endpoint: ""
+      region: ""
+      provider: AWS
     # https: TCP ports the URLs in existingSecret reach, other than 443,
     # for the NetworkPolicy; a port in url is allowed without listing it
     egressPorts: []
@@ -490,6 +502,16 @@ toolbox:
   # mounted at /etc/gerrit-toolbox/ssh/id with mode 0400; "" mounts none
   existingSecret: ""
   resources: {}
+
+# The Gerrit pod's ServiceAccount. create renders one, named name or
+# the release's full name; otherwise a non-empty name selects an
+# existing one, and "" leaves the namespace default. annotations bind
+# a workload identity, such as eks.amazonaws.com/role-arn for IRSA, for
+# siteImport's s3 source. The pod never mounts the API token.
+serviceAccount:
+  create: false
+  name: ""
+  annotations: {}
 
 podAnnotations: {}
 

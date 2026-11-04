@@ -21,9 +21,10 @@ Gerrit never starts on a partial site. Archive contents and secret
 values are never logged.
 
 ``site_import_common.py`` holds the settings and helpers,
-``site_import_archive.py`` the fetch, checks and migration report, and
+``site_import_archive.py`` the fetch, checks and migration report,
+``site_import_s3.py`` the s3 source's fetch with rclone, and
 ``site_import_unpack.py`` the unpacking and its link checks; the chart
-ships all four in its scripts ConfigMap.
+ships all five in its scripts ConfigMap.
 
 Configuration comes from the environment the chart sets:
 
@@ -32,8 +33,14 @@ Configuration comes from the environment the chart sets:
 - ``GERRIT_IMAGE_BIN``: the image's ``bin`` holding ``gerrit.war``
 - ``SITE_IMPORT_MODE``: ``auto``, ``force`` or ``skip``
 - ``SITE_IMPORT_FORCE_TOKEN``: required with ``force``
-- ``SITE_IMPORT_SOURCE_TYPE``: ``none``, ``pvc`` or ``https``
-- ``SITE_IMPORT_SOURCE_URL``: a directory, or an HTTPS base URL
+- ``SITE_IMPORT_SOURCE_TYPE``: ``none``, ``pvc``, ``https`` or ``s3``
+- ``SITE_IMPORT_SOURCE_URL``: a directory, an HTTPS base URL, or
+  ``s3://<bucket>/<prefix>``
+- ``SITE_IMPORT_S3_ENDPOINT``, ``SITE_IMPORT_S3_REGION``,
+  ``SITE_IMPORT_S3_PROVIDER``: the s3 source's endpoint (AWS when
+  empty), region and rclone provider; rclone reads the credentials
+  from ``AWS_ACCESS_KEY_ID`` and ``AWS_SECRET_ACCESS_KEY`` or the
+  IRSA web identity variables
 - ``SITE_IMPORT_URLS``: a directory whose files, named after the
   archive files, each hold a full URL that replaces the derived one
 - ``SITE_IMPORT_EXPECTED_MANIFEST_SHA256``: optional manifest pin
