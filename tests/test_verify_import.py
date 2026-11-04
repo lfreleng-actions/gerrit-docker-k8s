@@ -20,10 +20,6 @@ SCRIPTS = (
     Path(__file__).parent.parent / "K8S" / "charts" / "gerrit" / "files" / "scripts"
 )
 
-pytestmark = pytest.mark.xfail(
-    strict=True, reason="verify-import.py does not exist yet"
-)
-
 needs_tools = pytest.mark.skipif(
     not all(shutil.which(t) for t in ("git", "ssh-keygen")),
     reason="needs git and ssh-keygen",
@@ -153,9 +149,24 @@ def test_snapshot_compare_lets_a_newer_release_add(snapshot: ModuleType) -> None
     actual = copy.deepcopy(SNAPSHOT)
     actual["groups"]["Service Users"] = []
     actual["projects"]["New"] = "ACTIVE"
-    actual["access"]["refs/heads/*"]["submit"]["rules"]["global:Owners"] = {}
-    actual["access"]["refs/tags/*"] = {"create": {"exclusive": False, "rules": {}}}
     assert snapshot.compare(SNAPSHOT, actual) == []
+
+
+def test_snapshot_compare_names_added_access(snapshot: ModuleType) -> None:
+    """Access must equal the export's: a widened rule fails too."""
+    actual = copy.deepcopy(SNAPSHOT)
+    actual["access"]["refs/heads/*"]["submit"]["rules"]["global:Anonymous-Users"] = {
+        "action": "ALLOW",
+        "force": False,
+    }
+    actual["access"]["refs/heads/*"]["push"] = {"exclusive": False, "rules": {}}
+    actual["access"]["refs/tags/*"] = {"create": {"exclusive": False, "rules": {}}}
+    assert snapshot.compare(SNAPSHOT, actual) == [
+        "access refs/heads/* push: added, {'exclusive': False, 'rules': {}}",
+        "access refs/heads/* submit global:Anonymous-Users: added, "
+        "{'action': 'ALLOW', 'force': False}",
+        "access refs/tags/* create: added, {'exclusive': False, 'rules': {}}",
+    ]
 
 
 @pytest.mark.parametrize(
@@ -265,6 +276,90 @@ def test_repository_check(verify: ModuleType) -> None:
     )
 
 
+REFS = {
+    "All-Projects.git": {
+        "refs/meta/config": "a1",
+        "refs/meta/version": "a2",
+        "refs/sequences/changes": "a3",
+        "refs/heads/master": "a4",
+    },
+    "All-Users.git": {"refs/meta/config": "b1", "refs/users/00/1000000": "b2"},
+    "apps/web.git": {
+        "refs/heads/master": "c1",
+        "refs/heads/stable": "c2",
+        "refs/tags/v1.0": "c3",
+        "refs/meta/config": "c4",
+    },
+}
+
+
+def test_ref_check_accepts_the_refs_gerrit_updates(verify: ModuleType) -> None:
+    found = copy.deepcopy(REFS)
+    found["All-Projects.git"].update(
+        {
+            "refs/meta/config": "new",
+            "refs/meta/version": "new",
+            "refs/sequences/changes": "new",
+            "refs/sequences/accounts": "new",
+        }
+    )
+    found["All-Users.git"]["refs/meta/config"] = "new"
+    found["All-Users.git"]["refs/meta/group-names"] = "new"
+    assert verify.check_refs(REFS, found) == "10 refs"
+
+
+@pytest.mark.parametrize(
+    ("repo", "change", "message"),
+    [
+        (
+            "apps/web.git",
+            {"refs/heads/stable": None, "refs/heads/old-stable": "c2"},
+            "apps/web.git refs/heads/stable missing; "
+            "apps/web.git refs/heads/old-stable is new",
+        ),
+        (
+            "apps/web.git",
+            {"refs/tags/v1.0": "c1"},
+            "apps/web.git refs/tags/v1.0 is c1, the source c3",
+        ),
+        (
+            "apps/web.git",
+            {"refs/meta/config": "c5"},
+            "apps/web.git refs/meta/config is c5, the source c4",
+        ),
+        (
+            "All-Projects.git",
+            {"refs/heads/master": "x"},
+            "All-Projects.git refs/heads/master is x, the source a4",
+        ),
+        (
+            "All-Users.git",
+            {"refs/users/00/1000000": None},
+            "All-Users.git refs/users/00/1000000 missing",
+        ),
+    ],
+)
+def test_ref_check_names_each_difference(
+    verify: ModuleType, repo: str, change: dict[str, str | None], message: str
+) -> None:
+    """A renamed branch or repointed tag fails though the count holds."""
+    found = copy.deepcopy(REFS)
+    for ref, oid in change.items():
+        if oid is None:
+            del found[repo][ref]
+        else:
+            found[repo][ref] = oid
+    with pytest.raises(verify.CheckError) as err:
+        verify.check_refs(REFS, found)
+    assert str(err.value) == message
+
+
+def test_ref_check_needs_every_repository(verify: ModuleType) -> None:
+    found = {**REFS, "apps/web.git": None}
+    with pytest.raises(verify.CheckError, match="apps/web.git has no ref listing"):
+        verify.check_refs(REFS, found)
+
+
 def test_sequence_check(verify: ModuleType) -> None:
     assert verify.check_sequence(41, 41) == "next change 41"
     assert verify.check_sequence(41, 61) == "next change 61"
@@ -324,16 +419,40 @@ def test_probe_reports_the_site(probe: ModuleType, tmp_path: Path) -> None:
     store = site / "repos"
     for name in ("All-Projects.git", "apps/web.git"):
         subprocess.run(["git", "init", "-q", "--bare", str(store / name)], check=True)
-    commit(store / "All-Projects.git", "refs/heads/master", "x", "x\n")
+    master = commit(store / "All-Projects.git", "refs/heads/master", "x", "x\n")
     meta = commit(store / "apps/web.git", "refs/meta/config", "project.config", "[x]\n")
-    commit(store / "apps/web.git", "refs/heads/master", "README", "hello\n")
+    head = commit(store / "apps/web.git", "refs/heads/master", "README", "hello\n")
+    web = store / "apps/web.git"
+    git(
+        web,
+        "-c",
+        "user.name=F",
+        "-c",
+        "user.email=f@x.invalid",
+        "tag",
+        "-a",
+        "-m",
+        "v1",
+        "v1.0",
+        head,
+    )
+    tag = git(web, "rev-parse", "refs/tags/v1.0")
+    assert tag != head
 
     assert probe.probe(site) == {
         "state": {"state": "complete"},
         "ssh_host_keys": {key.name: listing.split()[1]},
         "repositories": {
             "All-Projects.git": {"refs": 1, "meta_config": None},
-            "apps/web.git": {"refs": 2, "meta_config": meta},
+            "apps/web.git": {"refs": 3, "meta_config": meta},
+        },
+        "refs": {
+            "All-Projects.git": {"refs/heads/master": master},
+            "apps/web.git": {
+                "refs/heads/master": head,
+                "refs/meta/config": meta,
+                "refs/tags/v1.0": tag,
+            },
         },
         "change_sequence": None,
     }
