@@ -22,6 +22,7 @@ the real ``/proc`` point the variable back at it.
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import shutil
@@ -101,11 +102,15 @@ def _bare_repo(path: Path, branches: list[str], meta_config: bool) -> str | None
     return meta
 
 
-def _write_war(path: Path) -> None:
+def _write_war(path: Path, version: str = f"v{GERRIT_VERSION}") -> None:
+    """Lay out a war as a release does: its version in a nested jar."""
+    nested = io.BytesIO()
+    with zipfile.ZipFile(nested, "w") as jar:
+        jar.writestr("com/google/gerrit/common/Version", f"{version}\n")
     with zipfile.ZipFile(path, "w") as war:
+        war.writestr("META-INF/MANIFEST.MF", "Manifest-Version: 1.0\r\n")
         war.writestr(
-            "META-INF/MANIFEST.MF",
-            f"Manifest-Version: 1.0\r\nImplementation-Version: {GERRIT_VERSION}\r\n",
+            "WEB-INF/lib/com_google_gerrit_common_libversion.jar", nested.getvalue()
         )
 
 
@@ -336,6 +341,26 @@ def test_final_manifest_contents(site: dict[str, Any]) -> None:
     assert manifest["ssh_host_keys"] == site["fingerprints"]
     assert manifest["excluded"] == EXCLUDED
     assert manifest["archives"] == {}
+
+
+def test_final_reads_the_version_of_a_release_war(site: dict[str, Any]) -> None:
+    """The release's own tag, without its leading v."""
+    _write_war(site["root"] / "bin" / "gerrit.war", "v3.7.2")
+
+    assert export_ok(site, "final")["gerrit_version"] == "3.7.2"
+
+
+def test_final_records_no_version_without_the_version_jar(
+    site: dict[str, Any],
+) -> None:
+    """A war's manifest does not name the version a release runs."""
+    with zipfile.ZipFile(site["root"] / "bin" / "gerrit.war", "w") as war:
+        war.writestr(
+            "META-INF/MANIFEST.MF",
+            f"Manifest-Version: 1.0\r\nImplementation-Version: {GERRIT_VERSION}\r\n",
+        )
+
+    assert export_ok(site, "final")["gerrit_version"] is None
 
 
 def test_rerun_is_idempotent_and_follows_deletions(site: dict[str, Any]) -> None:

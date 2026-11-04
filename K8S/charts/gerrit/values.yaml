@@ -396,6 +396,10 @@ siteImport:
     # for the NetworkPolicy; a port in url is allowed without listing it
     egressPorts: []
     expectedManifestSha256: ""
+  # Import an export whose manifest.json names no Gerrit version, as
+  # one written by an export tool that could not read it; site import
+  # still refuses an export of a release older than 3.7.0
+  allowUnknownSourceVersion: false
   reindex: true
   verify: true
   # The scratch emptyDir holds the archives and their unpacked copy

@@ -393,7 +393,11 @@ refuses an archive with a symlink or hard link that resolves outside
 its own `site/` or `git/` tree, or into a path it never imports such
 as `.chart/`, and checks every symlink again once all are in place,
 so no link can lead a later write to the state file or off the
-volume. It leaves out, and logs, the two absolute links `site-init`
+volume. It never takes the archive's `site/bin/`, `site/plugins/` or
+`site/lib/`: `site-init` installs the image's war and the chart's
+plugins and libraries, and a jar built for the source release, such
+as a hidden `plugins/.jar` an official image left behind, can stop
+the new release starting. It leaves out, and logs, the two absolute links `site-init`
 recreates at every start: a link in the site's `hooks.path` to the
 gerrit-to-platform entry point of the same name in
 `/opt/gerrit-tools/bin`, and `.config/gerrit_to_platform/replication.config`
@@ -611,7 +615,8 @@ An export directory `<out>` holds:
   `.gerritcodereview/tmp` and `.chart`, plus the repository store when
   it sits inside the site. `--include-cache` keeps `cache`. The import
   rebuilds the index and caches and takes `bin/gerrit.war` from the
-  image.
+  image. `plugins/` and `lib/` stay in the export, for the record;
+  `site-import` leaves them out (section 1.7).
 - `.chart/` holds a chart-managed site's import state, which describes
   the source release rather than the export. `site-import` skips
   `site/.chart/` whatever the archive holds (section 1.7); leaving it
@@ -653,7 +658,7 @@ the `final` one and is never an import source.
 | `schema` | integer | Manifest format version, currently `1`. |
 | `created` | string | UTC time the manifest was built, `YYYY-MM-DDTHH:MM:SSZ`. |
 | `mode` | string | `seed` or `final` from the export tool; `backup` from the backup CronJob (#242). `site-import` accepts `final` and `backup`. |
-| `gerrit_version` | string or `null` | `Implementation-Version` from `bin/gerrit.war` in the source site; `null` when the site has no `bin/gerrit.war` or its JAR manifest names no version. |
+| `gerrit_version` | string or `null` | The release `bin/gerrit.war` in the source site records in its nested `com_google_gerrit_common_libversion.jar`, without the leading `v`; `null` when the site has no `bin/gerrit.war` or the war records no version there. |
 | `site` | object | `path`: the source site directory, resolved; `bytes`: total size of `<out>/site`. |
 | `git` | object | `path`: the source repository directory, resolved; `bytes`: total size of `<out>/git`; `repositories`: see below. |
 | `ssh_host_keys` | object | Each regular file in the site's `etc/` named `ssh_host_*` and not ending `.pub`, mapped to its `SHA256:` fingerprint from `ssh-keygen -l -E sha256`. |

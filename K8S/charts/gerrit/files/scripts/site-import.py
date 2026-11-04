@@ -77,6 +77,7 @@ from site_import_archive import (
     check_host_keys,
     check_identity,
     check_repositories,
+    check_source_version,
     fetch,
     load_manifest,
     project_config_report,
@@ -253,6 +254,7 @@ def stage(settings: Settings) -> tuple[Imported, Path]:
         f"manifest.json sha256 {digest}, {manifest['mode']} export of Gerrit "
         f"{manifest.get('gerrit_version') or 'unknown'}"
     )
+    check_source_version(manifest, settings.allow_unknown_version)
     unpacked = settings.scratch / "unpacked"
     unpacked.mkdir()
     absolute: list[tuple[str, str]] = []

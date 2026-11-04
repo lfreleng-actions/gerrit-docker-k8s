@@ -116,6 +116,8 @@ spec:
               value: {{ .Values.siteImport.reindex | toString | quote }}
             - name: SITE_IMPORT_VERIFY
               value: {{ .Values.siteImport.verify | toString | quote }}
+            - name: SITE_IMPORT_ALLOW_UNKNOWN_SOURCE_VERSION
+              value: {{ .Values.siteImport.allowUnknownSourceVersion | toString | quote }}
             - name: SITE_IMPORT_SECURE_KEYS
               value: {{ include "gerrit.secureConfigKeys" . | quote }}
             - name: SITE_IMPORT_JAVA_HEAP

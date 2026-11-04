@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -30,6 +31,9 @@ from site_import_s3 import fetch_s3
 ARCHIVES = ("git.tar.zst", "site.tar.zst")
 ENCRYPTED = (".age", ".gpg")
 IMPORT_MODES = ("final", "backup")
+# The oldest release whose site the image's init upgrades in one step
+OLDEST_SOURCE = (3, 7, 0)
+RELEASE = re.compile(r"v?(\d+)\.(\d+)(?:\.(\d+))?")
 CURL_RETRY = [
     "--retry",
     "5",
@@ -136,6 +140,28 @@ def load_manifest(path: Path, pin: str) -> tuple[dict[str, Any], str]:
     if not isinstance(repos, dict) or not isinstance(data.get("ssh_host_keys"), dict):
         raise SiteImportError("manifest.json lacks git.repositories or ssh_host_keys")
     return data, digest
+
+
+def check_source_version(manifest: dict[str, Any], allow_unknown: bool) -> None:
+    """Refuse an export of a release older than site import supports."""
+    version = str(manifest.get("gerrit_version") or "")
+    found = RELEASE.match(version)
+    oldest = ".".join(map(str, OLDEST_SOURCE))
+    if not found:
+        if allow_unknown:
+            return
+        raise SiteImportError(
+            f"manifest.json names no Gerrit version site import recognises ({version!r}); "
+            f"if the source ran Gerrit {oldest} or newer, set "
+            "siteImport.allowUnknownSourceVersion to import it anyway"
+        )
+    release = tuple(int(part or 0) for part in found.groups())
+    if release < OLDEST_SOURCE:
+        raise SiteImportError(
+            f"the export is of Gerrit {version}, older than {oldest}, the oldest "
+            f"release site import supports; upgrade the source site to {oldest} "
+            "or newer and export it again"
+        )
 
 
 def check_archive(path: Path, expected: str) -> None:

@@ -92,11 +92,18 @@ def bare_repo(path: Path, branches: list[str], project_config: str | None) -> No
 
 
 def write_war(path: Path, version: str) -> None:
+    """A war naming its version in its manifest and, as a release does, in a jar."""
     path.parent.mkdir(parents=True, exist_ok=True)
+    nested = io.BytesIO()
+    with zipfile.ZipFile(nested, "w") as jar:
+        jar.writestr("com/google/gerrit/common/Version", f"v{version}\n")
     with zipfile.ZipFile(path, "w") as war:
         war.writestr(
             "META-INF/MANIFEST.MF",
             f"Manifest-Version: 1.0\r\nImplementation-Version: {version}\r\n",
+        )
+        war.writestr(
+            "WEB-INF/lib/com_google_gerrit_common_libversion.jar", nested.getvalue()
         )
 
 
@@ -129,6 +136,10 @@ def source(tmp_path: Path) -> Path:
     (etc / "samlKeystore.jks").write_bytes(b"source keystore")
     (root / "plugins").mkdir()
     (root / "plugins" / "replication.jar").write_bytes(b"old plugin")
+    # The official 3.8.10 image leaves a plugin named .jar behind
+    (root / "plugins" / ".jar").write_bytes(b"hidden plugin")
+    (root / "lib").mkdir()
+    (root / "lib" / "old.jar").write_bytes(b"old library")
     (root / "index").mkdir()
     (root / "index" / "stale").write_text("stale index\n")
     write_war(root / "bin" / "gerrit.war", "3.10.1")
@@ -453,6 +464,44 @@ def test_manifest_pin(tmp_path: Path) -> None:
         module.load_manifest(path, "f" * 64)
 
 
+@pytest.mark.parametrize("version", ["3.7.0", "v3.8.1", "3.10.0-rc1", "3.13"])
+def test_source_version_at_or_above_the_floor(version: str) -> None:
+    archive = load_archive()
+    archive.check_source_version({"gerrit_version": version}, allow_unknown=False)
+
+
+@pytest.mark.parametrize(
+    ("version", "allow", "message"),
+    [
+        ("3.6.8", False, "Gerrit 3.6.8, older than 3.7.0"),
+        ("3.6.8", True, "Gerrit 3.6.8, older than 3.7.0"),
+        ("2.16.28", False, "Gerrit 2.16.28, older than 3.7.0"),
+        (None, False, "allowUnknownSourceVersion"),
+        ("", False, "allowUnknownSourceVersion"),
+        ("unknown", False, "allowUnknownSourceVersion"),
+    ],
+)
+def test_source_version_is_refused(
+    version: str | None, allow: bool, message: str
+) -> None:
+    archive = load_archive()
+    with pytest.raises(archive.SiteImportError, match=message):
+        archive.check_source_version({"gerrit_version": version}, allow_unknown=allow)
+
+
+@pytest.mark.parametrize("version", [None, "", "unknown"])
+def test_unknown_source_version_can_be_allowed(version: str | None) -> None:
+    archive = load_archive()
+    archive.check_source_version({"gerrit_version": version}, allow_unknown=True)
+
+
+def test_allow_unknown_source_version_setting(pod: dict[str, Any]) -> None:
+    module = load()
+    assert module.Settings.from_env(pod["env"]).allow_unknown_version is False
+    env = {**pod["env"], "SITE_IMPORT_ALLOW_UNKNOWN_SOURCE_VERSION": "true"}
+    assert module.Settings.from_env(env).allow_unknown_version is True
+
+
 def tar_zst(path: Path, members: dict[str, bytes]) -> Path:
     buffer = io.BytesIO()
     with tarfile.open(fileobj=buffer, mode="w") as tar:
@@ -482,6 +531,20 @@ def tar_zst_members(path: Path, members: list[tuple[tarfile.TarInfo, bytes]]) ->
                 tar.addfile(info)
     subprocess.run(["zstd", "-q", "-o", str(path)], input=buffer.getvalue(), check=True)
     return path
+
+
+def test_site_init_clears_hidden_plugins_and_libraries(pod: dict[str, Any]) -> None:
+    """A live site's hidden jars go too: Gerrit loads a plugin named .jar."""
+    site: Path = pod["site"]
+    (site / "etc").mkdir()
+    for path in ("plugins/.jar", "plugins/old.jar", "lib/.old.jar", "lib/old.jar"):
+        (site / path).parent.mkdir(exist_ok=True)
+        (site / path).write_bytes(b"old")
+    (site / "plugins" / "old").mkdir()
+    env = {**os.environ, **pod["env"], "GERRIT_SITE_PREPARE_ONLY": "1"}
+    subprocess.run(["sh", str(SITE_INIT)], env=env, check=True, capture_output=True)
+    assert sorted(p.name for p in (site / "plugins").iterdir()) == ["healthcheck.jar"]
+    assert list((site / "lib").iterdir()) == []
 
 
 def regular(name: str, data: bytes = b"x") -> tuple[tarfile.TarInfo, bytes]:
@@ -539,6 +602,10 @@ def directory(name: str) -> tuple[tarfile.TarInfo, bytes]:
             [(link("site/state", "site/.chart/site-state.json", True), b"")],
             "hard link outside site/ or into a skipped path",
         ),
+        (
+            [(link("site/etc/plugin.jar", "../plugins/events-log.jar"), b"")],
+            "symlink outside site/ or into a skipped path",
+        ),
     ],
 )
 def test_unpack_refuses_links_leaving_their_tree(
@@ -570,7 +637,8 @@ def test_unpack_keeps_links_inside_their_tree(tmp_path: Path) -> None:
 
 
 @needs_tools
-def test_unpack_skips_state_index_and_cache(tmp_path: Path) -> None:
+def test_unpack_skips_state_index_cache_and_binaries(tmp_path: Path) -> None:
+    """The image supplies the war, plugins and libraries, hidden ones too."""
     module = load()
     archive = tar_zst(
         tmp_path / "site.tar.zst",
@@ -579,6 +647,10 @@ def test_unpack_skips_state_index_and_cache(tmp_path: Path) -> None:
             "site/.chart/site-state.json": b"{}",
             "site/index/x": b"x",
             "site/cache/y": b"y",
+            "site/bin/gerrit.war": b"old war",
+            "site/plugins/events-log.jar": b"old plugin",
+            "site/plugins/.jar": b"hidden plugin",
+            "site/lib/old.jar": b"old library",
         },
     )
     module.unpack(archive, tmp_path / "out")
@@ -693,7 +765,9 @@ def test_unpack_leaves_out_links_site_init_recreates(
         (link("site/hooks/patchset-created", "/opt/gerrit-tools/bin/sh"), None),
         (link("site/hooks/patchset-created", "/opt/gerrit-tools/bin/../x"), None),
         (
-            link("site/bin/patchset-created", "/opt/gerrit-tools/bin/patchset-created"),
+            link(
+                "site/data/patchset-created", "/opt/gerrit-tools/bin/patchset-created"
+            ),
             None,
         ),
         (
@@ -991,6 +1065,7 @@ def test_import_adopts_the_export(
         assert (site / "git" / repo / "HEAD").is_file()
     # The chart's plugins and configuration replace the source's
     assert sorted(p.name for p in (site / "plugins").iterdir()) == ["healthcheck.jar"]
+    assert list((site / "lib").iterdir()) == []
     config = (site / "etc" / "gerrit.config").read_text()
     assert f"serverId = {SERVER_ID}" in config
     assert "cookieSecure" not in config
@@ -1130,6 +1205,45 @@ def test_pin_mismatch_fails(
     _, code = run_main(import_env(pod, export, **extra), monkeypatch)
     assert code == 1
     assert message in state(pod["site"])["reason"]
+
+
+@needs_tools
+def test_export_older_than_the_floor_fails_before_the_site_changes(
+    pod: dict[str, Any],
+    source: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_war(source / "bin" / "gerrit.war", "3.6.8")
+    export = export_site(source, tmp_path / "export")
+    env = import_env(pod, export, SITE_IMPORT_ALLOW_UNKNOWN_SOURCE_VERSION="true")
+    _, code = run_main(env, monkeypatch)
+    assert code == 1
+    recorded = state(pod["site"])
+    assert recorded["state"] == "failed"
+    assert "Gerrit 3.6.8, older than 3.7.0" in recorded["reason"]
+    assert sorted(p.name for p in pod["site"].iterdir()) == [".chart"]
+    assert java_runs(pod) == []
+
+
+@needs_tools
+def test_export_without_a_version_needs_the_opt_out(
+    pod: dict[str, Any],
+    source: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (source / "bin" / "gerrit.war").unlink()
+    export = export_site(source, tmp_path / "export")
+    _, code = run_main(import_env(pod, export), monkeypatch)
+    assert code == 1
+    assert "allowUnknownSourceVersion" in state(pod["site"])["reason"]
+    assert sorted(p.name for p in pod["site"].iterdir()) == [".chart"]
+
+    env = import_env(pod, export, SITE_IMPORT_ALLOW_UNKNOWN_SOURCE_VERSION="true")
+    _, code = run_main(env, monkeypatch)
+    assert code == 0
+    assert state(pod["site"])["state"] == "complete"
 
 
 @needs_tools

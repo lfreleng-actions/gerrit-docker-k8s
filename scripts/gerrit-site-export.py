@@ -62,6 +62,8 @@ ENCRYPT = {"age": ["-r"], "gpg": ["--batch", "--yes", "--encrypt", "--recipient"
 S3_COPY = ["aws", "s3", "cp", "--sse", "aws:kms"]
 PARTS = ("site", "git")
 ARCHIVES = [f"{p}.tar.zst{s}" for p in PARTS for s in ("", ".age", ".gpg")]
+VERSION_JAR = "WEB-INF/lib/com_google_gerrit_common_libversion.jar"
+VERSION_FILE = "com/google/gerrit/common/Version"  # In VERSION_JAR.
 FOR_EACH_REF = ["for-each-ref", "--format=%(refname) %(objectname) %(*objectname)"]
 
 
@@ -315,16 +317,14 @@ def tree_paths(root: Path | str, err: Any = die) -> Iterator[str]:
 
 def gerrit_version(site: str) -> str | None:
     war = Path(site, "bin", "gerrit.war")
-    try:
-        with zipfile.ZipFile(war) as archive:
-            text = archive.read("META-INF/MANIFEST.MF").decode("utf-8", "replace")
-    except FileNotFoundError:
+    try:  # A release war keeps its version in a nested jar, not in its manifest.
+        with zipfile.ZipFile(war) as archive, archive.open(VERSION_JAR) as nested:
+            text = zipfile.ZipFile(nested).read(VERSION_FILE).decode()
+    except (FileNotFoundError, KeyError):  # No war, or one that records no version.
         return None
-    except (KeyError, zipfile.BadZipFile) as exc:
+    except (UnicodeError, zipfile.BadZipFile) as exc:
         die(f"cannot read the Gerrit version from {war}: {exc}")
-    pairs = (line.partition(":") for line in text.splitlines())
-    found = [v.strip() for k, _, v in pairs if k.strip() == "Implementation-Version"]
-    return found[0] if found and found[0] else None
+    return text.strip().lstrip("v") or None
 
 
 def build_manifest(opts: Any, site: str, git_dir: str, out: Path) -> dict[str, Any]:

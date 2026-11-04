@@ -101,6 +101,7 @@ class Settings:
     pin: str = ""
     reindex: bool = True
     verify: bool = True
+    allow_unknown_version: bool = False
     saml_keystore: Path | None = None
     secure_keys: list[str] = field(default_factory=list)
     java: str = "java"
@@ -137,6 +138,9 @@ class Settings:
             pin=env.get("SITE_IMPORT_EXPECTED_MANIFEST_SHA256", "").strip().lower(),
             reindex=flag(env.get("SITE_IMPORT_REINDEX", "true")),
             verify=flag(env.get("SITE_IMPORT_VERIFY", "true")),
+            allow_unknown_version=flag(
+                env.get("SITE_IMPORT_ALLOW_UNKNOWN_SOURCE_VERSION", "false")
+            ),
             saml_keystore=optional("SITE_IMPORT_SAML_KEYSTORE"),
             secure_keys=env.get("SITE_IMPORT_SECURE_KEYS", "").split(),
             java=env.get("SITE_IMPORT_JAVA", "java"),
