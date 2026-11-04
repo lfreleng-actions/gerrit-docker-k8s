@@ -2,7 +2,8 @@
 # SPDX-FileCopyrightText: 2026 The Linux Foundation
 
 # Gerrit image for the Helm chart: the image Dockerfile builds, plus
-# the plugin catalogue the chart's site-init copies from.
+# the plugin catalogue the chart's site-init copies from, and rclone,
+# which site-import's s3 source fetches an export with.
 #
 # The catalogue lives outside the site, at /var/gerrit-catalogue (the
 # chart's pluginCatalogue.path default), as plugins/<name>.jar and
@@ -66,5 +67,28 @@ RUN set -eu; \
     done; \
     rm -f /tmp/plugins.lock /tmp/fetch-plugins.sh; \
     ls -l "$GERRIT_CATALOGUE/plugins" "$GERRIT_CATALOGUE/lib"
+
+# --- rclone: the S3 client for the chart's site-import s3 source -------------
+# Only this image carries it; the GitHub Action's image does not.
+# fetch-rclone.sh checks the release archive against TOOL_RCLONE_SHA256
+# and against the release's SHA256SUMS, and fails the build on a
+# mismatch. The release image is linux/amd64 only, as is the pinned
+# archive.
+#
+# No build arg or ENV may start with RCLONE_: rclone reads every
+# RCLONE_<FLAG> variable as that flag, so RCLONE_VERSION in the
+# environment of "rclone version" would set --version and fail.
+#
+# To update: set TOOL_RCLONE_VERSION to the release tag, then take the
+# archive's digest from the release's SHA256SUMS:
+#   curl -fsSL https://github.com/rclone/rclone/releases/download/<VERSION>/SHA256SUMS \
+#     | grep 'linux-amd64.zip$'
+ARG TOOL_RCLONE_VERSION=v1.75.2
+ARG TOOL_RCLONE_SHA256=349ac8fba6ff65d6247043f1750cdcb518ec5d500ef91463a10d37c0ccdf3702
+COPY docker/fetch-rclone.sh /tmp/fetch-rclone.sh
+RUN set -eu; \
+    sh /tmp/fetch-rclone.sh "$TOOL_RCLONE_VERSION" "$TOOL_RCLONE_SHA256" /usr/local/bin; \
+    rm -f /tmp/fetch-rclone.sh; \
+    rclone version
 
 USER gerrit

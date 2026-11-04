@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import http.server
 import io
+import re
 import shutil
 import subprocess
 import threading
@@ -25,20 +26,15 @@ import pytest
 
 ROOT = Path(__file__).parent.parent
 SCRIPT = ROOT / "docker" / "fetch-rclone.sh"
+DOCKERFILE = ROOT / "Dockerfile.chart"
 VERSION = "v9.9.9"
 NAME = f"rclone-{VERSION}-linux-amd64"
 BINARY = b"#!/bin/sh\necho 'rclone v9.9.9'\n"
 
-pytestmark = [
-    pytest.mark.skipif(
-        any(
-            shutil.which(tool) is None
-            for tool in ("sh", "curl", "sha256sum", "python3")
-        ),
-        reason="the fetch needs sh, curl, sha256sum and python3",
-    ),
-    pytest.mark.xfail(strict=True, reason="docker/fetch-rclone.sh does not exist"),
-]
+pytestmark = pytest.mark.skipif(
+    any(shutil.which(tool) is None for tool in ("sh", "curl", "sha256sum", "python3")),
+    reason="the fetch needs sh, curl, sha256sum and python3",
+)
 
 
 def archive() -> bytes:
@@ -190,3 +186,20 @@ def test_bad_digest_is_refused(tmp_path: Path, release: Release) -> None:
     result = fetch(tmp_path, release, digest="not-a-digest")
     assert result.returncode == 2
     assert "64 lower-case hex" in result.stderr
+
+
+@pytest.mark.parametrize("dockerfile", ["Dockerfile", "Dockerfile.chart"])
+def test_dockerfiles_set_no_rclone_variable(dockerfile: str) -> None:
+    """rclone reads each RCLONE_<FLAG> variable as its --<flag>.
+
+    A build arg named RCLONE_VERSION reaches "rclone version" in the
+    build and sets --version; an ENV reaches every rclone the chart
+    image runs, the base image's included.
+    """
+    text = (ROOT / dockerfile).read_text().replace("\\\n", " ")
+    found = re.findall(
+        r"^\s*(?:ARG|ENV)\b.*?\bRCLONE_\w*",
+        text,
+        flags=re.MULTILINE | re.IGNORECASE,
+    )
+    assert found == []
