@@ -20,11 +20,19 @@ from chart.test_replication import egress_ports, find, pod_spec, render, run_hel
 
 pytestmark = pytest.mark.skipif(shutil.which("helm") is None, reason="needs helm")
 
+XFAIL = pytest.mark.xfail(strict=True, reason="the chart has no s3 source yet")
+XFAIL_ACCOUNT = pytest.mark.xfail(
+    strict=True, reason="the chart has no ServiceAccount yet"
+)
+
 PVC_SOURCE: dict[str, Any] = {
     "type": "pvc",
     "url": "/mnt/import/export",
     "volume": {"persistentVolumeClaim": {"claimName": "gerrit-export"}},
 }
+
+
+S3_SOURCE: dict[str, Any] = {"type": "s3", "url": "s3://gerrit-exports/final"}
 
 
 def import_values(**source: Any) -> dict[str, Any]:
@@ -245,7 +253,56 @@ def test_secure_keys_follow_the_features(tmp_path: Path) -> None:
     ("values", "message"),
     [
         ({"mode": "always"}, "siteImport.mode must be auto, force or skip"),
-        ({"source": {"type": "s3"}}, "s3 is not supported yet"),
+        pytest.param(
+            {"source": {"type": "s3"}},
+            "siteImport.source.type s3 needs siteImport.source.url s3://",
+            marks=XFAIL,
+        ),
+        pytest.param(
+            {"source": {"type": "s3", "url": "https://bucket/x"}},
+            "siteImport.source.type s3 needs siteImport.source.url s3://",
+            marks=XFAIL,
+        ),
+        pytest.param(
+            {"source": {"type": "s3", "url": "s3://"}},
+            "siteImport.source.type s3 needs siteImport.source.url s3://",
+            marks=XFAIL,
+        ),
+        pytest.param(
+            {"source": {**S3_SOURCE, "s3": {"endpoint": "store.example:9000"}}},
+            "siteImport.source.s3.endpoint must be an http:// or https:// URL",
+            marks=XFAIL,
+        ),
+        pytest.param(
+            {"source": {**S3_SOURCE, "s3": {"endpoint": "http://"}}},
+            "siteImport.source.s3.endpoint must be an http:// or https:// URL",
+            marks=XFAIL,
+        ),
+        pytest.param(
+            {"source": {**S3_SOURCE, "s3": {"endpoint": "https://store.example/s3"}}},
+            "siteImport.source.s3.endpoint must be an http:// or https:// URL",
+            marks=XFAIL,
+        ),
+        pytest.param(
+            {"source": {**S3_SOURCE, "s3": {"endpoint": "https://store.example?x=1"}}},
+            "siteImport.source.s3.endpoint must be an http:// or https:// URL",
+            marks=XFAIL,
+        ),
+        pytest.param(
+            {"source": {**S3_SOURCE, "s3": {"endpoint": "https://key@store.example"}}},
+            "siteImport.source.s3.endpoint must be an http:// or https:// URL",
+            marks=XFAIL,
+        ),
+        pytest.param(
+            {"source": {**S3_SOURCE, "s3": {"endpoint": "https://s3.example:99999"}}},
+            "siteImport.source.s3.endpoint must be an http:// or https:// URL",
+            marks=XFAIL,
+        ),
+        pytest.param(
+            {"source": {**S3_SOURCE, "s3": {"provider": ""}}},
+            "siteImport.source.s3.provider must name an rclone S3 provider",
+            marks=XFAIL,
+        ),
         (
             {"source": {"type": "ftp"}},
             "siteImport.source.type must be none, pvc or https",
@@ -275,3 +332,123 @@ def test_bad_values_are_refused(
     # Every case is a render the chart accepted before site import
     assert importer(render(tmp_path))
     refused(tmp_path, {"siteImport": values}, message)
+
+
+# --- s3 source -----------------------------------------------------------
+
+
+def s3_env(docs: list[Any]) -> dict[str, Any]:
+    return {e["name"]: e for e in importer(docs)["env"]}
+
+
+@XFAIL
+def test_s3_source_reaches_the_container(tmp_path: Path) -> None:
+    docs = render(tmp_path, import_values(**S3_SOURCE))
+    env = env_of(importer(docs))
+    assert env["SITE_IMPORT_SOURCE_TYPE"] == "s3"
+    assert env["SITE_IMPORT_SOURCE_URL"] == "s3://gerrit-exports/final"
+    assert env["SITE_IMPORT_S3_ENDPOINT"] == ""
+    assert env["SITE_IMPORT_S3_REGION"] == ""
+    assert env["SITE_IMPORT_S3_PROVIDER"] == "AWS"
+    # Workload identity: no static keys, and nothing mounted for them
+    assert "AWS_ACCESS_KEY_ID" not in env
+    assert "AWS_SECRET_ACCESS_KEY" not in env
+    assert "SITE_IMPORT_URLS" not in env
+    assert "/import-urls" not in mounts_of(importer(docs))
+    assert "import-urls" not in volumes(docs)
+
+
+@XFAIL
+def test_s3_options_reach_the_container(tmp_path: Path) -> None:
+    s3 = {"endpoint": "https://store.example", "region": "eu-west-1"}
+    values = import_values(**S3_SOURCE, s3={**s3, "provider": "Minio"})
+    env = env_of(importer(render(tmp_path, values)))
+    assert env["SITE_IMPORT_S3_ENDPOINT"] == "https://store.example"
+    assert env["SITE_IMPORT_S3_REGION"] == "eu-west-1"
+    assert env["SITE_IMPORT_S3_PROVIDER"] == "Minio"
+
+
+@XFAIL
+def test_s3_keys_come_from_the_secret(tmp_path: Path) -> None:
+    docs = render(tmp_path, import_values(**S3_SOURCE, existingSecret="s3-keys"))
+    env = s3_env(docs)
+    for key in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"):
+        assert env[key] == {
+            "name": key,
+            "valueFrom": {"secretKeyRef": {"name": "s3-keys", "key": key}},
+        }
+    # The Secret holds keys, not URLs, so it is not mounted
+    assert "SITE_IMPORT_URLS" not in env
+    assert "import-urls" not in volumes(docs)
+    gerrit = next(c for c in pod_spec(docs)["containers"] if c["name"] == "gerrit")
+    assert "AWS_SECRET_ACCESS_KEY" not in {e["name"] for e in gerrit["env"]}
+
+
+@XFAIL
+@pytest.mark.parametrize(
+    ("endpoint", "ports"),
+    [
+        ("", set()),
+        ("https://store.example", set()),
+        ("https://store.example:8443", {8443}),
+        ("http://minio.gerrit.svc:9000", {9000}),
+        ("http://store.example", {80}),
+    ],
+)
+def test_egress_reaches_the_s3_endpoint(
+    tmp_path: Path, endpoint: str, ports: set[int]
+) -> None:
+    docs = render(tmp_path, import_values(**S3_SOURCE, s3={"endpoint": endpoint}))
+    assert egress_ports(docs) == {53, 443} | ports
+
+
+# --- service account ------------------------------------------------------
+
+
+def service_accounts(docs: list[Any]) -> list[dict[str, Any]]:
+    return [d for d in docs if d["kind"] == "ServiceAccount"]
+
+
+def test_no_service_account_by_default(tmp_path: Path) -> None:
+    docs = render(tmp_path)
+    assert service_accounts(docs) == []
+    spec = pod_spec(docs)
+    assert "serviceAccountName" not in spec
+    assert spec["automountServiceAccountToken"] is False
+
+
+@XFAIL_ACCOUNT
+def test_created_service_account_carries_the_annotations(tmp_path: Path) -> None:
+    role = "arn:aws:iam::111122223333:role/gerrit-import"
+    values = {
+        "serviceAccount": {
+            "create": True,
+            "annotations": {"eks.amazonaws.com/role-arn": role},
+        }
+    }
+    docs = render(tmp_path, values)
+    [account] = service_accounts(docs)
+    assert account["metadata"]["name"] == "gerrit"
+    assert account["metadata"]["namespace"] == "gerrit-test"
+    assert account["metadata"]["annotations"] == {"eks.amazonaws.com/role-arn": role}
+    assert account["automountServiceAccountToken"] is False
+    spec = pod_spec(docs)
+    assert spec["serviceAccountName"] == "gerrit"
+    # IRSA projects its own token; the API token stays unmounted
+    assert spec["automountServiceAccountToken"] is False
+
+
+@XFAIL_ACCOUNT
+@pytest.mark.parametrize(
+    ("account", "rendered", "name"),
+    [
+        ({"create": True, "name": "gerrit-irsa"}, ["gerrit-irsa"], "gerrit-irsa"),
+        ({"create": False, "name": "existing"}, [], "existing"),
+    ],
+)
+def test_service_account_name(
+    tmp_path: Path, account: dict[str, Any], rendered: list[str], name: str
+) -> None:
+    docs = render(tmp_path, {"serviceAccount": account})
+    assert [a["metadata"]["name"] for a in service_accounts(docs)] == rendered
+    assert pod_spec(docs)["serviceAccountName"] == name
