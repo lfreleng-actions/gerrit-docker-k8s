@@ -30,9 +30,10 @@ hook_scripts=${GERRIT_HOOK_SCRIPTS:-/hook-scripts}
 cp "$image_bin/gerrit.war" "$image_bin/gerrit.sh" "$site/bin/"
 
 # The site's plugins and libraries are exactly the ones named: clear
-# them, then copy each from the image catalogue. An absent catalogue
+# every entry, hidden ones too, since Gerrit loads a plugin named
+# .jar, then copy each from the image catalogue. An absent catalogue
 # is fine while nothing is named.
-rm -f "$site"/plugins/*.jar "$site"/lib/*.jar
+find "$site/plugins" "$site/lib" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
 
 copy_jars() {
   kind=$1

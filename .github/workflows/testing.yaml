@@ -1071,8 +1071,12 @@ jobs:
             echo "::error::site-import did not fail on a corrupt archive ❌"
             exit 1
           fi
-          kubectl logs -n "$ns" gerrit-0 -c site-import --previous \
-            | grep -F "git.tar.zst has sha256"
+          if ! kubectl logs -n "$ns" gerrit-0 -c site-import --previous \
+            | grep -F "git.tar.zst has sha256"; then
+            kubectl logs -n "$ns" gerrit-0 -c site-import --previous || true
+            echo "::error::site-import did not fail on the archive checksum ❌"
+            exit 1
+          fi
           # A StatefulSet does not replace a pod stuck in its init
           # containers, so the redeploy deletes it
           helm upgrade gerrit "$CHART" --namespace "$ns" --reuse-values \
@@ -1127,6 +1131,17 @@ jobs:
               > "$out/logs-$name.txt" 2>&1 || true
             kubectl logs -n "$ns" "$pod" --all-containers --prefix \
               --previous > "$out/logs-$name-previous.txt" 2>&1 || true
+            # --all-containers reads nothing while an init container
+            # holds the pod back, so read each container on its own
+            containers=$(kubectl get -n "$ns" "$pod" -o \
+              jsonpath='{.spec.initContainers[*].name} {.spec.containers[*].name}' \
+              2>/dev/null || true)
+            for c in $containers; do
+              kubectl logs -n "$ns" "$pod" -c "$c" \
+                > "$out/logs-$name-$c.txt" 2>&1 || true
+              kubectl logs -n "$ns" "$pod" -c "$c" --previous \
+                > "$out/logs-$name-$c-previous.txt" 2>&1 || true
+            done
           done
           kubectl describe nodes > "$out/nodes.txt" 2>&1 || true
 

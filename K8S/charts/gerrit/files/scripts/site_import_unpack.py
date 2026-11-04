@@ -15,9 +15,19 @@ from pathlib import Path
 
 from site_import_common import SiteImportError, config_get, say
 
-# Never taken from an archive: the state belongs to this run, and the
-# import rebuilds the index and caches
-SKIPPED = ("site/.chart", "site/index", "site/cache", "site/lost+found")
+# Never taken from an archive: the state belongs to this run, the
+# import rebuilds the index and caches, and the chart's image supplies
+# the binaries, plugins and libraries, as ones built for the source
+# release can stop the new one starting
+SKIPPED = (
+    "site/.chart",
+    "site/index",
+    "site/cache",
+    "site/lost+found",
+    "site/bin",
+    "site/plugins",
+    "site/lib",
+)
 # The site's path inside the Gerrit pod, which absolute paths in a
 # chart site's gerrit.config and links start with
 POD_SITE = "/var/gerrit"

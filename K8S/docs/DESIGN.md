@@ -391,7 +391,11 @@ refuses an archive with a symlink or hard link that resolves outside
 its own `site/` or `git/` tree, or into a path it never imports such
 as `.chart/`, and checks every symlink again once all are in place,
 so no link can lead a later write to the state file or off the
-volume. It leaves out, and logs, the two absolute links `site-init`
+volume. It never takes the archive's `site/bin/`, `site/plugins/` or
+`site/lib/`: `site-init` installs the image's war and the chart's
+plugins and libraries, and a jar built for the source release, such
+as a hidden `plugins/.jar` an official image left behind, can stop
+the new release starting. It leaves out, and logs, the two absolute links `site-init`
 recreates at every start: a link in the site's `hooks.path` to the
 gerrit-to-platform entry point of the same name in
 `/opt/gerrit-tools/bin`, and `.config/gerrit_to_platform/replication.config`
@@ -603,7 +607,8 @@ An export directory `<out>` holds:
   `.gerritcodereview/tmp` and `.chart`, plus the repository store when
   it sits inside the site. `--include-cache` keeps `cache`. The import
   rebuilds the index and caches and takes `bin/gerrit.war` from the
-  image.
+  image. `plugins/` and `lib/` stay in the export, for the record;
+  `site-import` leaves them out (section 1.7).
 - `.chart/` holds a chart-managed site's import state, which describes
   the source release rather than the export. `site-import` skips
   `site/.chart/` whatever the archive holds (section 1.7); leaving it

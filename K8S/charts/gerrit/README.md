@@ -85,7 +85,8 @@ empty or absent optional key leaves its entry out of `secure.config`.
    see [Site import](#site-import). Once the site's state is
    `complete` it does nothing.
 3. `site-init` copies `gerrit.war` and `gerrit.sh` from the image,
-   replaces the site's plugin and library jars with those named in
+   replaces everything in the site's `plugins/` and `lib/`, hidden
+   files too, with the jars named in
    `pluginCatalogue`, plus `replication` with `replication.enabled`
    and the `saml` library with `auth.saml.enabled`, and copies the rendered `gerrit.config`, `jgit.config`,
    `notedb.config`, `log4j.properties` and `replication.config` over the site's own, and with
@@ -430,9 +431,12 @@ names a deleted one never starts, even after a complete import.
    older official images to test this range.
 2. Fetches and checks the export in the scratch `emptyDir`, which
    must hold the archives and their unpacked copy; size it with
-   `siteImport.scratchSizeLimit`. It refuses links that resolve
-   outside the archive's `site/` or `git/` tree, or into `.chart/`,
-   `index/` or `cache/`, except two kinds `site-init` recreates at
+   `siteImport.scratchSizeLimit`. It leaves out the export's `bin/`,
+   `plugins/` and `lib/`: the chart's image supplies those, and a
+   plugin or library built for the source release can stop the new
+   one starting. It refuses links that resolve outside the archive's
+   `site/` or `git/` tree, or into `.chart/`, `index/`, `cache/`,
+   `bin/`, `plugins/` or `lib/`, except two kinds `site-init` recreates at
    every start, which it leaves out and logs: links in the site's
    `hooks.path` (default `hooks`) to the gerrit-to-platform entry
    point of the same name in `/opt/gerrit-tools/bin`, and
