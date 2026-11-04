@@ -645,7 +645,7 @@ the `final` one and is never an import source.
 | `schema` | integer | Manifest format version, currently `1`. |
 | `created` | string | UTC time the manifest was built, `YYYY-MM-DDTHH:MM:SSZ`. |
 | `mode` | string | `seed` or `final` from the export tool; `backup` from the backup CronJob (#242). `site-import` accepts `final` and `backup`. |
-| `gerrit_version` | string or `null` | `Implementation-Version` from `bin/gerrit.war` in the source site; `null` when the site has no `bin/gerrit.war` or its JAR manifest names no version. |
+| `gerrit_version` | string or `null` | The release `bin/gerrit.war` in the source site records in its nested `com_google_gerrit_common_libversion.jar`, without the leading `v`; `null` when the site has no `bin/gerrit.war` or the war records no version there. |
 | `site` | object | `path`: the source site directory, resolved; `bytes`: total size of `<out>/site`. |
 | `git` | object | `path`: the source repository directory, resolved; `bytes`: total size of `<out>/git`; `repositories`: see below. |
 | `ssh_host_keys` | object | Each regular file in the site's `etc/` named `ssh_host_*` and not ending `.pub`, mapped to its `SHA256:` fingerprint from `ssh-keygen -l -E sha256`. |

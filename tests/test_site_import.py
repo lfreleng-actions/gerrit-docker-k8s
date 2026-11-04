@@ -92,11 +92,18 @@ def bare_repo(path: Path, branches: list[str], project_config: str | None) -> No
 
 
 def write_war(path: Path, version: str) -> None:
+    """A war naming its version in its manifest and, as a release does, in a jar."""
     path.parent.mkdir(parents=True, exist_ok=True)
+    nested = io.BytesIO()
+    with zipfile.ZipFile(nested, "w") as jar:
+        jar.writestr("com/google/gerrit/common/Version", f"v{version}\n")
     with zipfile.ZipFile(path, "w") as war:
         war.writestr(
             "META-INF/MANIFEST.MF",
             f"Manifest-Version: 1.0\r\nImplementation-Version: {version}\r\n",
+        )
+        war.writestr(
+            "WEB-INF/lib/com_google_gerrit_common_libversion.jar", nested.getvalue()
         )
 
 
@@ -453,14 +460,12 @@ def test_manifest_pin(tmp_path: Path) -> None:
         module.load_manifest(path, "f" * 64)
 
 
-@pytest.mark.xfail(strict=True, reason="site-import has no version floor yet")
 @pytest.mark.parametrize("version", ["3.7.0", "v3.8.1", "3.10.0-rc1", "3.13"])
 def test_source_version_at_or_above_the_floor(version: str) -> None:
     archive = load_archive()
     archive.check_source_version({"gerrit_version": version}, allow_unknown=False)
 
 
-@pytest.mark.xfail(strict=True, reason="site-import has no version floor yet")
 @pytest.mark.parametrize(
     ("version", "allow", "message"),
     [
@@ -480,14 +485,12 @@ def test_source_version_is_refused(
         archive.check_source_version({"gerrit_version": version}, allow_unknown=allow)
 
 
-@pytest.mark.xfail(strict=True, reason="site-import has no version floor yet")
 @pytest.mark.parametrize("version", [None, "", "unknown"])
 def test_unknown_source_version_can_be_allowed(version: str | None) -> None:
     archive = load_archive()
     archive.check_source_version({"gerrit_version": version}, allow_unknown=True)
 
 
-@pytest.mark.xfail(strict=True, reason="site-import has no version floor yet")
 def test_allow_unknown_source_version_setting(pod: dict[str, Any]) -> None:
     module = load()
     assert module.Settings.from_env(pod["env"]).allow_unknown_version is False
@@ -1175,7 +1178,6 @@ def test_pin_mismatch_fails(
 
 
 @needs_tools
-@pytest.mark.xfail(strict=True, reason="site-import has no version floor yet")
 def test_export_older_than_the_floor_fails_before_the_site_changes(
     pod: dict[str, Any],
     source: Path,
@@ -1195,7 +1197,6 @@ def test_export_older_than_the_floor_fails_before_the_site_changes(
 
 
 @needs_tools
-@pytest.mark.xfail(strict=True, reason="site-import has no version floor yet")
 def test_export_without_a_version_needs_the_opt_out(
     pod: dict[str, Any],
     source: Path,

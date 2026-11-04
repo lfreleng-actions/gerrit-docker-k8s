@@ -262,6 +262,7 @@ Argo CD; `K8S/docs/DESIGN.md` section 6 explains its settings.
 | `siteImport.source.existingSecret`       | `""`                             | With `https`, a Secret of per-file URLs                    |
 | `siteImport.source.egressPorts`          | `[]`                             | With `https`, ports other than 443 the Secret's URLs reach |
 | `siteImport.source.expectedManifestSha256` | `""`                           | Pins the export's `manifest.json`                          |
+| `siteImport.allowUnknownSourceVersion`   | `false`                          | Import an export whose manifest names no Gerrit version    |
 | `siteImport.reindex`, `.verify`          | `true`, `true`                   | Reindex after the import; check repositories, host keys and server ID |
 | `siteImport.scratchSizeLimit`            | `""`                             | `sizeLimit` of the scratch `emptyDir`                      |
 | `siteImport.resources`                   | `{}`                             | Resources of `site-import`; `resources` when empty. Size it for the reindex |
@@ -417,7 +418,15 @@ names a deleted one never starts, even after a complete import.
 
 ### What an import runs
 
-1. Fetches and checks the export in the scratch `emptyDir`, which
+1. Reads `manifest.json` and refuses an export of a Gerrit release
+   older than 3.7.0, the oldest release site import supports: upgrade
+   the source site to 3.7 or newer and export it again. The export
+   tool records the release as `gerrit_version`; when the manifest
+   names none, the import refuses unless
+   `siteImport.allowUnknownSourceVersion` is `true`, which does not
+   lift the floor for a release the manifest names. A refused import
+   leaves the site as it stands.
+2. Fetches and checks the export in the scratch `emptyDir`, which
    must hold the archives and their unpacked copy; size it with
    `siteImport.scratchSizeLimit`. It refuses links that resolve
    outside the archive's `site/` or `git/` tree, or into `.chart/`,
@@ -435,13 +444,13 @@ names a deleted one never starts, even after a complete import.
    `gerrit.extraConfig`. With `verify`, it checks the repositories,
    their refs, the server ID and the SSH host keys there, before the
    site changes.
-2. Replaces the site with the unpacked copy.
-3. Runs `site-init` to install the chart's configuration, then
+3. Replaces the site with the unpacked copy.
+4. Runs `site-init` to install the chart's configuration, then
    `gerrit init --batch --no-auto-start` to migrate the site to the
    image's Gerrit, then installs the chart's configuration again.
-4. With `reindex`, runs a full `gerrit reindex`, with one thread per
+5. With `reindex`, runs a full `gerrit reindex`, with one thread per
    core of the container's CPU limit, or Gerrit's default without one.
-5. With `verify`, checks again that the repositories, the exported
+6. With `verify`, checks again that the repositories, the exported
    host keys and the server ID survived.
 
 `init` and `reindex` get the heap the Gerrit container gets:

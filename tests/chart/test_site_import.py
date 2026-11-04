@@ -82,7 +82,6 @@ def test_default_is_a_fresh_site_in_auto_mode(tmp_path: Path) -> None:
     assert "SITE_IMPORT_SAML_KEYSTORE" not in env
 
 
-@pytest.mark.xfail(strict=True, reason="the chart has no allowUnknownSourceVersion")
 @pytest.mark.parametrize(("allow", "expected"), [(None, "false"), (True, "true")])
 def test_allow_unknown_source_version(
     tmp_path: Path, allow: bool | None, expected: str
