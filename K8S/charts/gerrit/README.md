@@ -225,6 +225,9 @@ Argo CD; `K8S/docs/DESIGN.md` section 6 explains its settings.
 | `replication.remotes`                    | `[]`                             | One `[remote "<name>"]` section per entry                  |
 | `networkPolicy.ingressNamespaceSelector` | `{}`                             | Label selector for the namespaces that may reach 8080; `{}` admits any source |
 | `clusterDomain`                          | `cluster.local`                  | Cluster DNS domain, for the Gerrit pod name the toolbox looks up |
+| `serviceAccount.create`                  | `false`                          | Renders the Gerrit pod's ServiceAccount; see [S3 credentials](#s3-credentials) |
+| `serviceAccount.name`                    | `""`                             | The ServiceAccount's name: the full name when created and empty; the namespace default when neither |
+| `serviceAccount.annotations`             | `{}`                             | Annotations of a created ServiceAccount, such as `eks.amazonaws.com/role-arn` |
 | `toolbox.enabled`                        | `false`                          | See [Admin toolbox](#admin-toolbox)                        |
 | `toolbox.replicas`                       | `0`                              | Scale to `1` for a maintenance session                     |
 | `toolbox.existingSecret`                 | `""`                             | Secret with an administrator's `ssh-privatekey`; `""` mounts none |
@@ -256,10 +259,13 @@ Argo CD; `K8S/docs/DESIGN.md` section 6 explains its settings.
 | `logs.schedule`, `.timeZone`, `.resources` | `30 4 * * *`, `""`, `{}`       | The log cleanup `CronJob`                                  |
 | `siteImport.mode`                        | `auto`                           | `auto`, `force` or `skip`; see [Site import](#site-import) |
 | `siteImport.forceToken`                  | `""`                             | With `force`, each new token replaces the site once        |
-| `siteImport.source.type`                 | `none`                           | `none`, `pvc` or `https`                                   |
-| `siteImport.source.url`                  | `""`                             | Export directory under `/mnt/import`, or the HTTPS base URL |
+| `siteImport.source.type`                 | `none`                           | `none`, `pvc`, `https` or `s3`                             |
+| `siteImport.source.url`                  | `""`                             | Export directory under `/mnt/import`, the HTTPS base URL, or `s3://<bucket>/<prefix>` |
 | `siteImport.source.volume`               | `{}`                             | With `pvc`, a volume source mounted read-only at `/mnt/import` |
-| `siteImport.source.existingSecret`       | `""`                             | With `https`, a Secret of per-file URLs                    |
+| `siteImport.source.existingSecret`       | `""`                             | With `https`, a Secret of per-file URLs; with `s3`, a Secret of `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` |
+| `siteImport.source.s3.endpoint`          | `""`                             | With `s3`, `http(s)://<host>[:<port>]` of an S3-compatible store, with no path; AWS when empty |
+| `siteImport.source.s3.region`            | `""`                             | With `s3`, the bucket's region                             |
+| `siteImport.source.s3.provider`          | `AWS`                            | With `s3`, the rclone S3 provider, such as `Minio` or `Ceph`; rclone checks the name |
 | `siteImport.source.egressPorts`          | `[]`                             | With `https`, ports other than 443 the Secret's URLs reach |
 | `siteImport.source.expectedManifestSha256` | `""`                           | Pins the export's `manifest.json`                          |
 | `siteImport.reindex`, `.verify`          | `true`, `true`                   | Reindex after the import; check repositories, host keys and server ID |
@@ -397,9 +403,72 @@ directory holding `manifest.json`, `site.tar.zst` and `git.tar.zst`.
       egressPorts: [9000]
   ```
 
-The chart refuses other source types. It does not fetch `s3://` URLs
-or decrypt `.age` and `.gpg` archives yet; decrypt the export and
-serve it over one of these sources.
+- `s3` fetches `manifest.json` and the archives from the bucket and
+  prefix `source.url` names, with rclone. `source.s3.endpoint` names an
+  S3-compatible store, such as MinIO or Ceph, and is empty for AWS. It
+  must be `http://` or `https://`, a host and an optional port, with
+  no user, path, query or fragment; the chart and `site-import` both
+  refuse anything else. `source.s3.provider` is its rclone S3
+  provider, `Minio` or `Ceph` for example: the chart checks only that
+  it is not empty, and rclone validates the name when it fetches.
+  `source.s3.region` is the bucket's region. With
+  `networkPolicy.enabled`, the `NetworkPolicy` allows egress to the
+  endpoint's port; AWS needs only 443, which it always allows:
+
+  ```yaml
+  siteImport:
+    source:
+      type: s3
+      url: s3://gerrit-exports/sites/final
+      s3:
+        region: eu-west-1
+  ```
+
+The chart refuses other source types. It does not decrypt `.age` and
+`.gpg` archives yet; decrypt the export and serve it over one of
+these sources.
+
+#### S3 credentials
+
+rclone takes its credentials only from the `site-import` container's
+environment, never its command line, and `site-import` logs neither.
+Give the identity read access to the export: `s3:GetObject` on
+`<prefix>/*` and `s3:ListBucket` on the bucket. Without
+`s3:ListBucket`, AWS answers a missing object with 403, and the
+failure reads as a failed download rather than a missing object.
+
+- Static keys: a Secret with keys `AWS_ACCESS_KEY_ID` and
+  `AWS_SECRET_ACCESS_KEY`, named in `source.existingSecret`. Only
+  `site-import` gets them, and the chart does not mount the Secret.
+
+  ```sh
+  kubectl create secret generic gerrit-export-s3 \
+    --from-literal=AWS_ACCESS_KEY_ID=... \
+    --from-literal=AWS_SECRET_ACCESS_KEY=...
+  ```
+
+- IRSA on EKS: leave `source.existingSecret` empty and give the pod a
+  ServiceAccount bound to an IAM role. The EKS webhook injects the
+  role and a web identity token into every container, which rclone
+  reads; the pod still mounts no Kubernetes API token.
+
+  ```yaml
+  serviceAccount:
+    create: true
+    annotations:
+      eks.amazonaws.com/role-arn: arn:aws:iam::111122223333:role/gerrit-import
+  siteImport:
+    source:
+      type: s3
+      url: s3://gerrit-exports/sites/final
+  ```
+
+  `serviceAccount.name` with `create: false` selects a ServiceAccount
+  made outside the chart instead.
+
+An `http://` endpoint sends the archives unencrypted, though never
+the secret key, which only signs requests. Keep it to a store inside
+the cluster, and pin `source.expectedManifestSha256`.
 
 The archives hold `secure.config`, the SSH host keys and every
 account. `site-import` never logs their contents, but treat the export
@@ -409,7 +478,8 @@ once the import completes, in this order:
 1. Set `siteImport.mode: auto` and `siteImport.source.type: none`,
    and upgrade the release.
 2. Wait for the replacement pod to become Ready.
-3. Delete the export volume, the URL Secret and the bucket's copy.
+3. Delete the export volume, the URL or key Secret and the bucket's
+   copy.
 
 The pod mounts a configured source volume or Secret before
 `site-import` can decide there is nothing to do, so a pod that still

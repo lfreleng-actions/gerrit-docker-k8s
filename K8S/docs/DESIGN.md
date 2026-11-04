@@ -289,12 +289,14 @@ at a time (section 1.1).
 `siteImport.source.type` selects where the archive comes from, or
 `none` for a site that starts fresh. The archive's credentials come
 from a Secret (section 5). The chart takes the `--pack` export of
-section 3 from two sources: `pvc`, an export directory on a volume
-mounted read-only at `/mnt/import`, and `https`, a base URL or, from
-the Secret, one URL per file, such as a pre-signed object-store URL.
-Fetching `s3://` URLs with object-store keys and decrypting `.age` or
-`.gpg` archives are still to come (section 7); until then the chart
-refuses them.
+section 3 from three sources: `pvc`, an export directory on a volume
+mounted read-only at `/mnt/import`; `https`, a base URL or, from the
+Secret, one URL per file, such as a pre-signed object-store URL; and
+`s3`, an `s3://<bucket>/<prefix>` the chart image's rclone fetches.
+rclone is configured only through the environment, and reads keys
+from the Secret or the pod's workload identity, such as IRSA through
+`serviceAccount` (section 1.11). Decrypting `.age` or `.gpg` archives
+is still to come (section 7); until then the chart refuses them.
 
 **State file.** `site-import` records its state in
 `<site>/.chart/site-state.json` on the volume, and writes it
@@ -497,12 +499,14 @@ chart allows TCP egress to the port of `plugins.its-jira.url`, with
 the same defaults. So is the site import rule: with
 `siteImport.source.type: https`, the chart allows TCP egress to the
 port of `siteImport.source.url` and to each port in
-`siteImport.source.egressPorts`, which covers the URLs a Secret holds.
+`siteImport.source.egressPorts`, which covers the URLs a Secret holds;
+with `s3`, to the port of `siteImport.source.s3.endpoint`.
 
 | Feature | Egress | Rendered when |
 | ------- | ------ | ------------- |
 | Site import and backup from an object store | HTTPS, TCP 443 | `siteImport` or `backup` reads or writes an object store |
 | Site import over HTTPS | The port of `siteImport.source.url`, and `siteImport.source.egressPorts`; TCP 443 for an `https` URL on the default port | `siteImport.source.type: https` |
+| Site import from S3 | The port of `siteImport.source.s3.endpoint`; TCP 443 for AWS or an `https` endpoint on the default port | `siteImport.source.type: s3` |
 | SAML identity provider metadata | The port of `auth.saml.metadataUrl`; TCP 443 for an `https` URL on the default port | `auth.saml.metadataUrl` is set (#235) |
 | Jira issue tracker | The port of `plugins.its-jira.url`; TCP 443 for an `https` URL on the default port | `plugins.its-jira.enabled` |
 | Mail | The SMTP relay's port | Mail is configured |
@@ -540,6 +544,10 @@ as in local smoke tests.
 The pod sets `automountServiceAccountToken: false`. Nothing in it
 talks to the Kubernetes API: `site-import` keeps its state on the
 volume (section 1.7), so the chart renders no Role or RoleBinding.
+`serviceAccount` can give the pod a ServiceAccount, created by the
+chart with `automountServiceAccountToken: false` or named, only so a
+workload identity such as IRSA can bind a cloud role to it for the
+`s3` import source; IRSA projects its own token for that.
 The current egress default does not yet block the API on port 443
 (section 1.10).
 
@@ -711,7 +719,8 @@ sources belong to the deployment, not this document.
 | `secrets.secureConfig.existingSecret` | `registerEmailPrivateKey`, and optionally `smtpPass` | `render-config` | Generated as `<fullname>-secure-config` when empty, with an empty `smtpPass` the operator fills in. Passed as `GERRIT_REGISTER_EMAIL_PRIVATE_KEY` and `GERRIT_SMTP_PASS` and written to `auth.registerEmailPrivateKey` and, when not empty, `sendemail.smtpPass` in `etc/secure.config`. Each later `secure.config` entry adds one key here and one environment variable. |
 | `auth.saml.existingSecret` | `samlKeystore.jks`, `keystore-password`, `private-key-password`, and optionally `idp-metadata.xml` | Gerrit pod, `render-config` | As #235 specifies. Generated as `<fullname>-saml` when empty, with every key empty for the operator to fill in. The keystore, and with `auth.saml.metadataFromSecret` the IdP metadata, are mounted read-only into `etc/` as `samlKeystore.jks` and `saml-idp-metadata.xml`; the two passwords are passed as `GERRIT_SAML_KEYSTORE_PASSWORD` and `GERRIT_SAML_PRIVATE_KEY_PASSWORD` and written to `saml.keystorePassword` and `saml.privateKeyPassword` in `etc/secure.config`, never into values. The service provider metadata the module writes stays in `data/saml/` on the volume. To adopt a site that already uses SAML, the operator fills this Secret with the source's keystore, so the service provider keeps the key the identity provider trusts; a new keystore breaks every login until the identity provider is updated. |
 | `replication.sshKeySecret` | `id_ed25519` (or `id_rsa`), and optionally `known_hosts` | Gerrit pod | SSH identity for the replication remotes, and their pinned host keys. Projected with mode `0400` into `/var/gerrit/.ssh`, beside the chart's `known_hosts2` of GitHub's published host keys and `replication.knownHosts`. |
-| `siteImport.source.existingSecret` | `manifest.json`, `site.tar.zst`, `git.tar.zst` | `site-import` | With `source.type: https`, each key holds the full URL of that file, such as a pre-signed object-store URL, and wins over `<source.url>/<name>`. `site-import` passes the URLs to `curl` on standard input and never logs them. Object-store keys and `age-identity` or `gpg-private-key`, for `s3://` sources and encrypted archives, are still to come (section 7). |
+| `siteImport.source.existingSecret` | `manifest.json`, `site.tar.zst`, `git.tar.zst` | `site-import` | With `source.type: https`, each key holds the full URL of that file, such as a pre-signed object-store URL, and wins over `<source.url>/<name>`. `site-import` passes the URLs to `curl` on standard input and never logs them. `age-identity` or `gpg-private-key`, for encrypted archives, are still to come (section 7). |
+| `siteImport.source.existingSecret` | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | `site-import` | With `source.type: s3`, passed by `secretKeyRef` to `site-import` only, for rclone's `env_auth`; never mounted or logged. Optional where the pod has a workload identity through `serviceAccount`. |
 | `backup.existingSecret` | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | Backup CronJob | The encryption recipient is public and lives in values. Optional where the platform supplies workload identity. |
 | `hooks.g2p.existingSecret` | `gerrit_to_platform.ini` | `site-init` | Generated as `<fullname>-g2p` when empty, with the key empty for the operator to fill in. Mounted with mode `0400` into `site-init`, which installs it with mode `0600` as `.config/gerrit_to_platform/gerrit_to_platform.ini` on the site, where the hooks gerrit-to-platform runs read it through `XDG_CONFIG_HOME`. |
 | `plugins.its-jira.existingSecret` | `username`, `password` | `render-config` | Generated as `<fullname>-its-jira` when empty, with both keys empty for the operator to fill in. Passed as `GERRIT_ITS_JIRA_USERNAME` and `GERRIT_ITS_JIRA_PASSWORD` and written, when not empty, to `its-jira.username` and `its-jira.password` in `etc/secure.config`. The password may be a Jira API token. |
@@ -804,9 +813,10 @@ reference; each updates the section it changes.
   the Ingress controller namespace (sections 1.5, 1.6 and 1.10).
 - #239: the export tool (merged); section 3 describes its output.
 - #240: the `site-import` init container and its state file
-  (section 1.7), from a volume or HTTPS. Fetching from `s3://` with
-  object-store keys and decrypting `.age` or `.gpg` archives remain
-  open.
+  (section 1.7), from a volume or HTTPS. Decrypting `.age` or `.gpg`
+  archives remains open.
+- #307: the `s3` import source, rclone in the chart image and the
+  optional ServiceAccount for IRSA (sections 1.7, 1.11 and 5).
 - #242: the backup CronJob and its `backup` manifests (sections 1.8
   and 3).
 - #256: the export tool leaving out `.chart/` (sections 1.7 and 3.1).
