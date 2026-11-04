@@ -61,7 +61,7 @@ addopts = [
     "--strict-config",
 ]
 testpaths = ["tests"]
-pythonpath = ["scripts/lib", "tests"]
+pythonpath = ["scripts/lib", "tests", "K8S/charts/gerrit/files/scripts"]
 markers = [
     "unit: Unit tests (fast, no external dependencies)",
     "integration: Integration tests (may require Docker/network)",
@@ -133,8 +133,9 @@ python_version = "3.10"
 # `Any` and `warn_return_any` fires on the inherited call sites.
 # `explicit_package_bases` makes mypy derive those same flat names for
 # files passed on the command line, which would otherwise resolve as
-# `lib.*` via the `__init__.py` the wheel build needs.
-mypy_path = "scripts/lib"
+# `lib.*` via the `__init__.py` the wheel build needs. The chart's
+# site-import modules import each other in the same flat way.
+mypy_path = "scripts/lib:K8S/charts/gerrit/files/scripts"
 explicit_package_bases = true
 warn_return_any = true
 warn_unused_configs = true

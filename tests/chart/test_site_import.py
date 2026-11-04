@@ -18,10 +18,7 @@ import pytest
 import yaml
 from chart.test_replication import egress_ports, find, pod_spec, render, run_helm
 
-pytestmark = [
-    pytest.mark.skipif(shutil.which("helm") is None, reason="needs helm"),
-    pytest.mark.xfail(strict=True, reason="site-import not added yet"),
-]
+pytestmark = pytest.mark.skipif(shutil.which("helm") is None, reason="needs helm")
 
 PVC_SOURCE: dict[str, Any] = {
     "type": "pvc",

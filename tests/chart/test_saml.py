@@ -306,7 +306,17 @@ def test_secret_is_mounted_read_only_into_etc(
         }
         for name, key in files.items()
     ]
-    assert len(saml_mounts(docs)) == len(mounts)
+    # site-import reads only the keystore, to compare it with an import's
+    importer = container(docs, "site-import")
+    assert [m for m in importer["volumeMounts"] if m["name"] == "saml"] == [
+        {
+            "name": "saml",
+            "mountPath": "/saml/samlKeystore.jks",
+            "subPath": "samlKeystore.jks",
+            "readOnly": True,
+        }
+    ]
+    assert len(saml_mounts(docs)) == len(mounts) + 1
     volume = [v for v in pod_spec(docs)["volumes"] if v["name"] == "saml"]
     assert volume == [
         {"name": "saml", "secret": {"secretName": "gerrit-saml", "defaultMode": 0o400}}

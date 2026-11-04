@@ -1011,3 +1011,105 @@ key may hold one URL or a list of them; see gerrit.urlPort. */}}
 {{- end }}
 {{- toJson (uniq $ports) -}}
 {{- end -}}
+
+{{/* Environment site-init needs to install the binaries, jars and
+rendered configuration; site-import passes it on when it runs
+site-init.sh to prepare an imported site */}}
+{{- define "gerrit.sitePrepareEnv" -}}
+- name: GERRIT_SITE
+  value: /mnt/site
+- name: GERRIT_SITE_DIRS
+  value: {{ include "gerrit.siteDirs" . | quote }}
+- name: GERRIT_RENDERED_CONFIG
+  value: /config
+- name: GERRIT_CATALOGUE
+  value: {{ .Values.pluginCatalogue.path | quote }}
+- name: GERRIT_PLUGINS
+  value: {{ include "gerrit.plugins" . | quote }}
+- name: GERRIT_LIBS
+  value: {{ include "gerrit.libs" . | quote }}
+{{- end -}}
+
+{{/* The secure.config names render-config can write, space separated;
+site-import reports an imported name missing from this list */}}
+{{- define "gerrit.secureConfigKeys" -}}
+{{- $keys := list "auth.registerEmailPrivateKey" "sendemail.smtpPass" -}}
+{{- if include "gerrit.samlEnabled" . -}}
+{{- $keys = concat $keys (list "saml.keystorePassword" "saml.privateKeyPassword") -}}
+{{- end -}}
+{{- if include "gerrit.itsJiraEnabled" . -}}
+{{- $keys = concat $keys (list "its-jira.username" "its-jira.password") -}}
+{{- end -}}
+{{- if include "gerrit.metricsEnabled" . -}}
+{{- $keys = append $keys "plugin.metrics-reporter-prometheus.prometheusBearerToken" -}}
+{{- end -}}
+{{- join " " $keys -}}
+{{- end -}}
+
+{{/* Checks siteImport and prints its source type. The mode and token
+are checked again by site-import, which refuses before it changes the
+volume; s3 and encrypted archives are not supported yet. */}}
+{{- define "gerrit.siteImportSource" -}}
+{{- $si := .Values.siteImport -}}
+{{- if not (has $si.mode (list "auto" "force" "skip")) -}}
+{{- fail (printf "siteImport.mode must be auto, force or skip, not %q" (toString $si.mode)) -}}
+{{- end -}}
+{{- $type := $si.source.type -}}
+{{- if eq $type "s3" -}}
+{{- fail "siteImport.source.type s3 is not supported yet; use https with pre-signed URLs in siteImport.source.existingSecret, or pvc" -}}
+{{- end -}}
+{{- if not (has $type (list "none" "pvc" "https")) -}}
+{{- fail (printf "siteImport.source.type must be none, pvc or https, not %q" (toString $type)) -}}
+{{- end -}}
+{{- if and (eq $type "pvc") (or (not $si.source.volume) (not $si.source.url)) -}}
+{{- fail "siteImport.source.type pvc needs siteImport.source.volume and a siteImport.source.url under /mnt/import" -}}
+{{- end -}}
+{{- if and (eq $type "pvc") (not (hasPrefix "/mnt/import" $si.source.url)) -}}
+{{- fail "siteImport.source.url must be a directory under /mnt/import, where siteImport.source.volume is mounted" -}}
+{{- end -}}
+{{- if and (eq $type "https") (not $si.source.url) (not $si.source.existingSecret) -}}
+{{- fail "siteImport.source.type https needs siteImport.source.url or siteImport.source.existingSecret" -}}
+{{- end -}}
+{{- $_ := include "gerrit.siteImportEgressPorts" . -}}
+{{- $type -}}
+{{- end -}}
+
+{{/* TCP ports an https import source reaches, other than 443, which
+the NetworkPolicy always allows, as a JSON list: the port of
+siteImport.source.url, and siteImport.source.egressPorts for URLs the
+Secret holds. Fails on an egressPorts entry that is not a port. */}}
+{{- define "gerrit.siteImportEgressPorts" -}}
+{{- $ports := list -}}
+{{- $source := .Values.siteImport.source -}}
+{{- if eq (toString $source.type) "https" -}}
+{{- $port := include "gerrit.urlPort" $source.url | int64 -}}
+{{- if and $port (ne $port 443) }}
+{{- $ports = append $ports $port -}}
+{{- end }}
+{{- range (default list $source.egressPorts) }}
+{{- if not (and (regexMatch `^[0-9]+$` (toString .)) (le (int64 .) 65535) (ge (int64 .) 1)) }}
+{{- fail (printf "siteImport.source.egressPorts must hold TCP port numbers, not %v" .) }}
+{{- end }}
+{{- if ne (int64 .) 443 }}
+{{- $ports = append $ports (int64 .) -}}
+{{- end }}
+{{- end }}
+{{- end -}}
+{{- toJson (uniq $ports) -}}
+{{- end -}}
+
+{{/* site-import's resources: siteImport.resources, else resources */}}
+{{- define "gerrit.siteImportResources" -}}
+{{- toYaml (.Values.siteImport.resources | default .Values.resources) -}}
+{{- end -}}
+
+{{/* The heap site-import gives init and reindex, as gerrit.javaOptions
+gives Gerrit: container.heapLimit when set, else 70% of site-import's
+memory limit, else the JVM's default */}}
+{{- define "gerrit.siteImportHeap" -}}
+{{- if .Values.container.heapLimit -}}
+-Xmx{{ .Values.container.heapLimit }}
+{{- else if dig "limits" "memory" "" (include "gerrit.siteImportResources" . | fromYaml) -}}
+-XX:MaxRAMPercentage=70.0
+{{- end -}}
+{{- end -}}

@@ -359,6 +359,41 @@ persistence:
   volumePermissions:
     enabled: false
 
+# Adopt an existing site before Gerrit starts; see "Site import" in the
+# chart README. The site-import init container keeps its state in
+# .chart/site-state.json on the site volume.
+siteImport:
+  # auto: act only while the site has no complete state; force: replace
+  # the site once per new forceToken (destructive); skip: do nothing
+  mode: auto
+  forceToken: ""
+  source:
+    # none: start a fresh site; pvc: an export directory on a volume
+    # mounted from source.volume; https: a URL prefix serving the export
+    type: none
+    # pvc: the export directory, under /mnt/import; https: the base URL
+    url: ""
+    # pvc: a volume source mounted read-only at /mnt/import, for example
+    # {persistentVolumeClaim: {claimName: gerrit-export}}
+    volume: {}
+    # https: a Secret whose keys manifest.json, site.tar.zst and
+    # git.tar.zst each hold a full URL, such as a pre-signed S3 URL,
+    # used instead of <url>/<name>
+    existingSecret: ""
+    # https: TCP ports the URLs in existingSecret reach, other than 443,
+    # for the NetworkPolicy; a port in url is allowed without listing it
+    egressPorts: []
+    expectedManifestSha256: ""
+  reindex: true
+  verify: true
+  # The scratch emptyDir holds the archives and their unpacked copy
+  scratchSizeLimit: ""
+  # Defaults to resources when empty. Size it for the offline reindex,
+  # the import's most demanding step: a large site needs several GB.
+  # init and reindex get container.heapLimit, else 70% of the memory
+  # limit, and reindex one thread per core of the CPU limit
+  resources: {}
+
 resources:
   requests:
     cpu: 500m

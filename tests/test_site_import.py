@@ -34,8 +34,6 @@ SCRIPT = ROOT / "K8S" / "charts" / "gerrit" / "files" / "scripts" / "site-import
 SITE_INIT = SCRIPT.with_name("site-init.sh")
 EXPORT = ROOT / "scripts" / "gerrit-site-export.py"
 SERVER_ID = "4f9b2b2e-0000-4000-8000-000000000001"
-
-pytestmark = pytest.mark.xfail(strict=True, reason="site-import not added yet")
 GIT_ENV = {
     "GIT_AUTHOR_NAME": "Fixture",
     "GIT_AUTHOR_EMAIL": "fixture@example.invalid",

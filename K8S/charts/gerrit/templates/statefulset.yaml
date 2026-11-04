@@ -63,23 +63,86 @@ spec:
             - name: site
               mountPath: /mnt/site
         {{- end }}
+        {{- $importSource := include "gerrit.siteImportSource" . }}
+        - name: site-import
+          image: {{ include "gerrit.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["python3", "/scripts/site-import.py"]
+          env:
+            {{- include "gerrit.sitePrepareEnv" . | nindent 12 }}
+            - name: HOME
+              value: /tmp
+            - name: SITE_INIT_SCRIPT
+              value: /scripts/site-init.sh
+            - name: SITE_IMPORT_SCRATCH
+              value: /scratch
+            - name: SITE_IMPORT_MODE
+              value: {{ .Values.siteImport.mode | quote }}
+            - name: SITE_IMPORT_FORCE_TOKEN
+              value: {{ .Values.siteImport.forceToken | toString | quote }}
+            - name: SITE_IMPORT_SOURCE_TYPE
+              value: {{ $importSource | quote }}
+            - name: SITE_IMPORT_SOURCE_URL
+              value: {{ .Values.siteImport.source.url | quote }}
+            {{- if and (eq $importSource "https") .Values.siteImport.source.existingSecret }}
+            - name: SITE_IMPORT_URLS
+              value: /import-urls
+            {{- end }}
+            - name: SITE_IMPORT_EXPECTED_MANIFEST_SHA256
+              value: {{ .Values.siteImport.source.expectedManifestSha256 | quote }}
+            - name: SITE_IMPORT_REINDEX
+              value: {{ .Values.siteImport.reindex | toString | quote }}
+            - name: SITE_IMPORT_VERIFY
+              value: {{ .Values.siteImport.verify | toString | quote }}
+            - name: SITE_IMPORT_SECURE_KEYS
+              value: {{ include "gerrit.secureConfigKeys" . | quote }}
+            - name: SITE_IMPORT_JAVA_HEAP
+              value: {{ include "gerrit.siteImportHeap" . | quote }}
+            - name: SITE_IMPORT_CPU_LIMIT
+              value: {{ dig "limits" "cpu" "" (include "gerrit.siteImportResources" . | fromYaml) | toString | quote }}
+            {{- if include "gerrit.samlEnabled" . }}
+            - name: SITE_IMPORT_SAML_KEYSTORE
+              value: /saml/samlKeystore.jks
+            {{- end }}
+          securityContext:
+            {{- include "gerrit.containerSecurityContext" . | nindent 12 }}
+          resources:
+            {{- include "gerrit.siteImportResources" . | nindent 12 }}
+          volumeMounts:
+            - name: site
+              mountPath: /mnt/site
+            - name: config
+              mountPath: /config
+              readOnly: true
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+            - name: import-scratch
+              mountPath: /scratch
+            {{- if eq $importSource "pvc" }}
+            - name: import-source
+              mountPath: /mnt/import
+              readOnly: true
+            {{- end }}
+            {{- if and (eq $importSource "https") .Values.siteImport.source.existingSecret }}
+            - name: import-urls
+              mountPath: /import-urls
+              readOnly: true
+            {{- end }}
+            {{- if include "gerrit.samlEnabled" . }}
+            - name: saml
+              mountPath: /saml/samlKeystore.jks
+              subPath: samlKeystore.jks
+              readOnly: true
+            {{- end }}
         - name: site-init
           image: {{ include "gerrit.image" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           command: ["sh", "/scripts/site-init.sh"]
           env:
-            - name: GERRIT_SITE
-              value: /mnt/site
-            - name: GERRIT_SITE_DIRS
-              value: {{ include "gerrit.siteDirs" . | quote }}
-            - name: GERRIT_RENDERED_CONFIG
-              value: /config
-            - name: GERRIT_CATALOGUE
-              value: {{ .Values.pluginCatalogue.path | quote }}
-            - name: GERRIT_PLUGINS
-              value: {{ include "gerrit.plugins" . | quote }}
-            - name: GERRIT_LIBS
-              value: {{ include "gerrit.libs" . | quote }}
+            {{- include "gerrit.sitePrepareEnv" . | nindent 12 }}
             - name: GERRIT_HOOKS_PATH
               value: {{ if include "gerrit.hooksEnabled" . }}{{ include "gerrit.hooksPath" . | quote }}{{ else }}""{{ end }}
             - name: GERRIT_G2P_HOOKS
@@ -259,6 +322,23 @@ spec:
             name: {{ $fullname }}-scripts
         - name: tmp
           emptyDir: {}
+        - name: import-scratch
+          {{- with .Values.siteImport.scratchSizeLimit }}
+          emptyDir:
+            sizeLimit: {{ . }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        {{- if eq $importSource "pvc" }}
+        - name: import-source
+          {{- toYaml .Values.siteImport.source.volume | nindent 10 }}
+        {{- end }}
+        {{- if and (eq $importSource "https") .Values.siteImport.source.existingSecret }}
+        - name: import-urls
+          secret:
+            secretName: {{ .Values.siteImport.source.existingSecret }}
+            defaultMode: 0400
+        {{- end }}
         {{- if .Values.replication.enabled }}
         - name: replication-ssh
           projected:
