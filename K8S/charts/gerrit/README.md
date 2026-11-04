@@ -425,7 +425,9 @@ names a deleted one never starts, even after a complete import.
    names none, the import refuses unless
    `siteImport.allowUnknownSourceVersion` is `true`, which does not
    lift the floor for a release the manifest names. A refused import
-   leaves the site as it stands.
+   leaves the site as it stands. The scheduled
+   `.github/workflows/site-import-test.yaml` imports sites built with
+   older official images to test this range.
 2. Fetches and checks the export in the scratch `emptyDir`, which
    must hold the archives and their unpacked copy; size it with
    `siteImport.scratchSizeLimit`. It refuses links that resolve
