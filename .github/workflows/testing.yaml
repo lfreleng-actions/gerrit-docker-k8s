@@ -583,7 +583,7 @@ jobs:
     runs-on: 'ubuntu-latest'
     permissions:
       contents: read
-    timeout-minutes: 60
+    timeout-minutes: 75
     env:
       CHART: K8S/charts/gerrit
       SMOKE_IMAGE: gerrit-local
@@ -1100,6 +1100,121 @@ jobs:
           restart
           expect_log "mode force, source pvc, state complete: nothing"
           echo "The site import verified, and ran once per token ✅"
+
+      # Serves the good export over S3 with the chart image's rclone,
+      # behind generated keys, then replaces the release with one that
+      # imports it through siteImport.source.type s3, with the keys
+      # from a Secret and the NetworkPolicy's egress to the endpoint
+      - name: 'Import the site from S3'
+        shell: bash
+        run: |
+          # Import the site from S3
+          set -euo pipefail
+          ns="$SMOKE_NAMESPACE"
+          image="${SMOKE_IMAGE}:${SMOKE_TAG}"
+          init_log() {
+            kubectl logs -n "$ns" gerrit-0 -c site-import
+          }
+          expect_log() {
+            if ! init_log | grep -F -- "$1"; then
+              init_log || true
+              echo "::error::site-import did not log: $1 ❌"
+              exit 1
+            fi
+          }
+          server_id=$(kubectl exec -n "$ns" gerrit-0 -c gerrit -- \
+            git config -f /var/gerrit/etc/gerrit.config gerrit.serverId)
+          helm uninstall gerrit --namespace "$ns" --wait
+          kubectl delete pvc -n "$ns" site-gerrit-0 --wait
+          kubectl create secret generic -n "$ns" gerrit-export-s3 \
+            --from-literal="AWS_ACCESS_KEY_ID=$(openssl rand -hex 10)" \
+            --from-literal="AWS_SECRET_ACCESS_KEY=$(openssl rand -hex 20)"
+          # rclone serve s3 offers each directory under /data as a
+          # bucket: the export volume is the bucket "exports"
+          kubectl apply -n "$ns" -f - <<EOF
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: export-s3
+          spec:
+            replicas: 1
+            selector:
+              matchLabels: {app: export-s3}
+            template:
+              metadata:
+                labels: {app: export-s3}
+              spec:
+                securityContext:
+                  runAsUser: 1001
+                  runAsGroup: 1001
+                  fsGroup: 1001
+                containers:
+                  - name: rclone
+                    image: ${image}
+                    imagePullPolicy: Never
+                    command: [rclone]
+                    args:
+                      - serve
+                      - s3
+                      - --config=/notfound
+                      - --addr=:9000
+                      - --auth-key=\$(AWS_ACCESS_KEY_ID),\$(AWS_SECRET_ACCESS_KEY)
+                      - /data
+                    env:
+                      - {name: HOME, value: /tmp}
+                    envFrom:
+                      - secretRef: {name: gerrit-export-s3}
+                    ports:
+                      - {containerPort: 9000}
+                    readinessProbe:
+                      tcpSocket: {port: 9000}
+                    volumeMounts:
+                      - {name: export, mountPath: /data/exports, readOnly: true}
+                volumes:
+                  - name: export
+                    persistentVolumeClaim: {claimName: gerrit-export}
+          ---
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: export-s3
+          spec:
+            selector: {app: export-s3}
+            ports:
+              - {port: 9000, targetPort: 9000}
+          EOF
+          kubectl rollout status -n "$ns" deployment/export-s3 --timeout=5m
+          helm install gerrit "$CHART" \
+            --namespace "$ns" \
+            -f "$CHART/values-local-smoke.yaml" \
+            --set "image.repository=${SMOKE_IMAGE}" \
+            --set "image.tag=${SMOKE_TAG}" \
+            --set "image.digest=" \
+            --set siteImport.source.type=s3 \
+            --set siteImport.source.url=s3://exports/good \
+            --set "siteImport.source.s3.endpoint=http://export-s3.${ns}.svc:9000" \
+            --set siteImport.source.s3.provider=Rclone \
+            --set siteImport.source.existingSecret=gerrit-export-s3 \
+            --wait --timeout 15m
+          expect_log "mode auto, source s3"
+          expect_log "downloading git.tar.zst from s3://exports/good/git.tar.zst"
+          expect_log "verified SSH host keys and gerrit.serverId"
+          expect_log "import complete"
+          if init_log | grep -F "$(kubectl get secret -n "$ns" gerrit-export-s3 \
+            -o jsonpath='{.data.AWS_SECRET_ACCESS_KEY}' | base64 -d)"; then
+            echo "::error::site-import logged the S3 secret key ❌"
+            exit 1
+          fi
+          imported_id=$(kubectl exec -n "$ns" gerrit-0 -c gerrit -- \
+            git config -f /var/gerrit/etc/gerrit.config gerrit.serverId)
+          if [ "$imported_id" != "$server_id" ]; then
+            echo "::error::serverId $imported_id is not $server_id ❌"
+            exit 1
+          fi
+          python3 "$CHART/files/scripts/verify-site.py" \
+            --namespace "$ns" --fullname gerrit \
+            --url-prefix /r --auth-type DEVELOPMENT_BECOME_ANY_ACCOUNT
+          echo "The site imported from S3 and verified ✅"
 
       # Runs on any failure, including one before the cluster exists,
       # so every command tolerates a missing cluster or tool and the
