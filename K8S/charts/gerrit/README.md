@@ -21,7 +21,7 @@ volume holds state only.
 | `Service` `<fullname>-headless`   | Governing service of the `StatefulSet`                         |
 | `Ingress` `<fullname>`            | With `ingress.enabled`; see [Exposing Gerrit](#exposing-gerrit) |
 | `IngressRoute` `<fullname>`, `Middleware`s, `Certificate` `<fullname>-tls` | Instead of the `Ingress`, with `ingress.traefik.enabled` |
-| `ConfigMap` `<fullname>-scripts`  | `files/scripts/*.sh`                                           |
+| `ConfigMap` `<fullname>-scripts`  | `files/scripts/*.sh` and the `site-import` Python modules      |
 | `ConfigMap` `<fullname>-config`   | Rendered `gerrit.config`, `jgit.config` and `notedb.config`, `replication.config` with `replication.enabled`, and `healthcheck.config` with `plugins.healthcheck.enabled` |
 | `ConfigMap` `<fullname>-hooks`    | `hooks.scripts`; with `hooks.enabled`, see [Hooks](#hooks)     |
 | `ConfigMap` `<fullname>-known-hosts` | SSH host keys of the replication remotes; with `replication.enabled`, see [Replication](#replication) |
@@ -35,7 +35,7 @@ volume holds state only.
 | `CronJob` `<fullname>-git-gc`, `NetworkPolicy` `<fullname>-git-gc-deny` | With `gc.cronJob.enabled`; see [Garbage collection](#garbage-collection) |
 | `CronJob` `<fullname>-log-cleanup`, `NetworkPolicy` `<fullname>-log-cleanup-deny` | With `logs.retentionDays` above `0`; see [Logs](#logs) |
 | `Deployment`, `ConfigMap` and `NetworkPolicy` `<fullname>-toolbox` | With `toolbox.enabled`, at zero replicas; see [Admin toolbox](#admin-toolbox) |
-| `NetworkPolicy` (two)             | Default deny; allow ingress to 8080 (from `networkPolicy.ingressNamespaceSelector` when set, and then also from `networkPolicy.metricsNamespaceSelector` with the metrics plugin) and 29418, egress to DNS, HTTPS and, with mail configured, the SMTP relay's port, with replication enabled, each remote's port, with `auth.saml.metadataUrl`, its port, and with `plugins.its-jira.enabled`, the Jira URL's port |
+| `NetworkPolicy` (two)             | Default deny; allow ingress to 8080 (from `networkPolicy.ingressNamespaceSelector` when set, and then also from `networkPolicy.metricsNamespaceSelector` with the metrics plugin) and 29418, egress to DNS, HTTPS and, with mail configured, the SMTP relay's port, with replication enabled, each remote's port, with `auth.saml.metadataUrl`, its port, with `plugins.its-jira.enabled`, the Jira URL's port, and with an `https` `siteImport.source`, its URL's port and `siteImport.source.egressPorts` |
 
 The Secrets carry `helm.sh/resource-policy: keep` and
 `argocd.argoproj.io/sync-options: Prune=false,Delete=false`, so they
@@ -80,7 +80,11 @@ empty or absent optional key leaves its entry out of `secure.config`.
 1. `volume-permissions` (only with
    `persistence.volumePermissions.enabled`) chowns anything on the site
    volume the `gerrit` user (UID 1001) does not own.
-2. `site-init` copies `gerrit.war` and `gerrit.sh` from the image,
+2. `site-import` records a fresh site, or adopts a site exported with
+   `gerrit-site-export.py`, before anything else writes to the volume;
+   see [Site import](#site-import). Once the site's state is
+   `complete` it does nothing.
+3. `site-init` copies `gerrit.war` and `gerrit.sh` from the image,
    replaces the site's plugin and library jars with those named in
    `pluginCatalogue`, plus `replication` with `replication.enabled`
    and the `saml` library with `auth.saml.enabled`, and copies the rendered `gerrit.config`, `jgit.config`,
@@ -95,9 +99,9 @@ empty or absent optional key leaves its entry out of `secure.config`.
    `hooks.enabled` it then fills the hooks directory, and with
    `hooks.g2p.enabled` installs `gerrit_to_platform.ini`; see
    [Hooks](#hooks).
-3. `render-config` rewrites `etc/secure.config` from the Secrets,
+4. `render-config` rewrites `etc/secure.config` from the Secrets,
    creating it with mode `0600` before writing any value.
-4. `gerrit` runs `bin/gerrit.sh run`. A startup probe allows ten
+5. `gerrit` runs `bin/gerrit.sh run`. A startup probe allows ten
    minutes for `<urlPrefix>/config/server/version` to answer, since
    the daemon loads its caches and indexes before it serves. The
    readiness probe then calls
@@ -250,6 +254,17 @@ Argo CD; `K8S/docs/DESIGN.md` section 6 explains its settings.
 | `logs.level`                             | `INFO`                           | Lowest log4j level of the JSON error log on stderr         |
 | `logs.retentionDays`                     | `0`                              | Days to keep rotated logs; `0` keeps them and adds no `CronJob` |
 | `logs.schedule`, `.timeZone`, `.resources` | `30 4 * * *`, `""`, `{}`       | The log cleanup `CronJob`                                  |
+| `siteImport.mode`                        | `auto`                           | `auto`, `force` or `skip`; see [Site import](#site-import) |
+| `siteImport.forceToken`                  | `""`                             | With `force`, each new token replaces the site once        |
+| `siteImport.source.type`                 | `none`                           | `none`, `pvc` or `https`                                   |
+| `siteImport.source.url`                  | `""`                             | Export directory under `/mnt/import`, or the HTTPS base URL |
+| `siteImport.source.volume`               | `{}`                             | With `pvc`, a volume source mounted read-only at `/mnt/import` |
+| `siteImport.source.existingSecret`       | `""`                             | With `https`, a Secret of per-file URLs                    |
+| `siteImport.source.egressPorts`          | `[]`                             | With `https`, ports other than 443 the Secret's URLs reach |
+| `siteImport.source.expectedManifestSha256` | `""`                           | Pins the export's `manifest.json`                          |
+| `siteImport.reindex`, `.verify`          | `true`, `true`                   | Reindex after the import; check repositories, host keys and server ID |
+| `siteImport.scratchSizeLimit`            | `""`                             | `sizeLimit` of the scratch `emptyDir`                      |
+| `siteImport.resources`                   | `{}`                             | Resources of `site-import`; `resources` when empty. Size it for the reindex |
 
 ### gerrit.config
 
@@ -320,7 +335,150 @@ rather than read an unreadable or malformed `etc/gerrit.config` as
 holding no ID. With the value set, `site-init` fails before Gerrit
 starts when the site already holds a different ID, and on a new site
 `gerrit init` takes it as the site's ID. When adopting an existing
-site, copy the ID from its `etc/gerrit.config`.
+site, copy the ID from its `etc/gerrit.config`; `site-import` refuses
+an export whose ID differs from a set `gerrit.serverId`.
+
+## Site import
+
+The `site-import` init container decides what happens to the site
+volume before `site-init` touches it, and records the result in
+`.chart/site-state.json` on the volume. `K8S/docs/DESIGN.md`
+section 1.7 holds the full design, and its section 4 the operator
+checklist for a migration.
+
+| `siteImport.mode` | Behaviour |
+| ----------------- | --------- |
+| `auto`            | Acts only while the site has no `complete` state: records a fresh site with `source.type: none`, or imports the source. With `source.type: none`, adopts a site an earlier chart version created; refuses any other volume that holds data but no state file |
+| `force`           | Replaces the site from the source once for each new `forceToken`, then behaves as `auto`. Destructive; refuses an empty token or `source.type: none` |
+| `skip`            | Does nothing; for a site the chart did not create |
+
+The state file records the `state` (`in-progress`, `failed` or
+`complete`), the `source` as `<type>:<url>`, the `manifestSha256`
+of the imported export, the `gerritVersion` of the image, the
+`forceToken` honoured, the time of the update, and the `reason` of a
+failure or the `warnings` of the import, and `adopted: true` for a
+site an earlier chart version created.
+
+### Sources
+
+The export must come from `gerrit-site-export.py final --pack`: a
+directory holding `manifest.json`, `site.tar.zst` and `git.tar.zst`.
+`site-import` checks each archive against the manifest, and
+`source.expectedManifestSha256` pins the manifest itself.
+
+- `pvc` mounts `source.volume` read-only at `/mnt/import`, and
+  `source.url` names the export directory under it:
+
+  ```yaml
+  siteImport:
+    source:
+      type: pvc
+      url: /mnt/import/final
+      volume:
+        persistentVolumeClaim:
+          claimName: gerrit-export
+  ```
+
+- `https` fetches `<source.url>/manifest.json` and the archives
+  beside it. With `source.existingSecret`, the Secret's
+  `manifest.json`, `site.tar.zst` and `git.tar.zst` keys each hold a
+  full URL, such as a pre-signed S3 URL, that wins over the base URL.
+  `site-import` never logs a URL from the Secret, and refuses any
+  request or redirect that is not HTTPS. With `networkPolicy.enabled`,
+  the `NetworkPolicy` allows egress to the port `source.url` names;
+  list any other port the Secret's URLs reach, beside 443, in
+  `source.egressPorts`:
+
+  ```yaml
+  siteImport:
+    source:
+      type: https
+      existingSecret: gerrit-export-urls
+      egressPorts: [9000]
+  ```
+
+The chart refuses other source types. It does not fetch `s3://` URLs
+or decrypt `.age` and `.gpg` archives yet; decrypt the export and
+serve it over one of these sources.
+
+The archives hold `secure.config`, the SSH host keys and every
+account. `site-import` never logs their contents, but treat the export
+volume, the bucket and any pre-signed URL as secrets, and delete them
+once the import completes, in this order:
+
+1. Set `siteImport.mode: auto` and `siteImport.source.type: none`,
+   and upgrade the release.
+2. Wait for the replacement pod to become Ready.
+3. Delete the export volume, the URL Secret and the bucket's copy.
+
+The pod mounts a configured source volume or Secret before
+`site-import` can decide there is nothing to do, so a pod that still
+names a deleted one never starts, even after a complete import.
+
+### What an import runs
+
+1. Fetches and checks the export in the scratch `emptyDir`, which
+   must hold the archives and their unpacked copy; size it with
+   `siteImport.scratchSizeLimit`. It refuses links that resolve
+   outside the archive's `site/` or `git/` tree, or into `.chart/`,
+   `index/` or `cache/`, except two kinds `site-init` recreates at
+   every start, which it leaves out and logs: links in the site's
+   `hooks.path` (default `hooks`) to the gerrit-to-platform entry
+   point of the same name in `/opt/gerrit-tools/bin`, and
+   `.config/gerrit_to_platform/replication.config` when it links to
+   `/var/gerrit/etc/replication.config`. It refuses an export whose
+   `gerrit.allProjects` or `gerrit.allUsers` differs from the chart's
+   (`All-Projects` and `All-Users` by default): the chart's
+   `gerrit.config` replaces the export's, and `init` would create
+   empty repositories under the chart's names, leaving the imported
+   permissions and accounts unused. Set the export's names in
+   `gerrit.extraConfig`. With `verify`, it checks the repositories,
+   their refs, the server ID and the SSH host keys there, before the
+   site changes.
+2. Replaces the site with the unpacked copy.
+3. Runs `site-init` to install the chart's configuration, then
+   `gerrit init --batch --no-auto-start` to migrate the site to the
+   image's Gerrit, then installs the chart's configuration again.
+4. With `reindex`, runs a full `gerrit reindex`, with one thread per
+   core of the container's CPU limit, or Gerrit's default without one.
+5. With `verify`, checks again that the repositories, the exported
+   host keys and the server ID survived.
+
+`init` and `reindex` get the heap the Gerrit container gets:
+`container.heapLimit` when set, else 70% of the memory limit of
+`siteImport.resources`, or of `resources` when that is empty. The
+offline reindex is the most memory-hungry step of a migration, so size
+`siteImport.resources` for it: a large site needs several GB.
+
+With SAML enabled, `site-import` also refuses an export whose
+keystore differs from the Secret's, before the site changes; see
+[Importing a site that uses SAML](#importing-a-site-that-uses-saml).
+
+`site-import` then logs a migration report: projects that leave
+`receive.rejectImplicitMerges` unset, `commentlink` sections with
+`html`, `rules.pl` files, `auth.cookieSecure`, `secure.config` names
+the chart does not write and so drops, and a reminder that a new
+`registerEmailPrivateKey` invalidates outstanding email verification
+links. Read it with `kubectl logs <fullname>-0 -c site-import`.
+
+### Recovery
+
+Any failure records `failed` with its `reason` and stops the pod
+before Gerrit starts. Each restart retries the import, so fix the
+source or the archive and delete the pod. `source.type: none` after a
+failed import refuses rather than start an empty site; set `force` with
+a new `forceToken` to replace a site, or `skip` to keep it as it
+stands.
+
+A site created by chart `0.6.0` or `0.6.1` has no state file. With
+`mode: auto` and `source.type: none`, the defaults, `site-import`
+adopts it when `etc/gerrit.config` exists and the `All-Projects`
+repository it names exists in the git store: it records `complete`
+with `manifestSha256: null` and `adopted: true`, and logs that it
+adopted the site, so upgrading the chart keeps the release running.
+Any other data on a volume with no state file stops the pod; repair
+the volume, force an import over it, or set `siteImport.mode: skip`
+to keep it as it stands.
 
 ## Exposing Gerrit
 
@@ -833,7 +991,14 @@ When an existing site is imported, its keystore and service provider
 metadata come from the source site and must not be regenerated: the
 identity provider trusts the source's key, and a new keystore breaks
 every login until the identity provider is updated. Fill the Secret
-with the source's keystore and passwords before the first start.
+with the source's keystore and passwords before the first start;
+`site-import` refuses an export whose keystore differs from the
+Secret's. It compares the keystore the export's `saml.keystorePath`
+names, `etc/samlKeystore.jks` when unset, relative to the site or
+absolute within the exported site directory or `/var/gerrit`. It
+refuses a path outside the site, and a path other than
+`etc/samlKeystore.jks` that names no file in the export, since it
+cannot then tell whether the Secret keeps the site's identity.
 
 ## Hooks
 

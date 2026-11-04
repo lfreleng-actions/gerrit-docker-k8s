@@ -85,6 +85,14 @@ spec:
         - protocol: TCP
           port: {{ int . }}
     {{- end }}
+    {{- with include "gerrit.siteImportEgressPorts" . | fromJsonArray }}
+    # The https source site-import fetches the export from
+    - ports:
+        {{- range . }}
+        - protocol: TCP
+          port: {{ int . }}
+        {{- end }}
+    {{- end }}
     {{- with include "gerrit.itsJiraEgressPort" . }}
     # The Jira API of plugins.its-jira.url
     - ports:

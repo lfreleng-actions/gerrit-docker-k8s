@@ -8,8 +8,10 @@
 # healthcheck.config with the files the chart rendered, refreshes the
 # binaries and enabled plugins from the image, and installs the hooks
 # and gerrit-to-platform configuration; the first boot also runs
-# "gerrit init" on the rendered configuration. The volume is mounted
-# at GERRIT_SITE so the image's /var/gerrit stays visible.
+# "gerrit init" on the rendered configuration. With
+# GERRIT_SITE_PREPARE_ONLY set it stops after the binaries, jars and
+# configuration, for site-import. The volume is mounted at GERRIT_SITE
+# so the image's /var/gerrit stays visible.
 
 set -eu
 
@@ -119,6 +121,14 @@ install_config() {
 }
 
 install_config
+
+# site-import runs this far on an imported site before its own
+# "gerrit init", so init and reindex load the image's jars and the
+# configuration the site will run with
+if [ -n "${GERRIT_SITE_PREPARE_ONLY:-}" ]; then
+  echo "Prepared the Gerrit site in $site"
+  exit 0
+fi
 
 # A site without its All-Projects repository, named by
 # gerrit.allProjects, has never been initialised. Init runs on the

@@ -12,6 +12,7 @@ metadata:
     {{- include "gerrit.labels" . | nindent 4 }}
 data:
   {{- (.Files.Glob "files/scripts/*.sh").AsConfig | nindent 2 }}
+  {{- (.Files.Glob "files/scripts/site?import*.py").AsConfig | nindent 2 }}
 ---
 # etc/gerrit.config, jgit.config, notedb.config, log4j.properties and,
 # with replication enabled, replication.config, with its-jira enabled,

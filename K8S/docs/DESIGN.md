@@ -288,21 +288,33 @@ at a time (section 1.1).
 
 `siteImport.source.type` selects where the archive comes from, or
 `none` for a site that starts fresh. The archive's credentials come
-from a Secret (section 5).
+from a Secret (section 5). The chart takes the `--pack` export of
+section 3 from two sources: `pvc`, an export directory on a volume
+mounted read-only at `/mnt/import`, and `https`, a base URL or, from
+the Secret, one URL per file, such as a pre-signed object-store URL.
+Fetching `s3://` URLs with object-store keys and decrypting `.age` or
+`.gpg` archives are still to come (section 7); until then the chart
+refuses them.
 
 **State file.** `site-import` records its state in
 `<site>/.chart/site-state.json` on the volume, and writes it
 atomically: it writes a temporary file in the same directory and
 renames it over the old one, so a reader sees the old state or the
-new, never a torn file. #240 defines the full schema; this record
-relies on these fields:
+new, never a torn file. Its fields, with `schema: 1`:
 
 - `state`: `in-progress`, `complete` or `failed`;
 - `manifestSha256`: the SHA-256 of the imported archive's
   `manifest.json`, or `null` for a site that started fresh with
   `siteImport.source.type: none`, which is a valid completed state;
 - `forceToken`: the `siteImport.forceToken` value of the run that
-  wrote the state.
+  wrote the state;
+- `source`: `none`, or the source type and URL as `<type>:<url>`;
+- `gerritVersion`: the version of the image's `gerrit.war`;
+- `updated`: when the state was written, in UTC;
+- `reason` on `failed`, and `warnings`, the migration report, on
+  `complete`;
+- `adopted: true` on a site an earlier chart version created, which
+  `site-import` recorded as `complete` without importing it.
 
 **Writes in order.** Before it changes anything on the volume,
 `site-import` writes `in-progress`. It fetches, unpacks and checks
@@ -335,13 +347,21 @@ applies to a new token, as described below:
 
 | Mode    | No state file                                                               | `complete`                 | `in-progress` or `failed`                  |
 | ------- | --------------------------------------------------------------------------- | -------------------------- | ------------------------------------------ |
-| `auto`  | Import, or with `none` record a fresh site; fail if the volume holds a site | Do nothing                 | Retry the import from a clean scratch area |
+| `auto`  | Import, or with `none` record a fresh site or adopt a chart-created one; fail if the volume holds another site | Do nothing | Retry the import from a clean scratch area |
 | `force` | Import, replacing everything on the volume but `.chart/`                    | Import, replacing the site | Import, replacing the site                 |
 | `skip`  | Do nothing                                                                  | Do nothing                 | Do nothing                                 |
 
 `auto` fails closed on a volume that holds a site no state file
 accounts for, since the chart did not put that data there; an operator
-decides, by repairing the volume or by forcing an import. An
+decides, by repairing the volume or by forcing an import. One case is
+the chart's own: every release installed from chart `0.6.0` or `0.6.1`
+holds a site with no state file. With `auto` and source `none`, a
+volume whose `etc/gerrit.config` exists and whose git store, at the
+chart's `gerrit.basePath`, holds the `All-Projects` repository that
+file names is such a site, and `site-import` adopts it: it writes
+`complete` with `manifestSha256: null` and `adopted: true`, logs it and
+lets the start continue, so a chart upgrade does not stop the
+release. Any other unaccounted content still fails closed. An
 `in-progress` or `failed` state is one `site-import` wrote itself, so
 `auto` retries that import on every pod start, from a clean scratch
 area, until it writes `complete`. Until then Gerrit stays blocked: each
@@ -360,7 +380,45 @@ Gerrit pod's own init sequence, Gerrit is never running while it does.
 
 With `siteImport.source.type: none` and an empty volume, `site-import`
 writes `complete` with `manifestSha256: null`, and `site-init` then
-initialises the site.
+initialises the site. With `none` and an `in-progress` or `failed`
+state there is nothing to retry from, so `site-import` refuses rather
+than start an empty site over a failed import.
+
+**Import steps.** With the checksums matching the manifest and, when
+set, `siteImport.source.expectedManifestSha256` matching the manifest
+itself, `site-import` unpacks the archives in the scratch area. It
+refuses an archive with a symlink or hard link that resolves outside
+its own `site/` or `git/` tree, or into a path it never imports such
+as `.chart/`, and checks every symlink again once all are in place,
+so no link can lead a later write to the state file or off the
+volume. It leaves out, and logs, the two absolute links `site-init`
+recreates at every start: a link in the site's `hooks.path` to the
+gerrit-to-platform entry point of the same name in
+`/opt/gerrit-tools/bin`, and `.config/gerrit_to_platform/replication.config`
+linking to `/var/gerrit/etc/replication.config`; it refuses any other
+absolute link. With
+`siteImport.verify` it checks the unpacked copy there, before the site
+volume changes: the repositories are those the manifest lists, each
+with its ref count and `refs/meta/config` head, and the SSH host keys
+hash to the manifest's fingerprints. A `gerrit.serverId` that differs
+from a set value always fails the import, as does a `gerrit.allProjects`
+or `gerrit.allUsers` that differs from the chart's: the chart's
+`gerrit.config` replaces the archive's, so `init` would create empty
+repositories under the chart's names. With SAML enabled, the keystore
+the archive's `saml.keystorePath` names must match the Secret's
+(section 4); a path outside the site, or one other than
+`etc/samlKeystore.jks` naming no file in the archive, fails the
+import. It then moves the
+copy onto the volume, runs `site-init` in a prepare mode that installs
+the chart's configuration and returns, runs
+`gerrit init --batch --no-auto-start` and the prepare mode again, and
+with `siteImport.reindex` runs a full `gerrit reindex`, with
+`--threads` set from the container's CPU limit when it has one. Both
+get the Gerrit container's heap: `container.heapLimit`, else 70% of
+the container's memory limit. `init` may migrate
+NoteDb and rewrite `refs/meta/config`, so after it `verify` checks
+only that the repositories, the exported host keys and the server ID
+survived.
 
 ### 1.8 Backup and maintenance CronJobs
 
@@ -436,11 +494,15 @@ the chart allows TCP egress to the port that URL names, or to 80 for
 `http://`; an `https://` URL on the default port needs no rule beyond
 TCP 443. So is the Jira rule: with `plugins.its-jira.enabled`, the
 chart allows TCP egress to the port of `plugins.its-jira.url`, with
-the same defaults.
+the same defaults. So is the site import rule: with
+`siteImport.source.type: https`, the chart allows TCP egress to the
+port of `siteImport.source.url` and to each port in
+`siteImport.source.egressPorts`, which covers the URLs a Secret holds.
 
 | Feature | Egress | Rendered when |
 | ------- | ------ | ------------- |
 | Site import and backup from an object store | HTTPS, TCP 443 | `siteImport` or `backup` reads or writes an object store |
+| Site import over HTTPS | The port of `siteImport.source.url`, and `siteImport.source.egressPorts`; TCP 443 for an `https` URL on the default port | `siteImport.source.type: https` |
 | SAML identity provider metadata | The port of `auth.saml.metadataUrl`; TCP 443 for an `https` URL on the default port | `auth.saml.metadataUrl` is set (#235) |
 | Jira issue tracker | The port of `plugins.its-jira.url`; TCP 443 for an `https` URL on the default port | `plugins.its-jira.enabled` |
 | Mail | The SMTP relay's port | Mail is configured |
@@ -649,7 +711,7 @@ sources belong to the deployment, not this document.
 | `secrets.secureConfig.existingSecret` | `registerEmailPrivateKey`, and optionally `smtpPass` | `render-config` | Generated as `<fullname>-secure-config` when empty, with an empty `smtpPass` the operator fills in. Passed as `GERRIT_REGISTER_EMAIL_PRIVATE_KEY` and `GERRIT_SMTP_PASS` and written to `auth.registerEmailPrivateKey` and, when not empty, `sendemail.smtpPass` in `etc/secure.config`. Each later `secure.config` entry adds one key here and one environment variable. |
 | `auth.saml.existingSecret` | `samlKeystore.jks`, `keystore-password`, `private-key-password`, and optionally `idp-metadata.xml` | Gerrit pod, `render-config` | As #235 specifies. Generated as `<fullname>-saml` when empty, with every key empty for the operator to fill in. The keystore, and with `auth.saml.metadataFromSecret` the IdP metadata, are mounted read-only into `etc/` as `samlKeystore.jks` and `saml-idp-metadata.xml`; the two passwords are passed as `GERRIT_SAML_KEYSTORE_PASSWORD` and `GERRIT_SAML_PRIVATE_KEY_PASSWORD` and written to `saml.keystorePassword` and `saml.privateKeyPassword` in `etc/secure.config`, never into values. The service provider metadata the module writes stays in `data/saml/` on the volume. To adopt a site that already uses SAML, the operator fills this Secret with the source's keystore, so the service provider keeps the key the identity provider trusts; a new keystore breaks every login until the identity provider is updated. |
 | `replication.sshKeySecret` | `id_ed25519` (or `id_rsa`), and optionally `known_hosts` | Gerrit pod | SSH identity for the replication remotes, and their pinned host keys. Projected with mode `0400` into `/var/gerrit/.ssh`, beside the chart's `known_hosts2` of GitHub's published host keys and `replication.knownHosts`. |
-| `siteImport.source.existingSecret` | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and `age-identity` or `gpg-private-key` | `site-import` | Reads and decrypts the archive. The object-store keys are optional where the platform supplies workload identity. |
+| `siteImport.source.existingSecret` | `manifest.json`, `site.tar.zst`, `git.tar.zst` | `site-import` | With `source.type: https`, each key holds the full URL of that file, such as a pre-signed object-store URL, and wins over `<source.url>/<name>`. `site-import` passes the URLs to `curl` on standard input and never logs them. Object-store keys and `age-identity` or `gpg-private-key`, for `s3://` sources and encrypted archives, are still to come (section 7). |
 | `backup.existingSecret` | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | Backup CronJob | The encryption recipient is public and lives in values. Optional where the platform supplies workload identity. |
 | `hooks.g2p.existingSecret` | `gerrit_to_platform.ini` | `site-init` | Generated as `<fullname>-g2p` when empty, with the key empty for the operator to fill in. Mounted with mode `0400` into `site-init`, which installs it with mode `0600` as `.config/gerrit_to_platform/gerrit_to_platform.ini` on the site, where the hooks gerrit-to-platform runs read it through `XDG_CONFIG_HOME`. |
 | `plugins.its-jira.existingSecret` | `username`, `password` | `render-config` | Generated as `<fullname>-its-jira` when empty, with both keys empty for the operator to fill in. Passed as `GERRIT_ITS_JIRA_USERNAME` and `GERRIT_ITS_JIRA_PASSWORD` and written, when not empty, to `its-jira.username` and `its-jira.password` in `etc/secure.config`. The password may be a Jira API token. |
@@ -742,7 +804,9 @@ reference; each updates the section it changes.
   the Ingress controller namespace (sections 1.5, 1.6 and 1.10).
 - #239: the export tool (merged); section 3 describes its output.
 - #240: the `site-import` init container and its state file
-  (section 1.7).
+  (section 1.7), from a volume or HTTPS. Fetching from `s3://` with
+  object-store keys and decrypting `.age` or `.gpg` archives remain
+  open.
 - #242: the backup CronJob and its `backup` manifests (sections 1.8
   and 3).
 - #256: the export tool leaving out `.chart/` (sections 1.7 and 3.1).

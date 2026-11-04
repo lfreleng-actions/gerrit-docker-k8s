@@ -583,7 +583,7 @@ jobs:
     runs-on: 'ubuntu-latest'
     permissions:
       contents: read
-    timeout-minutes: 45
+    timeout-minutes: 60
     env:
       CHART: K8S/charts/gerrit
       SMOKE_IMAGE: gerrit-local
@@ -949,6 +949,157 @@ jobs:
             exit 1
           fi
           echo "The git gc Job packed $before loose objects ✅"
+
+      # Exports the smoke site with the image's export tool, then
+      # replaces the release with one whose site-import init container
+      # adopts it: a corrupt archive must fail and a good one recover,
+      # the import must verify, a restart must do nothing, and a new
+      # forceToken must import once more
+      - name: 'Import the site into a new release'
+        shell: bash
+        run: |
+          # Import the site into a new release
+          set -euo pipefail
+          ns="$SMOKE_NAMESPACE"
+          image="${SMOKE_IMAGE}:${SMOKE_TAG}"
+          init_log() {
+            kubectl logs -n "$ns" gerrit-0 -c site-import
+          }
+          expect_log() {
+            if ! init_log | grep -F -- "$1"; then
+              init_log || true
+              echo "::error::site-import did not log: $1 ❌"
+              exit 1
+            fi
+          }
+          # Deleting waits for the old pod to go, not for the StatefulSet
+          # to create its replacement, so wait for a new UID first
+          restart() {
+            local old new=""
+            old=$(kubectl get pod -n "$ns" gerrit-0 -o jsonpath='{.metadata.uid}')
+            kubectl delete pod -n "$ns" gerrit-0 --wait
+            for _ in $(seq 60); do
+              new=$(kubectl get pod -n "$ns" gerrit-0 --ignore-not-found \
+                -o jsonpath='{.metadata.uid}')
+              if [ -n "$new" ] && [ "$new" != "$old" ]; then
+                break
+              fi
+              sleep 2
+            done
+            kubectl wait -n "$ns" pod/gerrit-0 --for=condition=Ready \
+              --timeout=15m
+          }
+          # The gc step's upgrade restarted the pod: the fresh install's
+          # complete state makes site-import do nothing
+          expect_log "mode auto, source none, state complete: nothing"
+          server_id=$(kubectl exec -n "$ns" gerrit-0 -c gerrit -- \
+            git config -f /var/gerrit/etc/gerrit.config gerrit.serverId)
+          kubectl scale statefulset -n "$ns" gerrit --replicas=0
+          kubectl wait -n "$ns" pod/gerrit-0 --for=delete --timeout=5m
+          kubectl apply -n "$ns" -f - <<EOF
+          apiVersion: v1
+          kind: PersistentVolumeClaim
+          metadata:
+            name: gerrit-export
+          spec:
+            accessModes: [ReadWriteOnce]
+            resources:
+              requests:
+                storage: 1Gi
+          ---
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: site-export
+          spec:
+            restartPolicy: Never
+            securityContext:
+              runAsUser: 1001
+              runAsGroup: 1001
+              fsGroup: 1001
+            containers:
+              - name: export
+                image: ${image}
+                imagePullPolicy: Never
+                # A good export, and a copy with a corrupt git.tar.zst
+                command:
+                  - sh
+                  - -ec
+                  - >-
+                    python3 /opt/gerrit-site-export/gerrit-site-export.py
+                    final --pack --i-stopped-writes
+                    --site /site --out /export/good;
+                    cp -R /export/good /export/corrupt;
+                    printf corrupt >> /export/corrupt/git.tar.zst
+                volumeMounts:
+                  - {name: site, mountPath: /site, readOnly: true}
+                  - {name: export, mountPath: /export}
+            volumes:
+              - name: site
+                persistentVolumeClaim: {claimName: site-gerrit-0}
+              - name: export
+                persistentVolumeClaim: {claimName: gerrit-export}
+          EOF
+          kubectl wait -n "$ns" pod/site-export \
+            --for=jsonpath='{.status.phase}'=Succeeded --timeout=10m
+          kubectl logs -n "$ns" site-export
+          kubectl delete pod -n "$ns" site-export --wait
+          helm uninstall gerrit --namespace "$ns" --wait
+          kubectl delete pvc -n "$ns" site-gerrit-0 --wait
+          helm install gerrit "$CHART" \
+            --namespace "$ns" \
+            -f "$CHART/values-local-smoke.yaml" \
+            --set "image.repository=${SMOKE_IMAGE}" \
+            --set "image.tag=${SMOKE_TAG}" \
+            --set "image.digest=" \
+            --set siteImport.source.type=pvc \
+            --set siteImport.source.url=/mnt/import/corrupt \
+            --set-json \
+              'siteImport.source.volume={"persistentVolumeClaim":{"claimName":"gerrit-export"}}'
+          # The corrupt archive must fail site-import and hold Gerrit back
+          exit_code='{.status.initContainerStatuses[?(@.name=="site-import")].lastState.terminated.exitCode}'
+          code=""
+          for _ in $(seq 120); do
+            code=$(kubectl get pod -n "$ns" gerrit-0 --ignore-not-found \
+              -o "jsonpath=$exit_code" || true)
+            if [ -n "$code" ]; then
+              break
+            fi
+            sleep 5
+          done
+          if [ "${code:-0}" = 0 ]; then
+            echo "::error::site-import did not fail on a corrupt archive ❌"
+            exit 1
+          fi
+          kubectl logs -n "$ns" gerrit-0 -c site-import --previous \
+            | grep -F "git.tar.zst has sha256"
+          # A StatefulSet does not replace a pod stuck in its init
+          # containers, so the redeploy deletes it
+          helm upgrade gerrit "$CHART" --namespace "$ns" --reuse-values \
+            --set siteImport.source.url=/mnt/import/good
+          restart
+          expect_log "mode auto, source pvc, state failed: import"
+          expect_log "verified SSH host keys and gerrit.serverId"
+          expect_log "import complete"
+          imported_id=$(kubectl exec -n "$ns" gerrit-0 -c gerrit -- \
+            git config -f /var/gerrit/etc/gerrit.config gerrit.serverId)
+          if [ "$imported_id" != "$server_id" ]; then
+            echo "::error::serverId $imported_id is not $server_id ❌"
+            exit 1
+          fi
+          python3 "$CHART/files/scripts/verify-site.py" \
+            --namespace "$ns" --fullname gerrit \
+            --url-prefix /r --auth-type DEVELOPMENT_BECOME_ANY_ACCOUNT
+          restart
+          expect_log "state complete: nothing"
+          helm upgrade gerrit "$CHART" --namespace "$ns" --reuse-values \
+            --set siteImport.mode=force --set siteImport.forceToken=1 \
+            --wait --timeout 15m
+          expect_log "mode force, source pvc, state complete: import"
+          expect_log "import complete"
+          restart
+          expect_log "mode force, source pvc, state complete: nothing"
+          echo "The site import verified, and ran once per token ✅"
 
       # Runs on any failure, including one before the cluster exists,
       # so every command tolerates a missing cluster or tool and the
