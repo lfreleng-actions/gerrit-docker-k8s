@@ -82,6 +82,18 @@ def test_default_is_a_fresh_site_in_auto_mode(tmp_path: Path) -> None:
     assert "SITE_IMPORT_SAML_KEYSTORE" not in env
 
 
+@pytest.mark.xfail(strict=True, reason="the chart has no allowUnknownSourceVersion")
+@pytest.mark.parametrize(("allow", "expected"), [(None, "false"), (True, "true")])
+def test_allow_unknown_source_version(
+    tmp_path: Path, allow: bool | None, expected: str
+) -> None:
+    values = (
+        {} if allow is None else {"siteImport": {"allowUnknownSourceVersion": allow}}
+    )
+    env = env_of(importer(render(tmp_path, values)))
+    assert env["SITE_IMPORT_ALLOW_UNKNOWN_SOURCE_VERSION"] == expected
+
+
 def test_shares_the_prepare_environment_with_site_init(tmp_path: Path) -> None:
     docs = render(tmp_path)
     init = next(c for c in pod_spec(docs)["initContainers"] if c["name"] == "site-init")

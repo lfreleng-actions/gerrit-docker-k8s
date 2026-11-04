@@ -453,6 +453,48 @@ def test_manifest_pin(tmp_path: Path) -> None:
         module.load_manifest(path, "f" * 64)
 
 
+@pytest.mark.xfail(strict=True, reason="site-import has no version floor yet")
+@pytest.mark.parametrize("version", ["3.7.0", "v3.8.1", "3.10.0-rc1", "3.13"])
+def test_source_version_at_or_above_the_floor(version: str) -> None:
+    archive = load_archive()
+    archive.check_source_version({"gerrit_version": version}, allow_unknown=False)
+
+
+@pytest.mark.xfail(strict=True, reason="site-import has no version floor yet")
+@pytest.mark.parametrize(
+    ("version", "allow", "message"),
+    [
+        ("3.6.8", False, "Gerrit 3.6.8, older than 3.7.0"),
+        ("3.6.8", True, "Gerrit 3.6.8, older than 3.7.0"),
+        ("2.16.28", False, "Gerrit 2.16.28, older than 3.7.0"),
+        (None, False, "allowUnknownSourceVersion"),
+        ("", False, "allowUnknownSourceVersion"),
+        ("unknown", False, "allowUnknownSourceVersion"),
+    ],
+)
+def test_source_version_is_refused(
+    version: str | None, allow: bool, message: str
+) -> None:
+    archive = load_archive()
+    with pytest.raises(archive.SiteImportError, match=message):
+        archive.check_source_version({"gerrit_version": version}, allow_unknown=allow)
+
+
+@pytest.mark.xfail(strict=True, reason="site-import has no version floor yet")
+@pytest.mark.parametrize("version", [None, "", "unknown"])
+def test_unknown_source_version_can_be_allowed(version: str | None) -> None:
+    archive = load_archive()
+    archive.check_source_version({"gerrit_version": version}, allow_unknown=True)
+
+
+@pytest.mark.xfail(strict=True, reason="site-import has no version floor yet")
+def test_allow_unknown_source_version_setting(pod: dict[str, Any]) -> None:
+    module = load()
+    assert module.Settings.from_env(pod["env"]).allow_unknown_version is False
+    env = {**pod["env"], "SITE_IMPORT_ALLOW_UNKNOWN_SOURCE_VERSION": "true"}
+    assert module.Settings.from_env(env).allow_unknown_version is True
+
+
 def tar_zst(path: Path, members: dict[str, bytes]) -> Path:
     buffer = io.BytesIO()
     with tarfile.open(fileobj=buffer, mode="w") as tar:
@@ -1130,6 +1172,47 @@ def test_pin_mismatch_fails(
     _, code = run_main(import_env(pod, export, **extra), monkeypatch)
     assert code == 1
     assert message in state(pod["site"])["reason"]
+
+
+@needs_tools
+@pytest.mark.xfail(strict=True, reason="site-import has no version floor yet")
+def test_export_older_than_the_floor_fails_before_the_site_changes(
+    pod: dict[str, Any],
+    source: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_war(source / "bin" / "gerrit.war", "3.6.8")
+    export = export_site(source, tmp_path / "export")
+    env = import_env(pod, export, SITE_IMPORT_ALLOW_UNKNOWN_SOURCE_VERSION="true")
+    _, code = run_main(env, monkeypatch)
+    assert code == 1
+    recorded = state(pod["site"])
+    assert recorded["state"] == "failed"
+    assert "Gerrit 3.6.8, older than 3.7.0" in recorded["reason"]
+    assert sorted(p.name for p in pod["site"].iterdir()) == [".chart"]
+    assert java_runs(pod) == []
+
+
+@needs_tools
+@pytest.mark.xfail(strict=True, reason="site-import has no version floor yet")
+def test_export_without_a_version_needs_the_opt_out(
+    pod: dict[str, Any],
+    source: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (source / "bin" / "gerrit.war").unlink()
+    export = export_site(source, tmp_path / "export")
+    _, code = run_main(import_env(pod, export), monkeypatch)
+    assert code == 1
+    assert "allowUnknownSourceVersion" in state(pod["site"])["reason"]
+    assert sorted(p.name for p in pod["site"].iterdir()) == [".chart"]
+
+    env = import_env(pod, export, SITE_IMPORT_ALLOW_UNKNOWN_SOURCE_VERSION="true")
+    _, code = run_main(env, monkeypatch)
+    assert code == 0
+    assert state(pod["site"])["state"] == "complete"
 
 
 @needs_tools
