@@ -20,10 +20,6 @@ from chart.test_replication import egress_ports, find, pod_spec, render, run_hel
 
 pytestmark = pytest.mark.skipif(shutil.which("helm") is None, reason="needs helm")
 
-XFAIL = pytest.mark.xfail(strict=True, reason="the chart has no s3 source yet")
-XFAIL_ACCOUNT = pytest.mark.xfail(
-    strict=True, reason="the chart has no ServiceAccount yet"
-)
 
 PVC_SOURCE: dict[str, Any] = {
     "type": "pvc",
@@ -123,6 +119,7 @@ def test_scripts_configmap_carries_the_importer(tmp_path: Path) -> None:
         "site-import.py",
         "site_import_archive.py",
         "site_import_common.py",
+        "site_import_s3.py",
         "site_import_unpack.py",
     ):
         assert name in scripts["data"]
@@ -253,59 +250,49 @@ def test_secure_keys_follow_the_features(tmp_path: Path) -> None:
     ("values", "message"),
     [
         ({"mode": "always"}, "siteImport.mode must be auto, force or skip"),
-        pytest.param(
+        (
             {"source": {"type": "s3"}},
             "siteImport.source.type s3 needs siteImport.source.url s3://",
-            marks=XFAIL,
         ),
-        pytest.param(
+        (
             {"source": {"type": "s3", "url": "https://bucket/x"}},
             "siteImport.source.type s3 needs siteImport.source.url s3://",
-            marks=XFAIL,
         ),
-        pytest.param(
+        (
             {"source": {"type": "s3", "url": "s3://"}},
             "siteImport.source.type s3 needs siteImport.source.url s3://",
-            marks=XFAIL,
         ),
-        pytest.param(
+        (
             {"source": {**S3_SOURCE, "s3": {"endpoint": "store.example:9000"}}},
             "siteImport.source.s3.endpoint must be an http:// or https:// URL",
-            marks=XFAIL,
         ),
-        pytest.param(
+        (
             {"source": {**S3_SOURCE, "s3": {"endpoint": "http://"}}},
             "siteImport.source.s3.endpoint must be an http:// or https:// URL",
-            marks=XFAIL,
         ),
-        pytest.param(
+        (
             {"source": {**S3_SOURCE, "s3": {"endpoint": "https://store.example/s3"}}},
             "siteImport.source.s3.endpoint must be an http:// or https:// URL",
-            marks=XFAIL,
         ),
-        pytest.param(
+        (
             {"source": {**S3_SOURCE, "s3": {"endpoint": "https://store.example?x=1"}}},
             "siteImport.source.s3.endpoint must be an http:// or https:// URL",
-            marks=XFAIL,
         ),
-        pytest.param(
+        (
             {"source": {**S3_SOURCE, "s3": {"endpoint": "https://key@store.example"}}},
             "siteImport.source.s3.endpoint must be an http:// or https:// URL",
-            marks=XFAIL,
         ),
-        pytest.param(
+        (
             {"source": {**S3_SOURCE, "s3": {"endpoint": "https://s3.example:99999"}}},
             "siteImport.source.s3.endpoint must be an http:// or https:// URL",
-            marks=XFAIL,
         ),
-        pytest.param(
+        (
             {"source": {**S3_SOURCE, "s3": {"provider": ""}}},
             "siteImport.source.s3.provider must name an rclone S3 provider",
-            marks=XFAIL,
         ),
         (
             {"source": {"type": "ftp"}},
-            "siteImport.source.type must be none, pvc or https",
+            "siteImport.source.type must be none, pvc, https or s3",
         ),
         (
             {"source": {"type": "pvc", "url": "/mnt/import"}},
@@ -341,7 +328,6 @@ def s3_env(docs: list[Any]) -> dict[str, Any]:
     return {e["name"]: e for e in importer(docs)["env"]}
 
 
-@XFAIL
 def test_s3_source_reaches_the_container(tmp_path: Path) -> None:
     docs = render(tmp_path, import_values(**S3_SOURCE))
     env = env_of(importer(docs))
@@ -358,7 +344,6 @@ def test_s3_source_reaches_the_container(tmp_path: Path) -> None:
     assert "import-urls" not in volumes(docs)
 
 
-@XFAIL
 def test_s3_options_reach_the_container(tmp_path: Path) -> None:
     s3 = {"endpoint": "https://store.example", "region": "eu-west-1"}
     values = import_values(**S3_SOURCE, s3={**s3, "provider": "Minio"})
@@ -368,7 +353,6 @@ def test_s3_options_reach_the_container(tmp_path: Path) -> None:
     assert env["SITE_IMPORT_S3_PROVIDER"] == "Minio"
 
 
-@XFAIL
 def test_s3_keys_come_from_the_secret(tmp_path: Path) -> None:
     docs = render(tmp_path, import_values(**S3_SOURCE, existingSecret="s3-keys"))
     env = s3_env(docs)
@@ -384,7 +368,6 @@ def test_s3_keys_come_from_the_secret(tmp_path: Path) -> None:
     assert "AWS_SECRET_ACCESS_KEY" not in {e["name"] for e in gerrit["env"]}
 
 
-@XFAIL
 @pytest.mark.parametrize(
     ("endpoint", "ports"),
     [
@@ -417,7 +400,6 @@ def test_no_service_account_by_default(tmp_path: Path) -> None:
     assert spec["automountServiceAccountToken"] is False
 
 
-@XFAIL_ACCOUNT
 def test_created_service_account_carries_the_annotations(tmp_path: Path) -> None:
     role = "arn:aws:iam::111122223333:role/gerrit-import"
     values = {
@@ -438,7 +420,6 @@ def test_created_service_account_carries_the_annotations(tmp_path: Path) -> None
     assert spec["automountServiceAccountToken"] is False
 
 
-@XFAIL_ACCOUNT
 @pytest.mark.parametrize(
     ("account", "rendered", "name"),
     [

@@ -1048,18 +1048,15 @@ site-import reports an imported name missing from this list */}}
 
 {{/* Checks siteImport and prints its source type. The mode and token
 are checked again by site-import, which refuses before it changes the
-volume; s3 and encrypted archives are not supported yet. */}}
+volume; encrypted archives are not supported yet. */}}
 {{- define "gerrit.siteImportSource" -}}
 {{- $si := .Values.siteImport -}}
 {{- if not (has $si.mode (list "auto" "force" "skip")) -}}
 {{- fail (printf "siteImport.mode must be auto, force or skip, not %q" (toString $si.mode)) -}}
 {{- end -}}
 {{- $type := $si.source.type -}}
-{{- if eq $type "s3" -}}
-{{- fail "siteImport.source.type s3 is not supported yet; use https with pre-signed URLs in siteImport.source.existingSecret, or pvc" -}}
-{{- end -}}
-{{- if not (has $type (list "none" "pvc" "https")) -}}
-{{- fail (printf "siteImport.source.type must be none, pvc or https, not %q" (toString $type)) -}}
+{{- if not (has $type (list "none" "pvc" "https" "s3")) -}}
+{{- fail (printf "siteImport.source.type must be none, pvc, https or s3, not %q" (toString $type)) -}}
 {{- end -}}
 {{- if and (eq $type "pvc") (or (not $si.source.volume) (not $si.source.url)) -}}
 {{- fail "siteImport.source.type pvc needs siteImport.source.volume and a siteImport.source.url under /mnt/import" -}}
@@ -1070,14 +1067,30 @@ volume; s3 and encrypted archives are not supported yet. */}}
 {{- if and (eq $type "https") (not $si.source.url) (not $si.source.existingSecret) -}}
 {{- fail "siteImport.source.type https needs siteImport.source.url or siteImport.source.existingSecret" -}}
 {{- end -}}
+{{- if eq $type "s3" -}}
+{{- $s3 := default dict $si.source.s3 -}}
+{{- if or (not (regexMatch "^s3://[^/]+(/.*)?$" (toString $si.source.url))) (has ".." (splitList "/" (toString $si.source.url))) -}}
+{{- fail "siteImport.source.type s3 needs siteImport.source.url s3://<bucket>/<prefix>" -}}
+{{- end -}}
+{{- with $s3.endpoint -}}
+{{- $port := include "gerrit.urlPort" (toString .) | int64 -}}
+{{- if or (not (regexMatch `^(?i:https?)://([^\s/?#@:\[\]]+|\[[0-9A-Fa-f:.]+\])(:[0-9]{1,5})?$` (toString .))) (lt $port 1) (gt $port 65535) -}}
+{{- fail "siteImport.source.s3.endpoint must be an http:// or https:// URL with a host and an optional port, and no user, path, query or fragment" -}}
+{{- end -}}
+{{- end -}}
+{{- if not $s3.provider -}}
+{{- fail "siteImport.source.s3.provider must name an rclone S3 provider" -}}
+{{- end -}}
+{{- end -}}
 {{- $_ := include "gerrit.siteImportEgressPorts" . -}}
 {{- $type -}}
 {{- end -}}
 
-{{/* TCP ports an https import source reaches, other than 443, which
-the NetworkPolicy always allows, as a JSON list: the port of
-siteImport.source.url, and siteImport.source.egressPorts for URLs the
-Secret holds. Fails on an egressPorts entry that is not a port. */}}
+{{/* TCP ports an https or s3 import source reaches, other than 443,
+which the NetworkPolicy always allows, as a JSON list. https: the port
+of siteImport.source.url, and siteImport.source.egressPorts for URLs
+the Secret holds; fails on an egressPorts entry that is not a port.
+s3: the port of siteImport.source.s3.endpoint. */}}
 {{- define "gerrit.siteImportEgressPorts" -}}
 {{- $ports := list -}}
 {{- $source := .Values.siteImport.source -}}
@@ -1094,8 +1107,23 @@ Secret holds. Fails on an egressPorts entry that is not a port. */}}
 {{- $ports = append $ports (int64 .) -}}
 {{- end }}
 {{- end }}
+{{- else if eq (toString $source.type) "s3" -}}
+{{- $port := include "gerrit.urlPort" (dig "endpoint" "" (default dict $source.s3)) | int64 -}}
+{{- if and $port (ne $port 443) }}
+{{- $ports = append $ports $port -}}
+{{- end }}
 {{- end -}}
 {{- toJson (uniq $ports) -}}
+{{- end -}}
+
+{{/* The Gerrit pod's ServiceAccount: serviceAccount.name, else the
+full name when the chart creates one; "" for the namespace default */}}
+{{- define "gerrit.serviceAccountName" -}}
+{{- if .Values.serviceAccount.create -}}
+{{- default (include "gerrit.fullname" .) .Values.serviceAccount.name -}}
+{{- else -}}
+{{- .Values.serviceAccount.name -}}
+{{- end -}}
 {{- end -}}
 
 {{/* site-import's resources: siteImport.resources, else resources */}}

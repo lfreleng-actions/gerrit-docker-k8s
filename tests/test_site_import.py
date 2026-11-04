@@ -399,7 +399,7 @@ def test_settings_refuse_bad_values(pod: dict[str, Any]) -> None:
     module = load()
     for extra, message in [
         ({"SITE_IMPORT_MODE": "always"}, "siteImport.mode"),
-        ({"SITE_IMPORT_SOURCE_TYPE": "s3"}, "siteImport.source.type"),
+        ({"SITE_IMPORT_SOURCE_TYPE": "ftp"}, "siteImport.source.type"),
         ({"SITE_IMPORT_SOURCE_TYPE": "pvc"}, "needs a url"),
         ({"SITE_IMPORT_REINDEX": "maybe"}, "not a boolean"),
     ]:

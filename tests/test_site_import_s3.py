@@ -23,7 +23,6 @@ import pytest
 import test_site_import
 from test_site_import import load, needs_tools, run_main, state
 
-XFAIL = pytest.mark.xfail(strict=True, reason="site-import has no s3 source yet")
 URL = "s3://gerrit-exports/sites/final"
 SECRET = "placeholder-secret"
 
@@ -48,7 +47,6 @@ def s3_env(pod: dict[str, Any], **extra: str) -> dict[str, str]:
     }
 
 
-@XFAIL
 def test_settings_read_the_s3_options(pod: dict[str, Any]) -> None:
     module = load()
     settings = module.Settings.from_env(
@@ -69,7 +67,6 @@ def test_settings_read_the_s3_options(pod: dict[str, Any]) -> None:
     assert defaults.s3_provider == "AWS"
 
 
-@XFAIL
 @pytest.mark.parametrize(
     ("extra", "message"),
     [
@@ -101,7 +98,6 @@ def test_settings_refuse_bad_s3_values(
         module.Settings.from_env(s3_env(pod, **extra))
 
 
-@XFAIL
 @pytest.mark.parametrize(
     ("url", "path"),
     [
@@ -122,7 +118,6 @@ def test_object_paths(pod: dict[str, Any], url: str, path: str) -> None:
     )
 
 
-@XFAIL
 def test_rclone_command_holds_no_secrets(pod: dict[str, Any]) -> None:
     module = load_s3()
     settings = load().Settings.from_env(s3_env(pod))
@@ -145,7 +140,6 @@ def test_rclone_command_holds_no_secrets(pod: dict[str, Any]) -> None:
     ]
 
 
-@XFAIL
 def test_rclone_environment(pod: dict[str, Any]) -> None:
     module = load_s3()
     settings = load().Settings.from_env(
@@ -212,7 +206,6 @@ def stub_rclone(pod: dict[str, Any], export: Path, fail: str = "") -> Path:
     return log
 
 
-@XFAIL
 @needs_tools
 def test_s3_import_adopts_the_export(
     pod: dict[str, Any],
@@ -245,7 +238,6 @@ def test_s3_import_adopts_the_export(
     assert (pod["site"] / "etc" / "gerrit.config").is_file()
 
 
-@XFAIL
 @needs_tools
 @pytest.mark.parametrize(
     ("status", "message"),
@@ -271,7 +263,6 @@ def test_s3_failure_names_the_object(
     assert not (pod["site"] / "etc").exists()
 
 
-@XFAIL
 @needs_tools
 def test_s3_fetch_that_writes_nothing_fails(
     pod: dict[str, Any], export: Path, monkeypatch: pytest.MonkeyPatch

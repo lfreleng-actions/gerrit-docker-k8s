@@ -86,7 +86,7 @@ spec:
           port: {{ int . }}
     {{- end }}
     {{- with include "gerrit.siteImportEgressPorts" . | fromJsonArray }}
-    # The https source site-import fetches the export from
+    # The https or s3 source site-import fetches the export from
     - ports:
         {{- range . }}
         - protocol: TCP
