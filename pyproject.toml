@@ -7,7 +7,7 @@ version = "0.1.0"
 description = "GitHub Action for Gerrit CI/CD pipelines"
 readme = "README.md"
 license = {text = "Apache-2.0"}
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 authors = [
     {name = "The Linux Foundation", email = "releng@linuxfoundation.org"}
 ]
@@ -16,9 +16,11 @@ classifiers = [
     "Intended Audience :: Developers",
     "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
     "Topic :: Software Development :: Build Tools",
     "Topic :: Software Development :: Version Control :: Git",
 ]
@@ -92,7 +94,7 @@ show_missing = true
 fail_under = 70
 
 [tool.ruff]
-target-version = "py310"
+target-version = "py311"
 line-length = 88
 
 # The site export tool runs with whatever python3 an existing Gerrit
@@ -126,7 +128,7 @@ ignore = [
 known-first-party = ["gerrit_api"]
 
 [tool.mypy]
-python_version = "3.10"
+python_version = "3.11"
 # The scripts import lib modules as flat top-level names (see the
 # pytest `pythonpath` setting), so mypy needs the same search path to
 # resolve them. Without it every cross-module base class degrades to
