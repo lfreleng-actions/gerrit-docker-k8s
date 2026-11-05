@@ -86,6 +86,11 @@ def test_default_is_a_fresh_site_in_auto_mode(tmp_path: Path) -> None:
     assert "SITE_IMPORT_SAML_KEYSTORE" not in env
 
 
+def test_failure_reason_lands_in_the_pod_status(tmp_path: Path) -> None:
+    container = importer(render(tmp_path))
+    assert container["terminationMessagePolicy"] == "FallbackToLogsOnError"
+
+
 @pytest.mark.parametrize(("allow", "expected"), [(None, "false"), (True, "true")])
 def test_allow_unknown_source_version(
     tmp_path: Path, allow: bool | None, expected: str

@@ -553,7 +553,9 @@ before Gerrit starts. Each restart retries the import, so fix the
 source or the archive and delete the pod. `source.type: none` after a
 failed import refuses rather than start an empty site; set `force` with
 a new `forceToken` to replace a site, or `skip` to keep it as it
-stands.
+stands. The error also lands in the pod status, as the `site-import`
+termination message, so `kubectl describe pod <fullname>-0` shows it
+after kubelet has dropped the failed container's log.
 
 A site created by chart `0.6.0` or `0.6.1` has no state file. With
 `mode: auto` and `source.type: none`, the defaults, `site-import`
