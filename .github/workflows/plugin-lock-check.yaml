@@ -11,6 +11,10 @@
 # up to date with the findings and the --refresh command to run; when
 # every entry is current again, it closes that issue. It never pushes
 # or opens a pull request: refreshing the lock stays a reviewed change.
+#
+# A second job does the same for the rclone release Dockerfile.chart
+# pins (TOOL_RCLONE_VERSION), with its own tracking issue, while
+# rclone's latest release is newer than the pin.
 name: 'Plugin Lock Check 🔌'
 
 # yamllint disable-line rule:truthy
@@ -180,7 +184,8 @@ jobs:
               echo "Last checked by ${run_url}"
             } > "$body"
             if [[ "$label_exists" != true ]]; then
-              gh label create "$ISSUE_LABEL" --repo "$repo" \
+              # --force: the rclone release job may create it concurrently
+              gh label create "$ISSUE_LABEL" --repo "$repo" --force \
                 --description 'Pull requests that update a dependency file'
             fi
             if [[ -n "$issue" ]]; then
@@ -208,3 +213,163 @@ jobs:
           # Fail on a broken pin
           echo "::error::check-plugin-lock.sh --report exited ${RC}"
           exit 1
+
+  # Dependabot cannot track TOOL_RCLONE_VERSION, a build argument
+  # naming a GitHub release, so this job reports when rclone has
+  # released past it. .grype.yaml accepts findings in the pinned
+  # rclone binary that only an rclone release fixes; this issue is the
+  # prompt to bump the pin and re-check those rules.
+  rclone-release-check:
+    name: 'Check the rclone pin'
+    runs-on: 'ubuntu-24.04'
+    permissions:
+      contents: read  # Checkout, and read the supplemental allow-list
+      issues: write  # Open, update or close the tracking issue
+    timeout-minutes: 10
+    env:
+      ISSUE_TITLE: 'rclone: a newer release than TOOL_RCLONE_VERSION'
+      ISSUE_LABEL: 'dependencies'
+    steps:
+      # yamllint disable-line rule:line-length
+      - uses: lfreleng-actions/harden-runner-block-action@2fed66c9c36c4687c31ca349b925b81ec629673f  # v0.15.0
+        with:
+          config: '@6d4a65c5601afd6c2fbe52bda4b0024b132f265d'  # v0.19.0
+          # yamllint disable-line rule:line-length
+          supplemental_config: '${{ github.repository }}//.github/harden-runner/allow_list.txt@${{ github.sha }}'
+          supplemental_required: 'true'
+          token: ${{ github.token }}
+
+      - name: 'Harden runner (block)'
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
+        with:
+          egress-policy: 'block'
+          allowed-endpoints: >
+            ${{ env.CONNECTION_ALLOW_LIST }}
+
+      - name: 'Checkout repository'
+        # yamllint disable-line rule:line-length
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: 'Compare the pin with the latest release'
+        id: compare
+        shell: bash
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Compare the pin with the latest release
+          set -euo pipefail
+          tag='^v[0-9]+\.[0-9]+\.[0-9]+$'
+          pinned="$(sed -n 's/^ARG TOOL_RCLONE_VERSION=//p' Dockerfile.chart)"
+          if [[ ! "$pinned" =~ $tag ]]; then
+            echo "::error::No TOOL_RCLONE_VERSION release tag in" \
+              "Dockerfile.chart (found '${pinned}')"
+            exit 1
+          fi
+          latest="$(gh api repos/rclone/rclone/releases/latest \
+            --jq '.tag_name')"
+          if [[ ! "$latest" =~ $tag ]]; then
+            echo "::error::Unexpected rclone release tag '${latest}'"
+            exit 1
+          fi
+          highest="$(printf '%s\n' "$pinned" "$latest" | sort -V | tail -n 1)"
+          behind=false
+          if [[ "$highest" != "$pinned" ]]; then
+            behind=true
+            echo "::warning::TOOL_RCLONE_VERSION is ${pinned};" \
+              "rclone's latest release is ${latest}"
+          fi
+          {
+            echo '## rclone pin check'
+            echo
+            echo '| Pinned | Latest release | Status |'
+            echo '| ------ | -------------- | ------ |'
+            if [[ "$behind" == true ]]; then
+              echo "| ${pinned} | ${latest} | ⚠️ newer release |"
+            else
+              echo "| ${pinned} | ${latest} | ✅ current |"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "pinned=${pinned}"
+            echo "latest=${latest}"
+            echo "behind=${behind}"
+          } >> "$GITHUB_OUTPUT"
+          # As the plugin lock check: a manual run on another branch
+          # reports without touching the tracking issue.
+          if [[ "$GITHUB_EVENT_NAME" == 'schedule' \
+              || "$GITHUB_REF" == "refs/heads/${DEFAULT_BRANCH}" ]]; then
+            echo "track=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::${GITHUB_REF} is not the default branch;" \
+              "tracking issue left as is"
+          fi
+
+      - name: 'Update the tracking issue'
+        if: steps.compare.outputs.track == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PINNED: ${{ steps.compare.outputs.pinned }}
+          LATEST: ${{ steps.compare.outputs.latest }}
+          BEHIND: ${{ steps.compare.outputs.behind }}
+        run: |
+          # Update the tracking issue
+          set -euo pipefail
+          repo="$GITHUB_REPOSITORY"
+          run_url="${GITHUB_SERVER_URL}/${repo}/actions/runs/${GITHUB_RUN_ID}"
+
+          # gh's label filter needs the label to exist
+          label_exists=false
+          if gh label list --repo "$repo" --search "$ISSUE_LABEL" \
+              --json name --limit 100 \
+              | jq -e --arg l "$ISSUE_LABEL" 'any(.[]; .name == $l)' \
+              >/dev/null; then
+            label_exists=true
+          fi
+          issue=""
+          if [[ "$label_exists" == true ]]; then
+            issue="$(gh issue list --repo "$repo" --state open \
+              --label "$ISSUE_LABEL" --limit 100 --json number,title \
+              | jq -r --arg t "$ISSUE_TITLE" \
+                  '[.[] | select(.title == $t)][0].number // empty')"
+          fi
+
+          if [[ "$BEHIND" == true ]]; then
+            body="${RUNNER_TEMP}/rclone-release-issue.md"
+            {
+              echo "\`Dockerfile.chart\` pins rclone ${PINNED}"
+              echo "(\`TOOL_RCLONE_VERSION\`); rclone's latest release"
+              echo "is ${LATEST}."
+              echo
+              cat <<'TEXT'
+          Update `TOOL_RCLONE_VERSION` and `TOOL_RCLONE_SHA256` as the
+          comment above them in `Dockerfile.chart` describes, and open a
+          pull request. Its release image build reruns the Grype gate,
+          which warns about each `.grype.yaml` rule in the rclone
+          binary group that no longer matches: remove those, and
+          review any finding the new release still carries.
+
+          TEXT
+              echo "Last checked by ${run_url}"
+            } > "$body"
+            if [[ "$label_exists" != true ]]; then
+              # --force: the plugin lock job may create it concurrently
+              gh label create "$ISSUE_LABEL" --repo "$repo" --force \
+                --description 'Pull requests that update a dependency file'
+            fi
+            if [[ -n "$issue" ]]; then
+              gh issue edit "$issue" --repo "$repo" --body-file "$body"
+              echo "Updated issue #${issue}"
+            else
+              gh issue create --repo "$repo" --title "$ISSUE_TITLE" \
+                --label "$ISSUE_LABEL" --body-file "$body"
+            fi
+          elif [[ -n "$issue" ]]; then
+            gh issue close "$issue" --repo "$repo" --comment \
+              "TOOL_RCLONE_VERSION ${PINNED} is rclone's latest release (${run_url})."
+            echo "Closed issue #${issue}"
+          fi

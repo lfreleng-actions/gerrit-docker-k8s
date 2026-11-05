@@ -1233,6 +1233,13 @@ happens in the pull request, and warns about each rule that matched
 nothing so it can be removed. Each release's summary lists the
 findings it accepted and why.
 
+Dependabot cannot track `TOOL_RCLONE_VERSION`, so the weekly
+`Plugin Lock Check` workflow also compares it with rclone's latest
+release. While the pin lags, the workflow keeps one open issue,
+`rclone: a newer release than TOOL_RCLONE_VERSION`, and closes it once
+the pin is current, so the rclone rules get revisited when a fixed
+release ships.
+
 ## Advanced Configuration
 
 ### Custom Gerrit Configuration
