@@ -1056,23 +1056,29 @@ jobs:
             --set siteImport.source.url=/mnt/import/corrupt \
             --set-json \
               'siteImport.source.volume={"persistentVolumeClaim":{"claimName":"gerrit-export"}}'
-          # The corrupt archive must fail site-import and hold Gerrit back
-          exit_code='{.status.initContainerStatuses[?(@.name=="site-import")].lastState.terminated.exitCode}'
-          code=""
+          # The corrupt archive must fail site-import and hold Gerrit back.
+          # The exit code and the error come from the same pod status
+          # record: kubelet may already have dropped that container's log
+          terminated='.status.initContainerStatuses[]?
+            | select(.name == "site-import")
+            | .lastState.terminated // empty'
+          last=""
           for _ in $(seq 120); do
-            code=$(kubectl get pod -n "$ns" gerrit-0 --ignore-not-found \
-              -o "jsonpath=$exit_code" || true)
-            if [ -n "$code" ]; then
+            last=$(kubectl get pod -n "$ns" gerrit-0 --ignore-not-found \
+              -o json | jq -c "$terminated" || true)
+            if [ -n "$last" ]; then
               break
             fi
             sleep 5
           done
-          if [ "${code:-0}" = 0 ]; then
+          code=$(printf '%s' "${last:-null}" | jq -r '.exitCode // 0')
+          message=$(printf '%s' "${last:-null}" | jq -r '.message // ""')
+          if [ "$code" = 0 ]; then
             echo "::error::site-import did not fail on a corrupt archive ❌"
             exit 1
           fi
-          if ! kubectl logs -n "$ns" gerrit-0 -c site-import --previous \
-            | grep -F "git.tar.zst has sha256"; then
+          if ! grep -F "git.tar.zst has sha256" <<< "$message"; then
+            printf 'site-import termination message:\n%s\n' "$message"
             kubectl logs -n "$ns" gerrit-0 -c site-import --previous || true
             echo "::error::site-import did not fail on the archive checksum ❌"
             exit 1
