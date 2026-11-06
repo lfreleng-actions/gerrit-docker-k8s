@@ -116,11 +116,14 @@ must succeed before the next starts:
    replication enabled `replication.config`, with its-jira enabled
    `etc/its/actions-its-jira.config`, and with healthcheck enabled
    `etc/healthcheck.config` (section 1.4). On a site without
-   the repository `gerrit.allProjects` names (`All-Projects` by
-   default) it then runs
-   `gerrit init --batch --no-auto-start` on that configuration, so a
-   restart never re-initialises a site, and installs the rendered
-   files again over whatever init added. With `hooks.enabled` it then
+   `.chart/initialised` it then runs
+   `gerrit init --batch --no-auto-start` on that configuration,
+   installs the rendered files again over whatever init added, and
+   only then writes that marker, with the Gerrit version and the time,
+   so a restart never re-initialises a site and one after an init that
+   failed part way, even past creating `All-Projects`, runs it again.
+   Right after the marker it creates the backup lock (section 1.8).
+   With `hooks.enabled` it then
    replaces the files at the top of the hooks directory with the
    `hooks.scripts` entries and, with `hooks.g2p.enabled`, links to the
    gerrit-to-platform entry points in `/opt/gerrit-tools/bin`, and
@@ -295,7 +298,10 @@ Secret, one URL per file, such as a pre-signed object-store URL; and
 `s3`, an `s3://<bucket>/<prefix>` the chart image's rclone fetches.
 rclone is configured only through the environment, and reads keys
 from the Secret or the pod's workload identity, such as IRSA through
-`serviceAccount` (section 1.11). Decrypting `.age` or `.gpg` archives
+`serviceAccount` (section 1.11). A prefix ending in `/latest` names
+the newest backup of section 1.8: `site-import` reads that object once
+and pins the prefix to the timestamp it holds, so every file comes
+from one backup. Decrypting `.age` or `.gpg` archives
 is still to come (section 7); until then the chart refuses them.
 
 **State file.** `site-import` records its state in
@@ -419,19 +425,66 @@ copy onto the volume, runs `site-init` in a prepare mode that installs
 the chart's configuration and returns, runs
 `gerrit init --batch --no-auto-start` and the prepare mode again, and
 with `siteImport.reindex` runs a full `gerrit reindex`, with
-`--threads` set from the container's CPU limit when it has one. Both
+`--threads` set from the container's CPU limit when it has one, and
+then writes `.chart/initialised`, which it removed before it began. Both
 get the Gerrit container's heap: `container.heapLimit`, else 70% of
 the container's memory limit. `init` may migrate
 NoteDb and rewrite `refs/meta/config`, so after it `verify` checks
-only that the repositories, the exported host keys and the server ID
-survived: a project repository must match its manifest entry in every
-key the entry has, `head` included.
+only that every repository the manifest lists is present, that the
+exported SSH host keys are unchanged and that the server ID survived.
+It compares no refs or `HEAD`s after init. The full comparison against
+the manifest, in which a project repository must match its manifest
+entry in every key the entry has, `head` included, is the separate
+`verify-import.py`, which an operator runs against the imported
+release from a host with `kubectl` access to it, given the source
+site's REST snapshot (`tests/k8s/build_fixture_site.py` writes one as
+`expected.json`) and its administrator's password:
+
+```bash
+python3 K8S/charts/gerrit/files/scripts/verify-import.py \
+    --namespace <namespace> --fullname <fullname> \
+    --manifest export/manifest.json --expected expected.json \
+    --password-file password
+```
 
 ### 1.8 Backup and maintenance CronJobs
 
-- The **backup CronJob** (#242) produces an archive in the layout of
-  section 3 from the running deployment and uploads it, so a backup is
-  also an import source for a new deployment.
+- The **backup CronJob** (#242), `backup.enabled`, produces an archive
+  in the layout of section 3 from the running deployment and uploads it,
+  so a backup is also an import source for a new deployment. Runs are
+  serialised by a `flock` on `.chart/backup-lock/lock` on the site
+  volume, which `site-init` creates on every start right after it finds
+  or writes `.chart/initialised`, and the backup opens read-only through
+  its read-only mount of the volume: every backup pod shares the Gerrit
+  pod's node and volume, so the lock covers manual Jobs too, and one
+  that finds it held, or missing, skips; a site mid-initialisation has
+  no lock yet. It runs only while `.chart/site-state.json` records
+  `complete`, and discards
+  an export during which that file changed, so a backup never overlaps
+  an import. It runs the export tool's `backup` mode on the site volume,
+  mounted read-only, reading the git store `gerrit.basePath` names on
+  that volume (an absolute one must lie under `/var/gerrit`), uploads the archives and then `manifest.json` with
+  rclone to `s3://<bucket>/<prefix>/<UTC timestamp>-<run id>/`, checks
+  them with `rclone check`, reads its own `manifest.json` back and
+  checks its archives again, and only then writes that prefix to
+  `<prefix>/latest`, then a `published` marker recording `publishedAt`
+  to the microsecond. The Job's `activeDeadlineSeconds`,
+  `backup.maxRunHours`, bounds every run.
+  Retention counts only published backups, in `publishedAt` order (the
+  chart README's "Backups" section defines them): it keeps the one
+  `latest` names, the newest published backup of each of the last
+  `retention.keepDaily` days and `retention.keepWeekly` ISO weeks, and
+  every published backup whose successor, the next published strictly
+  after it, is missing or was published
+  less than `retention.minAgeHours` ago, at least 1, so a restore from
+  `latest` has at least that long to finish once its backup stops
+  being the newest. Unpublished uploads, which only an interrupted run
+  leaves, are deleted once they are more than `maxRunHours` + 1 hours
+  old. A
+  site import from `s3://<bucket>/<prefix>/latest` reads `latest` once
+  and fetches every file from the backup it names, which is the restore
+  path. Its own `NetworkPolicy` allows egress to DNS, 443 and the
+  endpoint's port only.
 - The **maintenance CronJob** runs housekeeping that Gerrit does not
   schedule itself, where the chart enables it. The first is the
   optional git gc CronJob (#243), `gc.cronJob.enabled`: it replaces
@@ -774,7 +827,7 @@ sources belong to the deployment, not this document.
 | `replication.sshKeySecret` | `id_ed25519` (or `id_rsa`), and optionally `known_hosts` | Gerrit pod | SSH identity for the replication remotes, and their pinned host keys. Projected with mode `0400` into `/var/gerrit/.ssh`, beside the chart's `known_hosts2` of GitHub's published host keys and `replication.knownHosts`. |
 | `siteImport.source.existingSecret` | `manifest.json`, `site.tar.zst`, `git.tar.zst` | `site-import` | With `source.type: https`, each key holds the full URL of that file, such as a pre-signed object-store URL, and wins over `<source.url>/<name>`. `site-import` passes the URLs to `curl` on standard input and never logs them. `age-identity` or `gpg-private-key`, for encrypted archives, are still to come (section 7). |
 | `siteImport.source.existingSecret` | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | `site-import` | With `source.type: s3`, passed by `secretKeyRef` to `site-import` only, for rclone's `env_auth`; never mounted or logged. Optional where the pod has a workload identity through `serviceAccount`. |
-| `backup.existingSecret` | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | Backup CronJob | The encryption recipient is public and lives in values. Optional where the platform supplies workload identity. |
+| `backup.existingSecret` | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | Backup CronJob | Optional where the platform supplies workload identity. The backup does not encrypt the archives while `site-import` cannot decrypt them; rely on the bucket's server-side encryption. |
 | `hooks.g2p.existingSecret` | `gerrit_to_platform.ini` | `site-init` | Generated as `<fullname>-g2p` when empty, with the key empty for the operator to fill in. Mounted with mode `0400` into `site-init`, which installs it with mode `0600` as `.config/gerrit_to_platform/gerrit_to_platform.ini` on the site, where the hooks gerrit-to-platform runs read it through `XDG_CONFIG_HOME`. |
 | `plugins.its-jira.existingSecret` | `username`, `password` | `render-config` | Generated as `<fullname>-its-jira` when empty, with both keys empty for the operator to fill in. Passed as `GERRIT_ITS_JIRA_USERNAME` and `GERRIT_ITS_JIRA_PASSWORD` and written, when not empty, to `its-jira.username` and `its-jira.password` in `etc/secure.config`. The password may be a Jira API token. |
 | `metrics.existingSecret` | `token` | `render-config`, Prometheus | Generated as `<fullname>-metrics` with a random `token` when empty, with `plugins.metrics-reporter-prometheus.enabled`. Passed as `GERRIT_METRICS_BEARER_TOKEN` and written to `plugin.metrics-reporter-prometheus.prometheusBearerToken` in `etc/secure.config`; the chart's `ServiceMonitor` names the same key as the bearer token Prometheus presents. Under Argo CD it must be an `existingSecret` (section 6.2), or each sync replaces the token. |
@@ -870,8 +923,9 @@ reference; each updates the section it changes.
   archives remains open.
 - #307: the `s3` import source, rclone in the chart image and the
   optional ServiceAccount for IRSA (sections 1.7, 1.11 and 5).
-- #242: the backup CronJob and its `backup` manifests (sections 1.8
-  and 3).
+- #242: the backup CronJob to S3, its `backup` manifests and restore
+  from `<prefix>/latest` through site import (sections 1.7, 1.8 and
+  3).
 - #256: the export tool leaving out `.chart/` (sections 1.7 and 3.1).
 - #262: the admin toolbox and its maintenance helpers (section 1.9).
 - #268: SAML group membership sync (section 1.4).

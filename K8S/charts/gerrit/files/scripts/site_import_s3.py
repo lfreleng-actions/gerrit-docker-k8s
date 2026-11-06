@@ -13,8 +13,8 @@ command line or the log. ``site-import.py`` is the entry point; see
 its docstring.
 
 A URL ending in ``/latest`` names the chart's backups: the backup
-CronJob writes each backup under ``<prefix>/<UTC timestamp>/`` and
-then the object ``<prefix>/latest``, holding that timestamp. The
+CronJob writes each backup under ``<prefix>/<UTC timestamp>-<run id>/``
+and then the object ``<prefix>/latest``, holding that prefix. The
 first fetch reads it once and pins the URL to that backup, so every
 file comes from the same one even when a new backup lands mid-import.
 """
@@ -29,8 +29,9 @@ from site_import_common import Settings, SiteImportError, run, say
 
 REMOTE = "siteimport"
 LATEST = "latest"
-# The backup CronJob's timestamps, as date -u +%Y%m%dT%H%M%SZ writes them
-STAMP = re.compile(r"[0-9]{8}T[0-9]{6}Z")
+# The backup CronJob's prefixes: the UTC start time as %Y%m%dT%H%M%SZ,
+# then a run id of eight hex digits, absent from older backups
+STAMP = re.compile(r"[0-9]{8}T[0-9]{6}Z(?:-[0-9a-f]{8})?")
 # rclone's exit status when --error-on-no-transfer finds nothing to copy
 NO_TRANSFER = 9
 RCLONE_FLAGS = [

@@ -1,0 +1,184 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+---
+# Source: gerrit/templates/backup-cronjob.yaml
+# The backup pod takes no connections and reaches only DNS and the
+# S3 endpoint
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: gerrit-backup
+  namespace: gerrit-test
+  labels:
+    helm.sh/chart: gerrit-0.1.0
+    app.kubernetes.io/name: gerrit-backup
+    app.kubernetes.io/instance: gerrit
+    app.kubernetes.io/component: backup
+    app.kubernetes.io/version: "3.13.10"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: gerrit
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: gerrit-backup
+      app.kubernetes.io/instance: gerrit
+      app.kubernetes.io/component: backup
+  policyTypes:
+    - Ingress
+    - Egress
+  egress:
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 9000
+---
+# Source: gerrit/templates/backup-cronjob.yaml
+# Backs the site up to S3 while Gerrit runs: the export tool's backup
+# mode on the site volume, mounted read-only, uploaded with rclone.
+# Runs, scheduled or manual, are serialised by a flock on the site
+# volume's .chart/backup-lock/lock, which site-init creates
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: gerrit-backup
+  namespace: gerrit-test
+  labels:
+    helm.sh/chart: gerrit-0.1.0
+    app.kubernetes.io/name: gerrit-backup
+    app.kubernetes.io/instance: gerrit
+    app.kubernetes.io/component: backup
+    app.kubernetes.io/version: "3.13.10"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: gerrit
+spec:
+  schedule: "0 2 * * *"
+  timeZone: "Etc/UTC"
+  # A suspended CronJob starts no scheduled run; a Job created from it
+  # with kubectl create job --from still runs
+  suspend: false
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      # Retention takes an unpublished upload older than maxRunHours + 1
+      # hours as abandoned, so no run may outlive maxRunHours
+      activeDeadlineSeconds: 21600
+      template:
+        metadata:
+          labels:
+            helm.sh/chart: gerrit-0.1.0
+            app.kubernetes.io/name: gerrit-backup
+            app.kubernetes.io/instance: gerrit
+            app.kubernetes.io/component: backup
+            app.kubernetes.io/version: "3.13.10"
+            app.kubernetes.io/managed-by: Helm
+            app.kubernetes.io/part-of: gerrit
+          annotations:
+            instrumentation.opentelemetry.io/inject-java: "false"
+            instrumentation.opentelemetry.io/inject-nodejs: "false"
+            instrumentation.opentelemetry.io/inject-python: "false"
+            instrumentation.opentelemetry.io/inject-dotnet: "false"
+            instrumentation.opentelemetry.io/inject-go: "false"
+            instrumentation.opentelemetry.io/inject-sdk: "false"
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1001
+            runAsGroup: 1001
+            fsGroup: 1001
+            fsGroupChangePolicy: OnRootMismatch
+            seccompProfile:
+              type: RuntimeDefault
+          # The site volume is usually ReadWriteOnce: run only on the
+          # node Gerrit runs on, where the volume is already attached
+          affinity:
+            podAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                - topologyKey: kubernetes.io/hostname
+                  labelSelector:
+                    matchLabels:
+                      app.kubernetes.io/name: gerrit
+                      app.kubernetes.io/instance: gerrit
+          containers:
+            - name: backup
+              image: ghcr.io/lfreleng-actions/gerrit-docker-k8s/gerrit:v0.0.0
+              imagePullPolicy: IfNotPresent
+              command: ["python3", "/scripts/site-backup.py"]
+              # Keeps the error in the pod status after kubelet drops the log
+              terminationMessagePolicy: FallbackToLogsOnError
+              env:
+                - name: HOME
+                  value: /tmp
+                - name: SITE_BACKUP_URL
+                  value: "s3://gerrit-backups/sites/gerrit"
+                - name: SITE_BACKUP_S3_ENDPOINT
+                  value: "http://store.example:9000"
+                - name: SITE_BACKUP_S3_REGION
+                  value: "eu-west-1"
+                - name: SITE_BACKUP_S3_PROVIDER
+                  value: "Minio"
+                - name: SITE_BACKUP_KEEP_DAILY
+                  value: "14"
+                - name: SITE_BACKUP_KEEP_WEEKLY
+                  value: "8"
+                - name: SITE_BACKUP_MIN_AGE_HOURS
+                  value: "24"
+                - name: SITE_BACKUP_MAX_RUN_HOURS
+                  value: "6"
+                - name: SITE_BACKUP_SITE
+                  value: /mnt/site
+                - name: SITE_BACKUP_SCRATCH
+                  value: /scratch
+                # Static keys for rclone's env_auth
+                - name: AWS_ACCESS_KEY_ID
+                  valueFrom:
+                    secretKeyRef:
+                      name: gerrit-backup-s3
+                      key: AWS_ACCESS_KEY_ID
+                - name: AWS_SECRET_ACCESS_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: gerrit-backup-s3
+                      key: AWS_SECRET_ACCESS_KEY
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                runAsNonRoot: true
+                capabilities:
+                  drop:
+                    - ALL
+              volumeMounts:
+                # flock needs no write access, so the lock is taken
+                # through this mount too
+                - name: site
+                  mountPath: /mnt/site
+                  readOnly: true
+                - name: scripts
+                  mountPath: /scripts
+                  readOnly: true
+                - name: scratch
+                  mountPath: /scratch
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            - name: site
+              persistentVolumeClaim:
+                claimName: site-gerrit-0
+            - name: scripts
+              configMap:
+                name: gerrit-scripts
+            - name: scratch
+              emptyDir:
+                sizeLimit: 50Gi
+            - name: tmp
+              emptyDir: {}
