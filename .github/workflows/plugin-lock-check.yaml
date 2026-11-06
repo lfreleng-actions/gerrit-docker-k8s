@@ -218,7 +218,7 @@ jobs:
   # naming a GitHub release, so this job reports when rclone has
   # released past it. .grype.yaml accepts findings in the pinned
   # rclone binary that only an rclone release fixes; this issue is the
-  # prompt to bump the pin and re-check those rules.
+  # prompt to bump the pin and re-check those rules, which it lists.
   rclone-release-check:
     name: 'Check the rclone pin'
     runs-on: 'ubuntu-24.04'
@@ -339,6 +339,13 @@ jobs:
           fi
 
           if [[ "$BEHIND" == true ]]; then
+            # The accepted findings the bump should clear, so the pin
+            # and the rules change in one pull request
+            # shellcheck disable=SC2016  # Markdown backticks, not shell
+            rules="$(yq -r '.ignore[]
+              | select(.reason | test("rclone"))
+              | "- `" + .vulnerability + "` in `" + .package.name
+                + "` " + .package.version' .grype.yaml)"
             body="${RUNNER_TEMP}/rclone-release-issue.md"
             {
               echo "\`Dockerfile.chart\` pins rclone ${PINNED}"
@@ -349,11 +356,14 @@ jobs:
           Update `TOOL_RCLONE_VERSION` and `TOOL_RCLONE_SHA256` as the
           comment above them in `Dockerfile.chart` describes, and open a
           pull request. Its release image build reruns the Grype gate,
-          which warns about each `.grype.yaml` rule in the rclone
-          binary group that no longer matches: remove those, and
-          review any finding the new release still carries.
+          which warns about each `.grype.yaml` rule that no longer
+          matches: remove those in the same pull request, and review
+          any finding the new release still carries. These
+          `.grype.yaml` rules name rclone in their reason:
 
           TEXT
+              echo "${rules:-- none}"
+              echo
               echo "Last checked by ${run_url}"
             } > "$body"
             if [[ "$label_exists" != true ]]; then
