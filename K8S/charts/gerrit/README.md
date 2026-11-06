@@ -529,7 +529,9 @@ names a deleted one never starts, even after a complete import.
    `siteImport.scratchSizeLimit`. It leaves out the export's `bin/`,
    `plugins/` and `lib/`: the chart's image supplies those, and a
    plugin or library built for the source release can stop the new
-   one starting. It refuses links that resolve outside the archive's
+   one starting. It also drops any `*.lock` file under `etc/`, a stale
+   lock that would fail `site-init`'s `git config`, and logs each. It
+   refuses links that resolve outside the archive's
    `site/` or `git/` tree, or into `.chart/`, `index/`, `cache/`,
    `bin/`, `plugins/` or `lib/`, except two kinds `site-init` recreates at
    every start, which it leaves out and logs: links in the site's

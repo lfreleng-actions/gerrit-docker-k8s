@@ -729,7 +729,8 @@ and the site directory stays on `rsync` in every mode. All modes leave
 out `*.lock` files, in the site and the repositories, and delete those
 an earlier run left in the export directory: a stale lock
 would block the ref it locks after an import, or the `git config`
-that `render-config.sh` and `site-init.sh` run on `etc/`.
+that `render-config.sh` and `site-init.sh` run on `etc/`. The import
+also drops any `*.lock` under `etc/` that an older archive holds.
 In `backup` mode the files under `db/` and `data/` are copied from a
 running site and may be internally inconsistent: `rsync` of a live H2
 file is not a point-in-time copy. They hold the reviewed-file flags
