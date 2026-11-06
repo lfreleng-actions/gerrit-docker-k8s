@@ -276,6 +276,21 @@ def test_repository_check(verify: ModuleType) -> None:
     )
 
 
+def test_repository_check_compares_head(verify: ModuleType) -> None:
+    """A project repository's HEAD must survive; a manifest written
+    before the export recorded HEAD is checked without it.
+    """
+    expected = {"apps/web.git": {"refs": 1, "meta_config": None, "head": "abc"}}
+    found = {"apps/web.git": {"refs": 1, "meta_config": None, "head": "abc"}}
+    assert verify.check_repositories(expected, found) == "1 repositories"
+    found["apps/web.git"]["head"] = "refs/heads/master"
+    with pytest.raises(verify.CheckError) as err:
+        verify.check_repositories(expected, found)
+    assert "head': 'refs/heads/master'}, the manifest" in str(err.value)
+    del expected["apps/web.git"]["head"]
+    assert verify.check_repositories(expected, found) == "1 repositories"
+
+
 REFS = {
     "All-Projects.git": {
         "refs/meta/config": "a1",
@@ -438,13 +453,15 @@ def test_probe_reports_the_site(probe: ModuleType, tmp_path: Path) -> None:
     )
     tag = git(web, "rev-parse", "refs/tags/v1.0")
     assert tag != head
+    git(web, "update-ref", "--no-deref", "HEAD", head)
+    default = git(store / "All-Projects.git", "symbolic-ref", "HEAD")
 
     assert probe.probe(site) == {
         "state": {"state": "complete"},
         "ssh_host_keys": {key.name: listing.split()[1]},
         "repositories": {
-            "All-Projects.git": {"refs": 1, "meta_config": None},
-            "apps/web.git": {"refs": 3, "meta_config": meta},
+            "All-Projects.git": {"refs": 1, "meta_config": None, "head": default},
+            "apps/web.git": {"refs": 3, "meta_config": meta, "head": head},
         },
         "refs": {
             "All-Projects.git": {"refs/heads/master": master},

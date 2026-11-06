@@ -11,16 +11,27 @@ only through environment variables as the remote ``siteimport``:
 the web identity token IRSA injects. No credential reaches rclone's
 command line or the log. ``site-import.py`` is the entry point; see
 its docstring.
+
+A URL ending in ``/latest`` names the chart's backups: the backup
+CronJob writes each backup under ``<prefix>/<UTC timestamp>-<run id>/``
+and then the object ``<prefix>/latest``, holding that prefix. The
+first fetch reads it once and pins the URL to that backup, so every
+file comes from the same one even when a new backup lands mid-import.
 """
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from pathlib import Path
 
 from site_import_common import Settings, SiteImportError, run, say
 
 REMOTE = "siteimport"
+LATEST = "latest"
+# The backup CronJob's prefixes: the UTC start time as %Y%m%dT%H%M%SZ,
+# then a run id of eight hex digits, absent from older backups
+STAMP = re.compile(r"[0-9]{8}T[0-9]{6}Z(?:-[0-9a-f]{8})?")
 # rclone's exit status when --error-on-no-transfer finds nothing to copy
 NO_TRANSFER = 9
 RCLONE_FLAGS = [
@@ -73,8 +84,26 @@ def rclone_env(settings: Settings, base: Mapping[str, str]) -> dict[str, str]:
     return env
 
 
+def resolve_latest(settings: Settings, env: Mapping[str, str]) -> None:
+    """Point settings.url, ending in /latest, at the backup latest names."""
+    latest = settings.url.rstrip("/")
+    settings.url = latest.removesuffix(f"/{LATEST}")
+    stamp = download(settings, LATEST, env).read_text(encoding="utf-8").strip()
+    if not STAMP.fullmatch(stamp):
+        raise SiteImportError(f"{latest} names no backup: {stamp[:40]!r}")
+    settings.url = f"{settings.url}/{stamp}"
+    say(f"{latest} names the backup {settings.url}")
+
+
 def fetch_s3(settings: Settings, name: str, env: Mapping[str, str]) -> Path:
     """Download one export file to scratch and return its path."""
+    if bucket_path(settings).endswith(f"/{LATEST}"):
+        resolve_latest(settings, env)
+    return download(settings, name, env)
+
+
+def download(settings: Settings, name: str, env: Mapping[str, str]) -> Path:
+    """Download name under the URL as it stands, resolving nothing."""
     url = object_url(settings, name)
     dest = settings.scratch / "download" / name
     dest.parent.mkdir(parents=True, exist_ok=True)

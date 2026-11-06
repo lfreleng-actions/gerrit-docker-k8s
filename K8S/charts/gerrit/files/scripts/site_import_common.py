@@ -10,10 +10,13 @@ from __future__ import annotations
 
 import hashlib
 import io
+import json
 import math
+import os
 import re
 import shutil
 import subprocess
+import time
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -271,3 +274,25 @@ def gerrit_version(war: Path) -> str | None:
     except (OSError, KeyError, zipfile.BadZipFile):
         return None
     return version.strip().removeprefix("v") or None
+
+
+def utc_now() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def write_json(path: Path, record: dict[str, Any]) -> None:
+    """Write a file under .chart atomically: a temporary file renamed
+    over the old.
+    """
+    path.parent.mkdir(mode=0o700, exist_ok=True)
+    temp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    with open(temp, "w", encoding="utf-8") as handle:
+        handle.write(json.dumps(record, indent=2) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temp, path)
+    directory = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)

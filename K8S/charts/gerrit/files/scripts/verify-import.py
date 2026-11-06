@@ -108,7 +108,10 @@ def check_host_keys(expected: dict[str, str], found: dict[str, str]) -> str:
 
 
 def check_repositories(expected: dict[str, Any], found: dict[str, Any]) -> str:
-    """Project repositories are as exported; system ones may only grow."""
+    """Project repositories are as exported, in every key the manifest
+    records (one written before ``head`` lacks it); system ones may only
+    grow.
+    """
     problems = []
     for name, want in sorted(expected.items()):
         have = found.get(name)
@@ -119,7 +122,7 @@ def check_repositories(expected: dict[str, Any], found: dict[str, Any]) -> str:
                 problems.append(
                     f"{name} has {have['refs']} refs, fewer than {want['refs']}"
                 )
-        elif have != want:
+        elif (have := {key: have.get(key) for key in want}) != want:
             problems.append(f"{name} is {have}, the manifest {want}")
     return fail_on(problems, f"{len(expected)} repositories")
 

@@ -6,8 +6,8 @@
 ``verify-import.py`` pipes this file to ``python3 -`` in the gerrit
 container, so it imports nothing beyond the standard library. It
 prints the chart's state file, the SSH host key fingerprints, each
-repository's ref count and refs/meta/config head, counted as
-``scripts/gerrit-site-export.py`` counts them, each repository's ref
+repository's ref count, refs/meta/config head and HEAD, read as
+``scripts/gerrit-site-export.py`` reads them, each repository's ref
 names and the objects they point at, and the next change number.
 
     python3 verify_import_probe.py --site /var/gerrit
@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any
 
 FOR_EACH_REF = ["for-each-ref", "--format=%(refname) %(objectname) %(*objectname)"]
+HEAD_READS = (["symbolic-ref", "-q", "HEAD"], ["rev-parse", "-q", "--verify", "HEAD^0"])
 
 
 def git(*args: str) -> str | None:
@@ -55,13 +56,25 @@ def listing(repo: Path) -> list[list[str]] | None:
     return None if found is None else [ln.split(" ") for ln in found.splitlines()]
 
 
+def head(repo: Path) -> str | None:
+    """The ref HEAD names, else the commit it is detached at, else None."""
+    for read in HEAD_READS:
+        found = git(f"--git-dir={repo}", *read)
+        if found and found.strip():
+            return found.strip()
+    return None
+
+
 def repositories(root: Path) -> dict[str, dict[str, Any]]:
-    """Map each repository under root to its ref count and refs/meta/config."""
+    """Map each repository under root to its ref count, refs/meta/config
+    and HEAD.
+    """
     found = {}
     for rel, repo in stores(root):
         refs = listing(repo) or []
         meta = [r[2] or r[1] for r in refs if r[0] == "refs/meta/config"]
-        found[rel] = {"refs": len(refs), "meta_config": next(iter(meta), None)}
+        entry = {"refs": len(refs), "meta_config": next(iter(meta), None)}
+        found[rel] = {**entry, "head": head(repo)}
     return found
 
 

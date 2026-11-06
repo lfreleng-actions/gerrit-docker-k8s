@@ -25,6 +25,7 @@ import hashlib
 import io
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -166,6 +167,18 @@ def site(tmp_path: Path) -> dict[str, Any]:
     }
 
 
+def repositories_of(site: dict[str, Any]) -> dict[str, Any]:
+    """The manifest's git.repositories for the fixture site's repositories."""
+    return {
+        name: {
+            "refs": site["refs"][name],
+            "meta_config": site["meta"][name],
+            "head": _git(site["root"] / "git" / name, "symbolic-ref", "HEAD"),
+        }
+        for name in site["refs"]
+    }
+
+
 def run_export(*args: str, env: dict[str, str] | None = None) -> Any:
     """Run the export tool and return the completed process."""
     return subprocess.run(
@@ -282,6 +295,7 @@ def test_help_documents_every_option() -> None:
     for option in (
         "seed",
         "final",
+        "backup",
         "--site",
         "--git",
         "--out",
@@ -309,6 +323,7 @@ def test_seed_builds_layout_without_excluded_dirs(site: dict[str, Any]) -> None:
     for name in site["refs"]:
         assert (out / "git" / name / "HEAD").is_file(), name
     assert manifest["mode"] == "seed"
+    assert "consistency" not in manifest
 
 
 def test_final_manifest_contents(site: dict[str, Any]) -> None:
@@ -319,6 +334,7 @@ def test_final_manifest_contents(site: dict[str, Any]) -> None:
         "schema",
         "created",
         "mode",
+        "consistency",
         "gerrit_version",
         "site",
         "git",
@@ -328,16 +344,14 @@ def test_final_manifest_contents(site: dict[str, Any]) -> None:
     ]
     assert manifest["schema"] == 1
     assert manifest["mode"] == "final"
+    assert manifest["consistency"] == {"git": "verified", "h2": "stopped"}
     assert manifest["created"].endswith("Z")
     assert manifest["gerrit_version"] == GERRIT_VERSION
     assert manifest["site"]["path"] == str(root)
     assert manifest["site"]["bytes"] > 0
     assert manifest["git"]["path"] == str(root / "git")
     assert manifest["git"]["bytes"] > 0
-    assert manifest["git"]["repositories"] == {
-        name: {"refs": site["refs"][name], "meta_config": site["meta"][name]}
-        for name in site["refs"]
-    }
+    assert manifest["git"]["repositories"] == repositories_of(site)
     assert manifest["ssh_host_keys"] == site["fingerprints"]
     assert manifest["excluded"] == EXCLUDED
     assert manifest["archives"] == {}
@@ -423,6 +437,57 @@ def test_dry_run_leaves_a_previous_export_alone(site: dict[str, Any]) -> None:
     result = run_on(site, "final", "--dry-run")
     assert result.returncode == 0, result.stderr
     assert snapshot(site["out"]) == before
+
+
+def run_lone_copy(site: dict[str, Any], tmp_path: Path, *args: str) -> Any:
+    """Run a copy of only the tool, alone in a directory, as on a Gerrit host."""
+    lone = tmp_path / "lone"
+    lone.mkdir(exist_ok=True)
+    tool = Path(shutil.copy(SCRIPT, lone))
+    paths = ["--site", str(site["root"]), "--out", str(site["out"])]
+    env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+    # -S: the project's editable install puts scripts/ on site-packages' path.
+    return subprocess.run(
+        [
+            sys.executable,
+            "-S",
+            str(tool),
+            *args,
+            *(paths if args != ("--help",) else []),
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=lone,
+        check=False,
+    )
+
+
+def test_seed_and_final_run_from_a_lone_copy_of_the_tool(
+    site: dict[str, Any], tmp_path: Path
+) -> None:
+    result = run_lone_copy(site, tmp_path, "--help")
+    assert result.returncode == 0, result.stderr
+    assert "backup" in result.stdout
+    result = run_lone_copy(site, tmp_path, "seed")
+    assert result.returncode == 0, result.stderr
+    manifest = json.loads((site["out"] / "manifest.json").read_text())
+    assert manifest["git"]["repositories"] == repositories_of(site)
+    result = run_lone_copy(site, tmp_path, "final", "--dry-run")
+    assert result.returncode == 0, result.stderr
+    assert "--checksum" in result.stdout
+
+
+def test_backup_from_a_lone_copy_names_the_missing_module(
+    site: dict[str, Any], tmp_path: Path
+) -> None:
+    result = run_lone_copy(site, tmp_path, "backup")
+    assert result.returncode != 0
+    assert result.stderr.splitlines() == [
+        "gerrit-site-export.py: error: backup needs gerrit_export_git.py beside"
+        " the script, as in the chart image"
+    ]
+    assert not site["out"].exists()
 
 
 @needs_zstd
@@ -784,8 +849,8 @@ def test_final_needs_proc_unless_writes_were_stopped(
         (("seed", "--encrypt", "rot13:x"), "--encrypt takes"),
         (("seed", "--encrypt", "age:"), "--encrypt takes"),
         (("final", "--upload", "https://example.invalid/x"), "--upload takes"),
-        (("seed", "--pack"), "need final mode"),
-        (("seed", "--upload", "s3://bucket/prefix"), "need final mode"),
+        (("seed", "--pack"), "need final or backup mode"),
+        (("seed", "--upload", "s3://bucket/prefix"), "need final or backup mode"),
     ],
 )
 def test_refuses_bad_arguments(
@@ -1262,3 +1327,534 @@ def test_failed_upload_never_publishes_a_manifest(
     calls = log.read_text().splitlines()
     assert calls[0] == "s3 rm s3://b/p/manifest.json"
     assert not [c for c in calls if c.endswith("/manifest.json") and " cp " in c]
+
+
+@needs_zstd
+def test_backup_packs_a_running_site(site: dict[str, Any], empty_proc: Path) -> None:
+    (site["root"] / "logs" / "gerrit.pid").write_text("4242\n")
+    fake_process(empty_proc, 4242, ["sleep", "60"])
+
+    manifest = export_ok(site, "backup")
+    assert manifest["mode"] == "backup"
+    assert manifest["consistency"] == {"git": "verified", "h2": "best-effort"}
+    assert manifest["gerrit_version"] == GERRIT_VERSION
+    assert manifest["git"]["repositories"] == repositories_of(site)
+    assert sorted(manifest["archives"]) == ARCHIVES
+    for name, digest in manifest["archives"].items():
+        data = (site["out"] / name).read_bytes()
+        assert hashlib.sha256(data).hexdigest() == digest
+    for name in site["refs"]:
+        _git(site["out"] / "git" / name, "fsck", "--no-progress")
+
+
+def git_shim(
+    tmp_path: Path,
+    before_bundle: str = "",
+    after_fetch: str = "",
+    after_bundle: str = "",
+) -> str:
+    """A PATH whose git runs a script around a backup's repository copy.
+
+    before_bundle and after_bundle run just before and after ``git bundle
+    create`` on apps/web.git, as a Gerrit writing at that moment would;
+    after_fetch runs after the fetch into its copy. All see the
+    repository as $repo.
+    """
+    shim = tmp_path / "git-shim"
+    shim.mkdir()
+    real = shutil.which("git")
+    (shim / "git").write_text(
+        "#!/bin/sh\n"
+        "repo=\n"
+        "for arg; do case $arg in --git-dir=*) repo=${arg#--git-dir=} ;; esac; done\n"
+        'case "$repo $*" in\n'
+        f"  */apps/web.git*' bundle create '*) {before_bundle or ':'} ;;\n"
+        "esac\n"
+        f'{real} "$@" || exit $?\n'
+        'case "$repo $*" in\n'
+        f"  */apps/web.git*' bundle create '*) {after_bundle or ':'} ;;\n"
+        f"  */apps/web.git*' fetch '*) {after_fetch or ':'} ;;\n"
+        "esac\n"
+    )
+    (shim / "git").chmod(0o755)
+    return f"{shim}{os.pathsep}{os.environ['PATH']}"
+
+
+def all_paths(root: Path) -> list[str]:
+    """Every path under root, not root itself."""
+    return [os.path.join(t, n) for t, d, f in os.walk(root) for n in d + f]
+
+
+def refs_of(repo: Path) -> str:
+    return _git(repo, "for-each-ref", "--format=%(objectname) %(refname)")
+
+
+def test_backup_copies_repositories_through_git(site: dict[str, Any]) -> None:
+    (site["root"] / "git" / "notes.txt").write_text("not a repository\n")
+    result = run_on(site, "backup", "--dry-run")
+    assert result.returncode == 0, result.stderr
+    lines = [shlex.split(line[2:]) for line in result.stdout.splitlines()]
+    rsync = [
+        line for line in lines if line[0] == "rsync" and line[-1].endswith("/git/")
+    ]
+    assert len(rsync) == 1, result.stdout
+    assert "--exclude=*.git/" in rsync[0]
+    assert "--exclude=*.lock" in rsync[0]
+    bundles = [line for line in lines if "bundle" in line]
+    assert sorted(line[3] for line in bundles) == sorted(
+        f"--git-dir={site['root'] / 'git' / name}" for name in site["refs"]
+    )
+
+
+@needs_zstd
+def test_backup_keeps_repository_metadata(site: dict[str, Any]) -> None:
+    web = site["root"] / "git" / "apps" / "web.git"
+    _git(web, "config", "receive.denyNonFastForwards", "true")
+    _git(web, "symbolic-ref", "HEAD", "refs/heads/stable")
+    (web / "description").write_text("The web app\n")
+    (web / "info").mkdir(exist_ok=True)
+    (web / "info" / "exclude").write_text("*.tmp\n")
+    (site["root"] / "git" / "notes.txt").write_text("not a repository\n")
+    subprocess.run(
+        ["git", "init", "-q", "--bare", str(site["root"] / "git" / "empty.git")],
+        check=True,
+    )
+
+    manifest = export_ok(site, "backup")
+    copy = site["out"] / "git" / "apps" / "web.git"
+    assert refs_of(copy) == refs_of(web)
+    assert _git(copy, "config", "receive.denyNonFastForwards") == "true"
+    assert _git(copy, "symbolic-ref", "HEAD") == "refs/heads/stable"
+    assert _git(copy, "remote") == ""
+    assert (copy / "description").read_text() == "The web app\n"
+    assert (copy / "info" / "exclude").read_text() == "*.tmp\n"
+    assert not (copy / "FETCH_HEAD").exists()
+    assert (site["out"] / "git" / "notes.txt").read_text() == "not a repository\n"
+    assert manifest["git"]["repositories"]["empty.git"] == {
+        "refs": 0,
+        "meta_config": None,
+        "head": _git(site["root"] / "git" / "empty.git", "symbolic-ref", "HEAD"),
+    }
+    assert manifest["git"]["repositories"]["apps/web.git"]["head"] == (
+        "refs/heads/stable"
+    )
+    assert not list(site["out"].glob(".scratch-*"))
+
+
+@needs_zstd
+@needs_zstd
+def test_backup_copies_a_repository_without_info(site: dict[str, Any]) -> None:
+    web = site["root"] / "git" / "apps" / "web.git"
+    shutil.rmtree(web / "info", ignore_errors=True)
+
+    export_ok(site, "backup")
+    copy = site["out"] / "git" / "apps" / "web.git"
+    assert refs_of(copy) == refs_of(web)
+    assert not (copy / "info").exists()
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads any directory")
+def test_backup_refuses_an_unreadable_info_directory(site: dict[str, Any]) -> None:
+    hidden = site["root"] / "git" / "apps" / "web.git" / "info" / "hidden"
+    hidden.mkdir(parents=True)
+    (hidden / "attributes").write_text("* -diff\n")
+    hidden.chmod(0)
+    try:
+        export_fails(site, f"cannot read {hidden}", "backup")
+    finally:
+        hidden.chmod(0o755)
+    assert not (site["out"] / "git.tar.zst").exists()
+    assert not list(site["out"].glob(".scratch-*"))
+
+
+def test_backup_survives_refs_packed_during_the_copy(
+    site: dict[str, Any], tmp_path: Path
+) -> None:
+    web = site["root"] / "git" / "apps" / "web.git"
+    _git(web, "update-ref", "refs/changes/01/1/1", _git(web, "rev-parse", "master"))
+    set_sequence(site["root"] / "git" / "All-Projects.git", "2")
+    # Gerrit packs the refs and moves master just as the copy starts.
+    moved = (
+        'git --git-dir="$repo" pack-refs --all --prune && '
+        'next=$(git --git-dir="$repo" commit-tree '
+        '"$(git --git-dir="$repo" mktree </dev/null)" -p refs/heads/master -m next) && '
+        'git --git-dir="$repo" update-ref refs/heads/master "$next"'
+    )
+    env = {**GIT_ENV, "PATH": git_shim(tmp_path, before_bundle=moved)}
+
+    manifest = export_ok(site, "backup", env=env)
+    copy = site["out"] / "git" / "apps" / "web.git"
+    assert (web / "packed-refs").exists()
+    assert refs_of(copy) == refs_of(web)
+    assert manifest["git"]["repositories"]["apps/web.git"]["refs"] == 4
+    _git(copy, "fsck", "--connectivity-only", "--no-progress")
+
+
+@needs_zstd
+def test_backup_survives_a_concurrent_gc(site: dict[str, Any], tmp_path: Path) -> None:
+    web = site["root"] / "git" / "apps" / "web.git"
+    tree = _git(
+        web,
+        "mktree",
+        stdin="100644 blob "
+        + _git(web, "hash-object", "-w", "--stdin", stdin="x")
+        + "\tf\n",
+    )
+    topic = _git(web, "commit-tree", tree, "-p", "refs/heads/stable", "-m", "topic")
+    _git(web, "update-ref", "refs/heads/stable", topic)
+    # The branch goes, and a gc prunes its objects, just as the copy starts.
+    gc = (
+        'git --git-dir="$repo" update-ref -d refs/heads/stable && '
+        'git --git-dir="$repo" gc -q --prune=now'
+    )
+    env = {**GIT_ENV, "PATH": git_shim(tmp_path, before_bundle=gc)}
+
+    manifest = export_ok(site, "backup", env=env)
+    copy = site["out"] / "git" / "apps" / "web.git"
+    assert refs_of(copy) == refs_of(web)
+    assert manifest["git"]["repositories"]["apps/web.git"]["refs"] == 2
+    _git(copy, "fsck", "--connectivity-only", "--no-progress")
+
+
+@needs_zstd
+def test_backup_never_copies_lock_files(site: dict[str, Any]) -> None:
+    web = site["root"] / "git" / "apps" / "web.git"
+    for lock in (
+        "config.lock",
+        "packed-refs.lock",
+        "HEAD.lock",
+        "refs/heads/master.lock",
+        "objects/info/commit-graph.lock",
+        "objects/pack/multi-pack-index.lock",
+        "info/exclude.lock",
+    ):
+        (web / lock).parent.mkdir(parents=True, exist_ok=True)
+        (web / lock).write_text("stale\n")
+    (site["root"] / "git" / "store.lock").write_text("stale\n")
+
+    export_ok(site, "backup")
+    assert not list((site["out"] / "git").rglob("*.lock"))
+    tar_path = site["out"] / "git.tar"
+    subprocess.run(
+        ["zstd", "-q", "-d", str(site["out"] / "git.tar.zst"), "-o", str(tar_path)],
+        check=True,
+    )
+    with tarfile.open(tar_path) as tar:
+        names = tar.getnames()
+    assert "git/apps/web.git/HEAD" in names
+    assert not [name for name in names if name.endswith(".lock")]
+
+
+@pytest.mark.parametrize(
+    ("after_fetch", "message"),
+    [
+        (
+            'git --git-dir="$repo" update-ref -d refs/heads/stable',
+            "the copy of apps/web.git differs from its bundle's refs",
+        ),
+        (
+            'find "$repo/objects" -type f -delete',
+            "connectivity check failed for the copy of apps/web.git",
+        ),
+    ],
+    ids=["refs", "objects"],
+)
+def test_backup_publishes_nothing_from_a_bad_copy(
+    site: dict[str, Any], tmp_path: Path, after_fetch: str, message: str
+) -> None:
+    env = {"PATH": git_shim(tmp_path, after_fetch=after_fetch)}
+    export_fails(site, message, "backup", env=env)
+    assert not (site["out"] / "git.tar.zst").exists()
+    assert not list(site["out"].glob(".scratch-*"))
+
+
+def test_backup_refuses_a_copy_missing_a_blob(
+    site: dict[str, Any], tmp_path: Path
+) -> None:
+    web = site["root"] / "git" / "apps" / "web.git"
+    blob = _git(web, "hash-object", "-w", "--stdin", stdin="content")
+    tree = _git(web, "mktree", stdin=f"100644 blob {blob}\tf\n")
+    topic = _git(web, "commit-tree", tree, "-p", "refs/heads/stable", "-m", "topic")
+    _git(web, "update-ref", "refs/heads/stable", topic)
+    # Unpack the fetched pack into loose objects, then lose the one blob.
+    lose_blob = (
+        'mv "$repo"/objects/pack/*.pack "$repo/all.pack" && '
+        'rm -f "$repo"/objects/pack/* && '
+        'git --git-dir="$repo" unpack-objects -q <"$repo/all.pack" && '
+        f'rm "$repo/all.pack" "$repo/objects/{blob[:2]}/{blob[2:]}"'
+    )
+    env = {"PATH": git_shim(tmp_path, after_fetch=lose_blob)}
+    export_fails(
+        site,
+        "connectivity check failed for the copy of apps/web.git",
+        "backup",
+        env=env,
+    )
+    assert not (site["out"] / "git.tar.zst").exists()
+
+
+@needs_zstd
+def test_backup_accepts_head_outside_refs_heads(site: dict[str, Any]) -> None:
+    """Gerrit points All-Projects' HEAD at refs/meta/config; fsck rejects it."""
+    all_projects = site["root"] / "git" / "All-Projects.git"
+    _git(all_projects, "symbolic-ref", "HEAD", "refs/meta/config")
+    plain = site["root"] / "git" / "plain.git"
+    _git(plain, "symbolic-ref", "HEAD", "refs/heads/unborn")
+
+    export_ok(site, "backup")
+    out = site["out"] / "git"
+    assert _git(out / "All-Projects.git", "symbolic-ref", "HEAD") == "refs/meta/config"
+    assert _git(out / "plain.git", "symbolic-ref", "HEAD") == "refs/heads/unborn"
+    assert refs_of(out / "All-Projects.git") == refs_of(all_projects)
+    assert refs_of(out / "plain.git") == refs_of(plain)
+
+
+@needs_zstd
+def test_backup_keeps_a_detached_head(site: dict[str, Any]) -> None:
+    """A detached HEAD whose commit no ref reaches keeps that commit."""
+    web = site["root"] / "git" / "apps" / "web.git"
+    tree = _git(web, "mktree", stdin="")
+    master = _git(web, "rev-parse", "refs/heads/master")
+    lone = _git(web, "commit-tree", tree, "-p", master, "-m", "Only from HEAD")
+    _git(web, "update-ref", "--no-deref", "HEAD", lone)
+    plain = site["root"] / "git" / "plain.git"
+    main = _git(plain, "rev-parse", "refs/heads/main")
+    _git(plain, "update-ref", "--no-deref", "HEAD", main)
+
+    manifest = export_ok(site, "backup")
+    out = site["out"] / "git"
+    copy = out / "apps" / "web.git"
+    assert _git(copy, "rev-parse", "HEAD") == lone
+    assert (
+        subprocess.run(
+            ["git", "--git-dir", str(copy), "symbolic-ref", "-q", "HEAD"],
+            capture_output=True,
+            check=False,
+        ).returncode
+        == 1
+    )
+    assert _git(copy, "cat-file", "-t", lone) == "commit"
+    assert refs_of(copy) == refs_of(web)
+    assert not (copy / "FETCH_HEAD").exists()
+    _git(copy, "fsck", "--no-progress", "--no-dangling")
+    assert _git(out / "plain.git", "rev-parse", "HEAD") == main
+    repositories = manifest["git"]["repositories"]
+    assert repositories["apps/web.git"]["head"] == lone
+    assert repositories["plain.git"]["head"] == main
+    assert repositories["All-Projects.git"]["head"] == _git(
+        site["root"] / "git" / "All-Projects.git", "symbolic-ref", "HEAD"
+    )
+
+
+def test_backup_refuses_a_detached_head_moved_during_the_copy(
+    site: dict[str, Any], tmp_path: Path
+) -> None:
+    web = site["root"] / "git" / "apps" / "web.git"
+    _git(web, "update-ref", "--no-deref", "HEAD", "refs/heads/master")
+    moved = 'git --git-dir="$repo" update-ref --no-deref HEAD refs/meta/config'
+    env = {"PATH": git_shim(tmp_path, after_bundle=moved)}
+    export_fails(
+        site, "HEAD of apps/web.git changed during the copy", "backup", env=env
+    )
+    assert not (site["out"] / "git.tar.zst").exists()
+
+
+def test_backup_refuses_a_head_changed_during_the_copy(
+    site: dict[str, Any], tmp_path: Path
+) -> None:
+    # Gerrit makes a branch the bundle lacks the default one, just after bundling.
+    new_head = (
+        'git --git-dir="$repo" update-ref refs/heads/next refs/heads/master && '
+        'git --git-dir="$repo" symbolic-ref HEAD refs/heads/next'
+    )
+    env = {"PATH": git_shim(tmp_path, after_bundle=new_head)}
+    export_fails(
+        site, "HEAD of apps/web.git changed during the copy", "backup", env=env
+    )
+    assert not (site["out"] / "git.tar.zst").exists()
+
+
+def set_sequence(repo: Path, value: str) -> None:
+    """Point repo's refs/sequences/changes at a blob holding value, as Gerrit."""
+    blob = _git(repo, "hash-object", "-w", "--stdin", stdin=value)
+    _git(repo, "update-ref", "refs/sequences/changes", blob)
+
+
+def add_change(repo: Path, number: int) -> None:
+    """Give repo the meta ref of change number, at its first commit."""
+    commit = _git(repo, "rev-list", "--max-count=1", "--all")
+    _git(repo, "update-ref", f"refs/changes/{number % 100:02d}/{number}/meta", commit)
+
+
+def sequence_of(repo: Path) -> str:
+    return _git(repo, "cat-file", "blob", "refs/sequences/changes")
+
+
+def test_backup_copies_the_change_sequence_last(site: dict[str, Any]) -> None:
+    set_sequence(site["root"] / "git" / "All-Projects.git", "1")
+    result = run_on(site, "backup", "--dry-run")
+    assert result.returncode == 0, result.stderr
+    bundles = [line for line in result.stdout.splitlines() if " bundle " in line]
+    assert len(bundles) == len(site["refs"]), result.stdout
+    assert "/All-Projects.git " in bundles[-1], bundles
+
+
+@needs_zstd
+def test_backup_keeps_changes_made_during_the_copy_below_the_sequence(
+    site: dict[str, Any], tmp_path: Path
+) -> None:
+    git_dir = site["root"] / "git"
+    set_sequence(git_dir / "All-Projects.git", "21")
+    add_change(git_dir / "apps" / "web.git", 20)
+    # Gerrit reserves 21 to 40 and creates change 21 in a repository not yet copied.
+    reserve = (
+        f'blob=$(printf 41 | git --git-dir="{git_dir}/All-Projects.git"'
+        " hash-object -w --stdin) && "
+        f'git --git-dir="{git_dir}/All-Projects.git"'
+        ' update-ref refs/sequences/changes "$blob" && '
+        f'git --git-dir="{git_dir}/plain.git" update-ref refs/changes/21/21/meta'
+        " refs/heads/main"
+    )
+    env = {"PATH": git_shim(tmp_path, after_bundle=reserve)}
+    export_ok(site, "backup", env=env)
+    out = site["out"] / "git"
+    assert "refs/changes/21/21/meta" in refs_of(out / "plain.git")
+    assert sequence_of(out / "All-Projects.git") == "41"
+
+
+@pytest.mark.parametrize(
+    ("sequence", "message"),
+    [
+        ("7", "refs/sequences/changes of All-Projects.git is 7, not above change 7"),
+        ("x", "refs/sequences/changes of All-Projects.git is not a number"),
+        (None, "change 7 in apps/web.git has no refs/sequences/changes"),
+    ],
+    ids=["behind", "garbled", "missing"],
+)
+def test_backup_refuses_changes_the_sequence_does_not_cover(
+    site: dict[str, Any], sequence: str | None, message: str
+) -> None:
+    git_dir = site["root"] / "git"
+    if sequence is not None:
+        set_sequence(git_dir / "All-Projects.git", sequence)
+    add_change(git_dir / "apps" / "web.git", 7)
+    export_fails(site, message, "backup")
+    assert not (site["out"] / "git.tar.zst").exists()
+
+
+@needs_zstd
+def test_backup_accepts_a_site_without_changes(site: dict[str, Any]) -> None:
+    set_sequence(site["root"] / "git" / "All-Projects.git", "1")
+    export_ok(site, "backup")
+    assert sequence_of(site["out"] / "git" / "All-Projects.git") == "1"
+
+
+@pytest.mark.parametrize(
+    "mode", ["seed", "final", pytest.param("backup", marks=needs_zstd)]
+)
+def test_exports_are_private(site: dict[str, Any], mode: str) -> None:
+    """Every path an export writes, archives included, is owner-only."""
+    web = site["root"] / "git" / "apps" / "web.git"
+    (web / "info").mkdir(exist_ok=True)
+    (web / "info" / "exclude").write_text("*.tmp\n")
+    for path in [site["root"], *map(Path, all_paths(site["root"]))]:
+        path.chmod(0o755 if path.is_dir() else 0o644)
+    packed = ["--pack"] if mode == "final" and shutil.which("zstd") else []
+
+    saved = os.umask(0o022)
+    try:
+        manifest = export_ok(site, mode, *packed)
+    finally:
+        os.umask(saved)
+    paths = list(all_paths(site["out"]))
+    assert str(site["out"] / "git" / "apps" / "web.git" / "info" / "exclude") in paths
+    assert not [p for p in paths if Path(p).name.startswith(".scratch-")]
+    assert [p for p in paths if os.lstat(p).st_mode & 0o077] == []
+    for name in manifest["archives"]:
+        tar_path = site["out"] / "unpacked.tar"
+        subprocess.run(
+            ["zstd", "-q", "-f", "-d", str(site["out"] / name), "-o", str(tar_path)],
+            check=True,
+        )
+        with tarfile.open(tar_path) as tar:
+            assert [m.name for m in tar if m.mode & 0o077] == [], name
+        tar_path.unlink()
+
+
+@needs_zstd
+def test_backup_bundles_privately(site: dict[str, Any], tmp_path: Path) -> None:
+    log = tmp_path / "modes.log"
+    record = (
+        'for a; do case $a in */repository.bundle) stat -c "%a" "$a" "${a%/*}"'
+        f" >> {shlex.quote(str(log))} ;; esac; done"
+    )
+    env = {"PATH": git_shim(tmp_path, after_bundle=record)}
+    saved = os.umask(0o022)
+    try:
+        export_ok(site, "backup", env=env)
+    finally:
+        os.umask(saved)
+    assert log.read_text().split() == ["600", "700"]
+    assert not list(site["out"].glob(".scratch-*"))
+
+
+@pytest.mark.parametrize(
+    "mode", ["seed", "final", pytest.param("backup", marks=needs_zstd)]
+)
+def test_exports_leave_out_lock_files(site: dict[str, Any], mode: str) -> None:
+    etc = site["root"] / "etc"
+    locks = ["gerrit.config.new.lock", "secure.config.new.lock", "gerrit.config.lock"]
+    for name in locks:
+        (etc / name).write_text("stale\n")
+    (site["root"] / "git" / "plain.git" / "refs" / "heads" / "main.lock").write_text(
+        "stale\n"
+    )
+
+    export_ok(site, mode)
+    assert (site["out"] / "site" / "etc" / "gerrit.config").is_file()
+    assert not list((site["out"] / "site").rglob("*.lock"))
+    assert not list((site["out"] / "git").rglob("*.lock"))
+
+
+@pytest.mark.parametrize(
+    "mode", ["seed", "final", pytest.param("backup", marks=needs_zstd)]
+)
+def test_exports_delete_locks_an_earlier_copy_left(
+    site: dict[str, Any], mode: str
+) -> None:
+    export_ok(site, mode)
+    # Left by a seed that predates the lock exclusion.
+    stale = [
+        site["out"] / "git" / "plain.git" / "refs" / "heads" / "main.lock",
+        site["out"] / "git" / "plain.git" / "config.lock",
+        site["out"] / "site" / "etc" / "gerrit.config.lock",
+    ]
+    for lock in stale:
+        lock.write_text("stale\n")
+
+    export_ok(site, mode)
+    assert not list((site["out"] / "site").rglob("*.lock"))
+    assert not list((site["out"] / "git").rglob("*.lock"))
+
+
+@needs_zstd
+def test_backup_follows_deleted_refs(site: dict[str, Any]) -> None:
+    export_ok(site, "backup")
+    web = site["root"] / "git" / "apps" / "web.git"
+    _git(web, "pack-refs", "--all")
+    _git(web, "update-ref", "-d", "refs/heads/stable")
+
+    manifest = export_ok(site, "backup")
+    assert manifest["git"]["repositories"]["apps/web.git"]["refs"] == 2
+    copy = site["out"] / "git" / "apps" / "web.git"
+    assert "stable" not in _git(copy, "for-each-ref", "--format=%(refname)")
+
+
+def test_backup_refuses_a_ref_without_its_object(site: dict[str, Any]) -> None:
+    broken = site["root"] / "git" / "plain.git" / "refs" / "heads" / "broken"
+    broken.write_text("1234567890123456789012345678901234567890\n")
+
+    result = export_fails(site, "cannot read refs of plain.git", "backup")
+    assert "missing object" in result.stderr
+    assert "refs/heads/broken" in result.stderr
+    assert not (site["out"] / "git.tar.zst").exists()

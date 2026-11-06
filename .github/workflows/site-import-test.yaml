@@ -35,6 +35,7 @@ on:
       - 'K8S/charts/gerrit/files/scripts/site?import*.py'
       - 'K8S/charts/gerrit/files/scripts/verify*.py'
       - 'scripts/gerrit-site-export.py'
+      - 'scripts/gerrit_export_git.py'
       - 'tests/k8s/**'
 
 concurrency:
