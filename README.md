@@ -1238,7 +1238,9 @@ Dependabot cannot track `TOOL_RCLONE_VERSION`, so the weekly
 release. While the pin lags, the workflow keeps one open issue,
 `rclone: a newer release than TOOL_RCLONE_VERSION`, and closes it once
 the pin is current, so the rclone rules get revisited when a fixed
-release ships.
+release ships. The issue lists each `.grype.yaml` rule whose reason
+names rclone, so the bump and the removal of those rules land
+together.
 
 ## Advanced Configuration
 

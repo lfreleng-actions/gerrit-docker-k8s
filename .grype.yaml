@@ -250,3 +250,37 @@ ignore:
     reason: >-
       Compiled into rclone v1.75.2, the latest release; only an rclone
       release fixes it. Re-check when TOOL_RCLONE_VERSION changes.
+  - vulnerability: 'GO-2026-6888'
+    package:
+      name: 'github.com/andybalholm/brotli'
+      version: 'v1.2.2'
+      type: 'go-module'
+    reason: >-
+      Compiled into rclone v1.75.2, the latest release; fixed on
+      rclone's master (brotli v1.2.7) but not yet released, so only an
+      rclone release fixes it. Re-check when TOOL_RCLONE_VERSION
+      changes. Listed in CISA's KEV catalogue: revisit as soon as
+      rclone releases a fix. Excessive memory allocation decoding a
+      crafted brotli stream; rclone talks only to the operator's S3
+      store for site import and backups, so exploiting it needs
+      control of that store's responses. The effect is denial of
+      service, not code execution: site import runs in the
+      StatefulSet's site-import init container, so a failed import
+      blocks Gerrit's startup or a restore until the store is fixed,
+      and a backup run fails.
+  - vulnerability: 'GO-2026-6865'
+    package:
+      name: 'github.com/klauspost/compress'
+      version: 'v1.19.2'
+      type: 'go-module'
+    reason: >-
+      Compiled into rclone v1.75.2, the latest release; fixed on
+      rclone's master (compress v1.20.3) but not yet released, so only
+      an rclone release fixes it. Re-check when TOOL_RCLONE_VERSION
+      changes. A panic on crafted two-block frames; rclone talks only
+      to the operator's S3 store for site import and backups, so
+      exploiting it needs control of that store's responses. The
+      effect is denial of service, not code execution: site import
+      runs in the StatefulSet's site-import init container, so a
+      failed import blocks Gerrit's startup or a restore until the
+      store is fixed, and a backup run fails.
