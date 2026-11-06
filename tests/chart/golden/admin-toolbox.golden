@@ -298,13 +298,13 @@ data:
     # SPDX-License-Identifier: Apache-2.0
     # SPDX-FileCopyrightText: 2026 The Linux Foundation
 
-    # Usage: gerrit-site-export <seed|final> --out <dir> [option ...]
+    # Usage: gerrit-site-export <seed|final|backup> --out <dir> [option ...]
     #
     # Run the site export tool the image carries; see its --help. The tool's
     # own check that Gerrit has stopped reads /proc, which shows only this
     # pod's processes, so a final export first runs gerrit-require-offline
     # and refuses while the Gerrit pod exists. --i-stopped-writes skips both
-    # checks. A seed export runs while Gerrit serves.
+    # checks. A seed or backup export runs while Gerrit serves.
 
     set -eu
 
@@ -379,7 +379,7 @@ spec:
         app.kubernetes.io/managed-by: Helm
         app.kubernetes.io/part-of: gerrit
       annotations:
-        checksum/helpers: 831217aeddec166990ae2a96ee2a80716c3388815d545a31a2c6e2f861641b1d
+        checksum/helpers: a4f13eb29e2f21b2c89e3e98af64001dfa33d92c0069e4a0ee4f952b9aff84eb
         instrumentation.opentelemetry.io/inject-java: "false"
         instrumentation.opentelemetry.io/inject-nodejs: "false"
         instrumentation.opentelemetry.io/inject-python: "false"

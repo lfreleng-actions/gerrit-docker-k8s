@@ -1,38 +1,34 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: 2026 The Linux Foundation
 """\
-Usage: python3 scripts/gerrit-site-export.py <seed|final> --out <dir> [options]
+Usage: python3 scripts/gerrit-site-export.py <seed|final|backup> --out <dir> [options]
 
-Copy a Gerrit site into <out>/site and <out>/git, described by manifest.json.
-Standard library only, Python 3.8 or newer; reads the site, writes under --out.
+Copy a Gerrit site to <out>/site and <out>/git with manifest.json; stdlib, Python 3.8+.
   seed                Incremental rsync; safe while Gerrit runs, and to re-run.
-  final               Last rsync with --checksum, then ref counts,
-                      refs/meta/config heads and SSH host key fingerprints.
-                      Refuses while Gerrit serves the site (logs/gerrit.pid,
-                      /proc) or /proc cannot tell, unless --i-stopped-writes.
+  final               Last rsync, with --checksum. Refuses while Gerrit serves the site
+                      (gerrit.pid, /proc) or if unsure, unless --i-stopped-writes.
+  backup              Packed live final: git checks repositories; db/, data/ (H2 flags,
+                      events, queue) may be inconsistent: snapshot a stopped site.
   --site <dir>        Gerrit site (default: $GERRIT_SITE).
   --git <dir>         Repositories (default: gerrit.basePath of the site).
-  --out <dir>         Export directory; may not overlap the site or repositories.
+  --out <dir>         Owner-only export dir; may not overlap the site or repositories.
   --i-stopped-writes  final: writes are stopped another way; skip the check.
-  --pack              final: pack 0600 site.tar.zst and git.tar.zst; needs zstd.
-  --encrypt <spec>    final: encrypt the archives with age:<recipient> or
-                      gpg:<key-id>, deleting the plaintext. Implies --pack.
-  --upload <url>      final: 'aws s3 cp --sse aws:kms' the archives and
-                      manifest.json to s3://bucket/prefix. Implies --pack.
+  --pack              final, backup: pack site.tar.zst, git.tar.zst; needs zstd.
+  --encrypt <spec>    Implies --pack: age:<recipient> or gpg:<key-id>; drops plaintext.
+  --upload <url>      Implies --pack: SSE-KMS copy of the outputs to s3://bucket/prefix.
   --include-cache     Copy <site>/cache too; the import rebuilds caches.
   --dry-run           Print the commands without writing anything.
-  -h, --help          Show this help and exit.
 
-Left out of <out>/site whatever their type: cache, index, logs, tmp, bin,
-.gerritcodereview/tmp, .chart, and the repositories, as configured and resolved.
-Symlinks inside the repository store are refused, never followed; so are symlinked
-outputs. Runs remove the old manifest (uploaded too) and archives first and write the
-manifest last, so a manifest.json marks a complete export. Any failure exits non-zero.
+Left out of <out>/site, any type: cache, index, logs, tmp, bin, .chart, *.lock files,
+.gerritcodereview/tmp and the repositories as configured and resolved. Store symlinks
+and symlinked outputs are refused. Old manifest (uploaded too) and archives go first,
+manifest last: manifest.json marks a complete export; errors exit non-zero. -h, --help.
 """
 
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import os
 import shlex
@@ -64,6 +60,8 @@ PARTS = ("site", "git")
 ARCHIVES = [f"{p}.tar.zst{s}" for p in PARTS for s in ("", ".age", ".gpg")]
 VERSION_JAR = "WEB-INF/lib/com_google_gerrit_common_libversion.jar"
 VERSION_FILE = "com/google/gerrit/common/Version"  # In VERSION_JAR.
+HEAD_PROBES = (["symbolic-ref", "-q", "HEAD"], ["rev-parse", "--verify", "HEAD^0"])
+COMPANION = "gerrit_export_git"  # Its .py, beside this tool, copies repositories.
 FOR_EACH_REF = ["for-each-ref", "--format=%(refname) %(objectname) %(*objectname)"]
 
 
@@ -106,7 +104,7 @@ def parse_args(argv: list[str]) -> Any:
         if arg in ("-h", "--help"):
             sys.stdout.write(__doc__ or "")
             sys.exit(0)
-        elif arg in ("seed", "final"):
+        elif arg in ("seed", "final", "backup"):
             if opts.mode:
                 die(f"mode given twice: {opts.mode} and {arg}")
             opts.mode = arg
@@ -123,15 +121,17 @@ def parse_args(argv: list[str]) -> Any:
     kind, _, who = opts.encrypt.partition(":")
     bad_key = opts.encrypt and (kind not in ENCRYPT or not who)
     bad_s3 = opts.upload and (opts.upload[:5] != "s3://" or opts.upload == "s3://")
-    opts.pack = opts.pack or bool(opts.encrypt or opts.upload)
+    opts.pack = opts.pack or bool(opts.encrypt or opts.upload) or opts.mode == "backup"
     seed_pack = opts.pack and opts.mode == "seed"
+    lone = opts.mode == "backup" and not importlib.util.find_spec(COMPANION)
     for failed, message in (
-        (not opts.mode, "give a mode, seed or final (see --help)"),
+        (not opts.mode, "give a mode, seed, final or backup (see --help)"),
         (not opts.site, "no site: pass --site or set GERRIT_SITE"),
         (not opts.out, "no export directory: pass --out"),
         (bad_key, "--encrypt takes age:<recipient> or gpg:<key-id>"),
         (bad_s3, "--upload takes s3://bucket/prefix"),
-        (seed_pack, "--pack, --encrypt and --upload need final mode"),
+        (seed_pack, "--pack, --encrypt and --upload need final or backup mode"),
+        (lone, f"backup needs {COMPANION}.py beside the script, as in the chart image"),
     ):
         if failed:
             die(message)
@@ -262,18 +262,20 @@ def copy(opts: Any, site: str, git_dir: str, git_given: str, out: Path) -> None:
             names.append("/".join(p[: (up or [len(p)])[0]]))
     escape = "".maketrans({c: "\\" + c for c in "*?[\\"})
     filters = [f"--exclude=/{n.translate(escape)}" for n in dict.fromkeys(names)]
-    rsync = ["rsync", "-a", "--delete", *(["--checksum"] * (opts.mode == "final"))]
-    for source, part in ((site, "site"), (git_dir, "git")):
-        extra = ["--delete-excluded", *filters] if part == "site" else []
-        command = [*rsync, *extra, f"{source}/", f"{out}/{part}/"]
+    rsync = ["rsync", "-a", "--chmod=go-rwx", "--delete"]
+    rsync += ["--checksum"] * (opts.mode == "final")
+    git = [("git", git_dir, ("--delete-excluded",))] * (opts.mode != "backup")
+    for part, source, extra in [("site", site, ("--delete-excluded", *filters)), *git]:
+        command = [*rsync, "--exclude=*.lock", *extra, f"{source}/", f"{out}/{part}/"]
         # 24: files vanished mid-copy, expected while Gerrit writes.
-        if step(opts, command, "rsync", 24 if opts.mode == "seed" else 0) == 24:
-            say("warning: files vanished during the copy; re-run seed or final")
+        if step(opts, command, "rsync", 0 if opts.mode == "final" else 24) == 24:
+            say("warning: files vanished during the copy; re-run to copy them")
+    if not git:  # rsync would race live repositories; only backup loads COMPANION.
+        importlib.import_module(COMPANION).copy(git_dir, out, opts.dry_run)
 
 
 def pack(opts: Any, out: Path) -> list[Path]:
-    # secure.config and host keys inside: all 0600. A failure ends the run.
-    archives, saved, failure = [], os.umask(0o077), ""
+    archives, failure = [], ""
     for part in PARTS:
         archive = out / f"{part}.tar.zst"
         if opts.dry_run:
@@ -299,15 +301,11 @@ def pack(opts: Any, out: Path) -> list[Path]:
             output = "-o" if kind == "age" else "--output"
             command = [kind, *ENCRYPT[kind], who, output, str(sealed), str(archive)]
             step(opts, command, f"{kind} encryption of {archive.name}")
-            if opts.dry_run:
-                show(["rm", "-f", str(archive)])
-            else:
+            if not opts.dry_run:
                 refuse_unsafe(sealed, regular=True)
-                os.chmod(sealed, 0o600)
-                archive.unlink()
+            step(opts, ["rm", "-f", str(archive)], f"removal of {archive.name}")
             archive = sealed
         archives.append(archive)
-    os.umask(saved)
     return archives
 
 
@@ -327,20 +325,25 @@ def gerrit_version(site: str) -> str | None:
     return text.strip().lstrip("v") or None
 
 
+def git_head(git: list[str]) -> str | None:  # The ref HEAD names, or its commit.
+    heads = (run([*git, *probe], True).stdout.strip() for probe in HEAD_PROBES)
+    return next(filter(None, heads), None)
+
+
 def build_manifest(opts: Any, site: str, git_dir: str, out: Path) -> dict[str, Any]:
     repos = {}
     for top, dirs, _files in os.walk(out / "git", onerror=die):
         for name in [d for d in dirs if d.endswith(".git")]:
             dirs.remove(name)
             rel = Path(top, name).relative_to(out / "git").as_posix()
-            repo = f"--git-dir={Path(top, name)}"
-            result = run(["git", "-c", "safe.directory=*", repo, *FOR_EACH_REF], True)
+            repo = ["git", "-c", "safe.directory=*", f"--git-dir={Path(top, name)}"]
+            result = run([*repo, *FOR_EACH_REF], True)
             if result.returncode:
-                die(f"cannot read refs of repository: {rel}")
+                die(f"cannot read refs of repository: {rel}\n{result.stderr.strip()}")
             refs = [line.split(" ") for line in result.stdout.splitlines()]
-            # A tag is peeled to the commit it names.
-            meta = [r[2] or r[1] for r in refs if r[0] == "refs/meta/config"]
+            meta = [r[2] or r[1] for r in refs if r[0] == "refs/meta/config"]  # Peeled
             repos[rel] = {"refs": len(refs), "meta_config": next(iter(meta), None)}
+            repos[rel]["head"] = git_head(repo)
     keys = {}
     for key in host_keys(out / "site" / "etc"):
         result = run(["ssh-keygen", "-l", "-E", "sha256", "-f", str(key)], True)
@@ -350,10 +353,12 @@ def build_manifest(opts: Any, site: str, git_dir: str, out: Path) -> dict[str, A
         keys[key.name] = fields[1]
     size = {n: sum(os.lstat(p).st_size for p in tree_paths(out / n)) for n in PARTS}
     git = {"path": git_dir, "bytes": size["git"]}
+    h2 = {"final": "stopped", "backup": "best-effort"}.get(opts.mode)
     return {
         "schema": 1,
         "created": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "mode": opts.mode,
+        **({"consistency": {"git": "verified", "h2": h2}} if h2 else {}),
         "gerrit_version": gerrit_version(site),
         "site": {"path": site, "bytes": size["site"]},
         "git": {**git, "repositories": dict(sorted(repos.items()))},
@@ -374,6 +379,7 @@ def sha256_of(path: Path) -> str:
 
 
 def main(argv: list[str]) -> None:
+    os.umask(0o077)  # Before anything is written: every output is owner-only.
     opts = parse_args(argv)
     site = readable_dir(opts.site, "site")
     require_tools(opts, site)
@@ -396,15 +402,9 @@ def main(argv: list[str]) -> None:
     say(f"{dry}{opts.mode} export of {site} into {out}")
     # Old manifest first, then archives: a failed run must not look complete.
     stale = [path for path in outputs if os.path.lexists(path)]
-    if opts.dry_run:
-        if stale:
-            show(["rm", "-f", *map(str, stale)])
-        show(["mkdir", "-p", f"{out}/site", f"{out}/git"])
-    else:
-        for path in stale:
-            path.unlink()
-        (out / "site").mkdir(parents=True, exist_ok=True)
-        (out / "git").mkdir(exist_ok=True)
+    removal = [["rm", "-f", *map(str, stale)]] * bool(stale)
+    for command in [*removal, ["mkdir", "-p", f"{out}/site", f"{out}/git"]]:
+        step(opts, command, command[0])
     try:
         copy(opts, site, git_dir, git_given, out)
         data = {} if opts.dry_run else build_manifest(opts, site, git_dir, out)
@@ -413,7 +413,7 @@ def main(argv: list[str]) -> None:
             show(["write", str(manifest)])
         else:
             data["archives"] = {a.name: sha256_of(a) for a in archives}
-            with os.fdopen(os.open(temp, NEW_FILE, 0o644), "w") as handle:
+            with os.fdopen(os.open(temp, NEW_FILE, 0o600), "w") as handle:
                 handle.write(json.dumps(data, indent=2) + "\n")
         prefix = opts.upload.rstrip("/")
         if opts.upload:  # Old manifest first: it names archives about to change.

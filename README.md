@@ -1020,18 +1020,17 @@ repository names (e.g. `foo-bar`).
 archive layout the Helm chart's import Job and backup CronJob consume:
 `<out>/site` (the site minus `cache`, `index`, `logs`, `tmp`, `bin`,
 `.gerritcodereview/tmp` and `.chart`, the chart's own import state),
-`<out>/git` (the bare repositories under
-`gerrit.basePath`) and `<out>/manifest.json`. It is a single file that
-needs only Python 3.8 or newer and its standard library, plus `rsync`
-and `git`, so it runs with the `python3` an existing Gerrit host
-already has. SSH host keys need `ssh-keygen`; `--pack` needs `zstd`,
-and `age`, `gpg` or `aws` matter only when you ask for encryption or
-upload. The archives are readable by their owner only. The tool does
-not follow symlinks inside the repository store: a linked repository
-or directory of repositories stops the run before anything is written,
-naming each link, so replace it with the directory it points to.
-`gerrit.basePath` itself may be a symlink; the tool exports the
-directory it resolves to.
+`<out>/git` (the bare repositories under `gerrit.basePath`) and
+`<out>/manifest.json`. It needs only Python 3.8 or newer and its
+standard library, plus `rsync` and `git`, so it runs with the `python3`
+an existing Gerrit host already has. SSH host keys need `ssh-keygen`;
+`--pack` needs `zstd`, and `age`, `gpg` or `aws` matter only when you
+ask for encryption or upload. The archives are readable by their owner
+only. The tool does not follow symlinks inside the repository store: a
+linked repository or directory of repositories stops the run before
+anything is written, naming each link, so replace it with the directory
+it points to. `gerrit.basePath` itself may be a symlink; the tool
+exports the directory it resolves to.
 
 `final` refuses to run while a Gerrit daemon serves the site, judged
 from `logs/gerrit.pid` and `/proc`, or when it cannot tell, unless you
@@ -1055,7 +1054,54 @@ python3 scripts/gerrit-site-export.py seed --site /var/gerrit --out /backup/gerr
 # After stopping Gerrit: last copy, full manifest and tar.zst archives
 python3 scripts/gerrit-site-export.py final --site /var/gerrit \
   --out /backup/gerrit --pack
+
+# While Gerrit runs: a packed backup the chart's site import accepts
+python3 scripts/gerrit-site-export.py backup --site /var/gerrit \
+  --out /backup/gerrit
 ```
+
+`backup` is what the chart's backup CronJob runs. It packs like
+`final` but copies a running site, so it copies each repository
+through Git rather than `rsync`: it bundles the repository's refs and
+the objects they reach, in a private scratch directory under `--out`,
+fetches the bundle into a new bare repository and copies `config`,
+`description`, `info/` and `HEAD` beside it; a detached `HEAD` keeps
+its commit, fetched as well. The copy then has to hold
+exactly the bundle's refs and every object they reach, which `git
+rev-list --objects --all` checks, and `HEAD` must not change
+meanwhile, or the run fails and publishes nothing. The repository
+holding `refs/sequences/changes`, `All-Projects`, is copied after all
+the others, and the copied sequence must exceed every change number in
+the copies, so changes Gerrit creates during the copy never outrun the
+sequence a restore resumes from. The repositories
+are therefore exact however Gerrit packs refs or collects garbage
+meanwhile, and the manifest records `"consistency": {"git":
+"verified", "h2": "best-effort"}`.
+
+The files under `db/` and `data/` are another matter: `backup` copies
+them from a running site, so an H2 database among them may be
+internally inconsistent, not even crash-consistent. They hold the
+reviewers' reviewed-file flags (`db/account_patch_reviews`) and plugin
+data such as the events log (`data/events-log-db`) and the replication
+queue. Losing them loses no code review data: changes, comments,
+votes, accounts and groups live in the repositories (NoteDb). For a
+crash-consistent copy of them too, take a volume snapshot of a stopped
+or quiesced site, or stop Gerrit and run `final --pack`, whose
+manifest records `"h2": "stopped"`.
+
+Every mode writes its output owner-only: the tool sets umask `0077`
+before it writes anything and `rsync` drops group and other
+permissions, so the export directory, the copied repositories and the
+archives give no other local user access to the site's history or
+secrets. The import restores the site as the Gerrit user.
+
+`seed` and `final` need only the tool itself, so a copy of
+`scripts/gerrit-site-export.py` alone runs them on an existing Gerrit
+host. `backup` also loads `scripts/gerrit_export_git.py` from beside
+the tool, as the chart image installs it; without it, `backup` stops
+with an error before writing anything. Every mode leaves out `*.lock`
+files, in the site and in the repositories, and deletes any an earlier
+run left in the export directory.
 
 Run `python3 scripts/gerrit-site-export.py --help` for every option.
 The chart README covers the import side: how the import Job reads this

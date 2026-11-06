@@ -424,7 +424,8 @@ get the Gerrit container's heap: `container.heapLimit`, else 70% of
 the container's memory limit. `init` may migrate
 NoteDb and rewrite `refs/meta/config`, so after it `verify` checks
 only that the repositories, the exported host keys and the server ID
-survived.
+survived: a project repository must match its manifest entry in every
+key the entry has, `head` included.
 
 ### 1.8 Backup and maintenance CronJobs
 
@@ -633,14 +634,57 @@ An export directory `<out>` holds:
   at that prefix, then copies the archives and the new
   `manifest.json` there with `aws s3 cp --sse aws:kms`.
 
-The tool has two modes. `seed` copies while Gerrit runs and can repeat;
-`final` refuses to run while Gerrit serves the site, copies with
-`--checksum`, and alone may pack, encrypt or upload. Both write a
-manifest.
+The tool has three modes. `seed` copies while Gerrit runs and can
+repeat; `final` refuses to run while Gerrit serves the site and copies
+with `--checksum`; `backup`, which the backup CronJob (#242) runs,
+copies a running site and always packs. Only `final` and `backup` may
+pack, encrypt or upload. All three write a manifest.
 
-The backup CronJob writes the same layout with a third mode, `backup`,
-as #242 specifies. It copies a running site, so a `backup` archive
-carries the live-copy consistency limits #242 documents.
+`backup` copies the repositories through Git, as `rsync` cannot copy
+a repository Gerrit writes to: a `pack-refs` or a `gc` during the copy
+can hide refs or remove objects a copied ref names, and `rsync` would
+pick up the lock files Git writes meanwhile. `rsync` copies the
+store minus every `*.git` directory, then `scripts/gerrit_export_git.py`
+runs `git bundle create --all` on each repository, fetches
+`+refs/*:refs/*` from the bundle into a new bare repository and copies
+`config`, `description`, `info/` and `HEAD`; no remote is ever
+added. A detached `HEAD` stays detached at the same commit, which the
+copy fetches from the source as well, since no ref need reach it; an
+unborn one is left as `git init` makes it. Every mode sets umask `0077` before it writes anything,
+makes the bundle in a `0700` directory from `tempfile.mkdtemp` under
+`--out`, and has `rsync` drop group and other permissions, so all its
+output is owner-only: a bundle or a repository copy holds the full
+history, and a `config` may hold credentials. `git rev-list --objects
+--all` must find every object the copy's refs reach, its
+`for-each-ref` must match the bundle's refs, and `HEAD` must read the
+same before the bundle and after the copy, or the run fails before it
+packs anything: a default branch made after the bundle would leave
+the copy's `HEAD` dangling. (`git fsck` would
+also reject a valid `HEAD` outside `refs/heads/`, as `All-Projects`'
+is.) Git builds the bundle from one ref snapshot and
+packs the objects it reaches as it reads them, so a concurrent `gc`
+either leaves those objects or makes the bundle step fail. Each
+bundle is consistent only within its repository, and Gerrit reserves
+change numbers from `refs/sequences/changes` in `All-Projects` before
+it creates a change in any repository. The repositories holding that
+ref are therefore copied last, and after every copy the sequence must
+exceed every `refs/changes/*/<number>/*` in the copies, or the run
+fails and publishes nothing: a restored site would otherwise hand out
+a number twice. `seed` and
+`final` keep `rsync`, which is right for a stopped or seeding site,
+and the site directory stays on `rsync` in every mode. All modes leave
+out `*.lock` files, in the site and the repositories, and delete those
+an earlier run left in the export directory: a stale lock
+would block the ref it locks after an import, or the `git config`
+that `render-config.sh` and `site-init.sh` run on `etc/`.
+In `backup` mode the files under `db/` and `data/` are copied from a
+running site and may be internally inconsistent: `rsync` of a live H2
+file is not a point-in-time copy. They hold the reviewed-file flags
+(`db/account_patch_reviews`) and plugin data such as the events log
+and the replication queue; code review data lives in the repositories
+(NoteDb) and is exact. A crash-consistent copy of those files needs a
+volume snapshot of the stopped or quiesced site, or a `final` export.
+The manifest's `consistency` records which guarantee an export has.
 
 `site-import` accepts a `final` or a `backup` manifest and refuses a
 `seed` one. A `final` archive is the consistent copy for adopting a
@@ -657,7 +701,8 @@ the `final` one and is never an import source.
 | --- | ---- | ------- |
 | `schema` | integer | Manifest format version, currently `1`. |
 | `created` | string | UTC time the manifest was built, `YYYY-MM-DDTHH:MM:SSZ`. |
-| `mode` | string | `seed` or `final` from the export tool; `backup` from the backup CronJob (#242). `site-import` accepts `final` and `backup`. |
+| `mode` | string | `seed`, `final` or `backup`, the export tool's mode; the backup CronJob (#242) writes `backup`. `site-import` accepts `final` and `backup`. |
+| `consistency` | object | `final` and `backup` only. `git`: `verified`, the repositories are exact; `h2`: `stopped` for `final`, `best-effort` for `backup`, whose `db/` and `data/` files are copied from a running site. |
 | `gerrit_version` | string or `null` | The release `bin/gerrit.war` in the source site records in its nested `com_google_gerrit_common_libversion.jar`, without the leading `v`; `null` when the site has no `bin/gerrit.war` or the war records no version there. |
 | `site` | object | `path`: the source site directory, resolved; `bytes`: total size of `<out>/site`. |
 | `git` | object | `path`: the source repository directory, resolved; `bytes`: total size of `<out>/git`; `repositories`: see below. |
@@ -672,6 +717,9 @@ the `final` one and is never an import source.
 - `refs`: the number of refs `git for-each-ref` lists in it;
 - `meta_config`: the commit `refs/meta/config` points to, peeled if it
   is a tag, or `null` when the repository has no such ref.
+- `head`: the ref `HEAD` names, such as `refs/heads/master`, or the
+  commit a detached `HEAD` points to, or `null` when it resolves to
+  neither.
 
 `site-import` checks each archive's SHA-256 against `archives` before
 unpacking, and checks `refs` and `meta_config` against the unpacked
