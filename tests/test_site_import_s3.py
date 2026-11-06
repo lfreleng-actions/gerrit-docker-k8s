@@ -274,3 +274,69 @@ def test_s3_fetch_that_writes_nothing_fails(
     assert state(pod["site"])["reason"] == (
         f"rclone wrote nothing for {URL}/manifest.json"
     )
+
+
+@needs_tools
+def test_s3_import_resolves_latest(
+    pod: dict[str, Any],
+    export: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    log = stub_rclone(pod, export)
+    (export / "latest").write_text("20260102T030405Z\n")
+    latest = "s3://gerrit-backups/gerrit/latest"
+    env = s3_env(pod, SITE_IMPORT_SOURCE_URL=latest)
+    _, code = run_main(env, monkeypatch)
+    out = capsys.readouterr()
+    assert code == 0, out.err
+    dated = "gerrit-backups/gerrit/20260102T030405Z"
+    calls = [line for line in log.read_text().splitlines() if "copyto" in line]
+    assert [call.split()[-2] for call in calls] == [
+        "siteimport:gerrit-backups/gerrit/latest",
+        f"siteimport:{dated}/manifest.json",
+        f"siteimport:{dated}/git.tar.zst",
+        f"siteimport:{dated}/site.tar.zst",
+    ]
+    assert f"{latest} names the backup s3://{dated}" in out.out
+    assert state(pod["site"])["source"] == f"s3:{latest}"
+
+
+@needs_tools
+@pytest.mark.parametrize("content", ["", "../20260102T030405Z", "2026-01-02"])
+def test_s3_import_refuses_a_bad_latest(
+    pod: dict[str, Any],
+    export: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    content: str,
+) -> None:
+    log = stub_rclone(pod, export)
+    (export / "latest").write_text(content)
+    latest = "s3://gerrit-backups/gerrit/latest"
+    _, code = run_main(s3_env(pod, SITE_IMPORT_SOURCE_URL=latest), monkeypatch)
+    assert code == 1
+    assert state(pod["site"])["reason"] == f"{latest} names no backup: {content!r}"
+    assert "manifest.json" not in log.read_text()
+
+
+@needs_tools
+def test_s3_import_resolves_only_the_final_latest(
+    pod: dict[str, Any],
+    export: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # backup.s3.prefix: latest puts the pointer at <bucket>/latest/latest.
+    log = stub_rclone(pod, export)
+    (export / "latest").write_text("20260102T030405Z\n")
+    env = s3_env(pod, SITE_IMPORT_SOURCE_URL="s3://backups/latest/latest")
+    _, code = run_main(env, monkeypatch)
+    out = capsys.readouterr()
+    assert code == 0, out.err
+    calls = [line for line in log.read_text().splitlines() if "copyto" in line]
+    assert [call.split()[-2] for call in calls] == [
+        "siteimport:backups/latest/latest",
+        "siteimport:backups/latest/20260102T030405Z/manifest.json",
+        "siteimport:backups/latest/20260102T030405Z/git.tar.zst",
+        "siteimport:backups/latest/20260102T030405Z/site.tar.zst",
+    ]
