@@ -7,11 +7,13 @@
 # log4j.properties, replication.config, its/actions-its-jira.config and
 # healthcheck.config with the files the chart rendered, refreshes the
 # binaries and enabled plugins from the image, and installs the hooks
-# and gerrit-to-platform configuration; the first boot also runs
-# "gerrit init" on the rendered configuration. With
-# GERRIT_SITE_PREPARE_ONLY set it stops after the binaries, jars and
-# configuration, for site-import. The volume is mounted at GERRIT_SITE
-# so the image's /var/gerrit stays visible.
+# and gerrit-to-platform configuration. A site without
+# .chart/initialised also gets "gerrit init" on the rendered
+# configuration, then that marker and .chart/backup-lock, the backup
+# CronJob's sign that the site is ready. With GERRIT_SITE_PREPARE_ONLY
+# set it stops after the binaries, jars and configuration, for
+# site-import. The volume is mounted at GERRIT_SITE so the image's
+# /var/gerrit stays visible.
 
 set -eu
 
@@ -27,6 +29,7 @@ hook_scripts=${GERRIT_HOOK_SCRIPTS:-/hook-scripts}
 # does: it would create any missing one owned by root
 # shellcheck disable=SC2086
 (cd "$site" && mkdir -p bin plugins lib ${GERRIT_SITE_DIRS:-})
+
 cp "$image_bin/gerrit.war" "$image_bin/gerrit.sh" "$site/bin/"
 
 # The site's plugins and libraries are exactly the ones named: clear
@@ -131,22 +134,47 @@ if [ -n "${GERRIT_SITE_PREPARE_ONLY:-}" ]; then
   exit 0
 fi
 
-# A site without its All-Projects repository, named by
-# gerrit.allProjects, has never been initialised. Init runs on the
-# rendered configuration, so a set serverId becomes the site's ID;
-# the render is then installed again over whatever init added. The
-# launcher unpacks into ~/.gerritcodereview, and the gerrit user's
-# home is the image's read-only /var/gerrit, so point it at /tmp.
-all_projects=$(get_key "$config" gerrit.allProjects)
-if [ ! -d "$site/git/${all_projects:-All-Projects}.git" ]; then
-  echo "Initialising a new Gerrit site in $site"
+# The launcher unpacks into ~/.gerritcodereview, and the gerrit
+# user's home is the image's read-only /var/gerrit, so point it at /tmp
+gerrit_war() {
   java -Duser.home=/tmp \
     --add-opens java.base/java.net=ALL-UNNAMED \
     --add-opens java.base/java.lang.invoke=ALL-UNNAMED \
-    -jar "$site/bin/gerrit.war" init --batch --no-auto-start -d "$site"
+    -jar "$site/bin/gerrit.war" "$@"
+}
+
+# .chart/initialised records that "gerrit init" succeeded on this
+# site: site-init writes it after its own init, site-import after an
+# import's init and reindex. Without it, init runs, again if an
+# earlier start failed part way: it is idempotent on a partial site,
+# whatever repositories that start left. Init runs on the rendered
+# configuration, so a set serverId becomes the site's ID; the render
+# is then installed again over whatever init added.
+initialised="$site/.chart/initialised"
+if [ ! -f "$initialised" ]; then
+  echo "Initialising the Gerrit site in $site"
+  gerrit_war init --batch --no-auto-start -d "$site"
   have_id=$(site_id)
   install_config
+  version=$(gerrit_war version | sed -n 's/^gerrit version //p')
+  (
+    umask 077
+    mkdir -p "$site/.chart"
+    printf '{"gerritVersion": %s, "initialisedAt": "%s"}\n' \
+      "$([ -n "$version" ] && printf '"%s"' "$version" || echo null)" \
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$initialised.new"
+  )
+  mv -f "$initialised.new" "$initialised"
 fi
+
+# Next to the marker, so its presence says the site is initialised:
+# the backup CronJob serialises its runs with a flock on this file,
+# which it opens through its read-only mount of the site, and skips a
+# site without it. It is owned by the Gerrit user, which a
+# kubelet-created subPath would not be.
+lock_dir="$site/.chart/backup-lock"
+(umask 077 && mkdir -p "$lock_dir" && touch "$lock_dir/lock")
+chmod 0700 "$lock_dir"
 
 # The hooks directory holds exactly the hooks the values name: links
 # to the gerrit-to-platform entry points, then hooks.scripts. Hooks
@@ -200,4 +228,4 @@ if [ -n "${GERRIT_HOOKS_PATH:-}" ]; then
 fi
 install_g2p
 
-echo "Gerrit site in $site is ready"
+echo "Gerrit site in $site is ready; backups may run"

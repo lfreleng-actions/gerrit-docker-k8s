@@ -33,6 +33,7 @@ volume holds state only.
 | `Secret` `<fullname>-metrics`     | Metrics bearer `token`, generated; with `plugins.metrics-reporter-prometheus.enabled` and no `metrics.existingSecret`, see [Metrics](#metrics) |
 | `ServiceMonitor` `<fullname>`     | With `metrics.serviceMonitor.enabled` where the cluster serves `monitoring.coreos.com/v1`; see [Metrics](#metrics) |
 | `CronJob` `<fullname>-git-gc`, `NetworkPolicy` `<fullname>-git-gc-deny` | With `gc.cronJob.enabled`; see [Garbage collection](#garbage-collection) |
+| `CronJob` and `NetworkPolicy` `<fullname>-backup` | With `backup.enabled`; see [Backups](#backups) |
 | `CronJob` `<fullname>-log-cleanup`, `NetworkPolicy` `<fullname>-log-cleanup-deny` | With `logs.retentionDays` above `0`; see [Logs](#logs) |
 | `Deployment`, `ConfigMap` and `NetworkPolicy` `<fullname>-toolbox` | With `toolbox.enabled`, at zero replicas; see [Admin toolbox](#admin-toolbox) |
 | `NetworkPolicy` (two)             | Default deny; allow ingress to 8080 (from `networkPolicy.ingressNamespaceSelector` when set, and then also from `networkPolicy.metricsNamespaceSelector` with the metrics plugin) and 29418, egress to DNS, HTTPS and, with mail configured, the SMTP relay's port, with replication enabled, each remote's port, with `auth.saml.metadataUrl`, its port, with `plugins.its-jira.enabled`, the Jira URL's port, and with an `https` `siteImport.source`, its URL's port and `siteImport.source.egressPorts` |
@@ -93,10 +94,15 @@ empty or absent optional key leaves its entry out of `secure.config`.
    `plugins.its-jira.enabled`, `etc/its/actions-its-jira.config`, and
    with `plugins.healthcheck.enabled`, `etc/healthcheck.config`. With
    replication disabled it removes the site's `etc/replication.config`. On a site
-   without the repository `gerrit.allProjects` names (`All-Projects`
-   unless `gerrit.extraConfig` sets it) it then runs
-   `gerrit init --batch --no-auto-start` on that configuration and
-   installs the rendered files again over whatever init added. With
+   without the `.chart/initialised` marker it then runs
+   `gerrit init --batch --no-auto-start` on that configuration,
+   installs the rendered files again over whatever init added, and
+   only then writes the marker, recording the Gerrit version and the
+   time; a start that failed part way leaves no marker, so the next
+   runs init again. A site from an earlier chart version has no
+   marker, so its first start under this one runs init once more,
+   which leaves an initialised site as it is. It then creates the
+   backup lock, `.chart/backup-lock/lock`; see [Backups](#backups). With
    `hooks.enabled` it then fills the hooks directory, and with
    `hooks.g2p.enabled` installs `gerrit_to_platform.ini`; see
    [Hooks](#hooks).
@@ -261,7 +267,7 @@ Argo CD; `K8S/docs/DESIGN.md` section 6 explains its settings.
 | `siteImport.mode`                        | `auto`                           | `auto`, `force` or `skip`; see [Site import](#site-import) |
 | `siteImport.forceToken`                  | `""`                             | With `force`, each new token replaces the site once        |
 | `siteImport.source.type`                 | `none`                           | `none`, `pvc`, `https` or `s3`                             |
-| `siteImport.source.url`                  | `""`                             | Export directory under `/mnt/import`, the HTTPS base URL, or `s3://<bucket>/<prefix>` |
+| `siteImport.source.url`                  | `""`                             | Export directory under `/mnt/import`, the HTTPS base URL, or `s3://<bucket>/<prefix>`; `<prefix>/latest` for the newest [backup](#backups) |
 | `siteImport.source.volume`               | `{}`                             | With `pvc`, a volume source mounted read-only at `/mnt/import` |
 | `siteImport.source.existingSecret`       | `""`                             | With `https`, a Secret of per-file URLs; with `s3`, a Secret of `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` |
 | `siteImport.source.s3.endpoint`          | `""`                             | With `s3`, `http(s)://<host>[:<port>]` of an S3-compatible store, with no path; AWS when empty |
@@ -273,6 +279,17 @@ Argo CD; `K8S/docs/DESIGN.md` section 6 explains its settings.
 | `siteImport.reindex`, `.verify`          | `true`, `true`                   | Reindex after the import; check repositories, host keys and server ID |
 | `siteImport.scratchSizeLimit`            | `""`                             | `sizeLimit` of the scratch `emptyDir`                      |
 | `siteImport.resources`                   | `{}`                             | Resources of `site-import`; `resources` when empty. Size it for the reindex |
+| `backup.enabled`                         | `false`                          | Adds the backup `CronJob`; see [Backups](#backups)         |
+| `backup.schedule`, `.timeZone`           | `0 2 * * *`, `""`                | When it runs; `""` uses the controller's time zone         |
+| `backup.suspend`                         | `false`                          | Pauses scheduled runs, keeping the `CronJob`; see [Backups](#backups) |
+| `backup.s3.bucket`, `.prefix`            | `""`, `""`                       | Where backups go; the prefix defaults to `<namespace>/<fullname>` and must belong to one site |
+| `backup.s3.endpoint`, `.region`, `.provider` | `""`, `""`, `AWS`            | As `siteImport.source.s3`                                  |
+| `backup.existingSecret`                  | `""`                             | A Secret of `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`; empty for workload identity |
+| `backup.maxRunHours`                     | `6`                              | Hours before Kubernetes stops a run (`activeDeadlineSeconds`); at least 1 |
+| `backup.retention.keepDaily`, `.keepWeekly` | `14`, `8`                     | Newest published backup kept per day and per ISO week      |
+| `backup.retention.minAgeHours`           | `24`                             | Hours a backup is kept after a newer published one replaces it; at least 1 |
+| `backup.scratchSizeLimit`                | `""`                             | `sizeLimit` of the scratch `emptyDir`                      |
+| `backup.resources`                       | `{}`                             | Resources of the backup container                          |
 
 ### gerrit.config
 
@@ -427,7 +444,7 @@ directory holding `manifest.json`, `site.tar.zst` and `git.tar.zst`.
   ```
 
   A `source.url` ending in `/latest` names the newest backup the
-  chart's backup CronJob wrote under that prefix: `site-import`
+  [backup CronJob](#backups) wrote under that prefix: `site-import`
   reads the `latest` object once and fetches every file from the
   backup it names, so a backup that lands mid-import does not mix in.
   The backup changes on every run, so leave
@@ -536,6 +553,9 @@ names a deleted one never starts, even after a complete import.
    core of the container's CPU limit, or Gerrit's default without one.
 6. With `verify`, checks again that the repositories, the exported
    host keys and the server ID survived.
+7. Writes `.chart/initialised`, so `site-init` does not run init
+   again; an import removes the old marker before it starts, so one
+   that fails leaves none.
 
 `init` and `reindex` get the heap the Gerrit container gets:
 `container.heapLimit` when set, else 70% of the memory limit of
@@ -1460,6 +1480,219 @@ index that has none marked ready, and removes each other
 with no version marked ready: Gerrit would need an offline reindex to
 rebuild a version it uses.
 
+## Backups
+
+`backup.enabled` adds the `<fullname>-backup` `CronJob`, which backs
+the site up to S3 while Gerrit runs. Each run, on `backup.schedule`,
+02:00 daily by default:
+
+1. takes an exclusive lock on `.chart/backup-lock/lock` on the site
+   volume and holds it until it exits; a run that finds the lock held
+   logs that a backup is already running and succeeds without
+   touching the store, and a run that finds no lock, because no Gerrit
+   pod has finished initialising the site under this chart version,
+   logs that it skips and succeeds the same way, so backups start only
+   once the site is ready;
+2. reads `.chart/site-state.json`, which `site-import` writes on the
+   site volume, and skips the run, succeeding, unless it records
+   `complete`: a volume with no state file, or with an import in
+   progress or failed, holds no site to back up, and the next
+   scheduled run retries;
+3. runs the export tool's `backup` mode on the site volume, mounted
+   read-only, into a scratch `emptyDir`, with the git store that
+   `gerrit.basePath` names on that volume; an absolute `basePath`
+   under `/var/gerrit` is read at the same path under the mount, and
+   one anywhere else fails the run, as the chart backs up a git store
+   only on the site volume; "Exporting a Gerrit Site" in the
+   repository README describes what it copies and how it keeps
+   the repositories consistent; it then reads the state file again
+   and discards the export, succeeding, if the file changed, as an
+   import such as a forced restore started meanwhile and the export
+   may hold part of each site;
+4. uploads `site.tar.zst`, `git.tar.zst` and then `manifest.json`
+   with rclone to `s3://<bucket>/<prefix>/<backup>/`, the backup
+   prefix being the UTC start time and a random run id, as
+   `20260105T020000Z-0123abcd`. `<prefix>` is `backup.s3.prefix`,
+   `<namespace>/<fullname>` by default; an explicit prefix must
+   belong to one site alone, as two sites sharing it overwrite each
+   other's `latest` and prune each other's backups;
+5. checks the upload with `rclone check`, and deletes its own prefix
+   when the upload or the check fails;
+6. reads its own `manifest.json` back from the store, checks it is the
+   one it uploaded, and checks again with `rclone check` that the
+   archives it names are there with their sizes and checksums; if
+   not, it deletes its prefix and fails without touching `latest`;
+7. only then writes the backup prefix to
+   `s3://<bucket>/<prefix>/latest`, and then the `<backup>/published`
+   marker, the run's last write:
+   `{"publishedAt": "2026-01-05T02:41:07.123456Z"}`, the UTC time the
+   backup was published, to the microsecond;
+8. prunes the backup prefixes as below.
+
+Runs are serialised by that lock on the site volume. A Job created by
+hand with `kubectl create job --from` bypasses `concurrencyPolicy:
+Forbid`, but every backup pod runs on the Gerrit pod's node and mounts
+the same volume, so the kernel lock covers it too: while one run goes,
+another skips. The lock needs no Kubernetes API access, and the
+process exiting releases it, however the run ends, so a killed run
+leaves no stale lock. As one run at a time writes to the store, it
+moves `latest` unconditionally and prunes by its own settings.
+To pause scheduled backups without deleting the `CronJob` or its
+history, set `backup.suspend: true`, which sets the `CronJob`'s
+`spec.suspend`: the controller starts no scheduled run, while a Job
+created with `kubectl create job --from=cronjob/<fullname>-backup`
+still runs, under the same lock. Set it back to `false` to resume the
+schedule; as the chart sets no `startingDeadlineSeconds`, the
+controller may start one run at once for a schedule it missed while
+suspended.
+Kubernetes stops any run that takes longer than `backup.maxRunHours`,
+6 by default, through the Job's `activeDeadlineSeconds`; size it above
+the longest backup you expect.
+
+A backup is **published** once its run has written its `published`
+marker, after moving `latest` or finding it on a later backup. The
+published sequence is every backup with the marker, in `publishedAt`
+order, plus the one `latest` names now even
+without it: a run stopped between the two writes still published its
+backup, counts as published at the time of the prune, and the next
+run writes the missing marker. A marker without a valid `publishedAt`
+publishes nothing: unless `latest` names its backup, that backup is
+an unpublished leftover, which a later run prunes and never rewrites.
+Retention counts that sequence alone. Each successful run keeps:
+
+- the backup `latest` names;
+- each published backup with no successor yet, or whose successor
+  was published, by its marker's `publishedAt`, less than
+  `retention.minAgeHours`, 24 by default, before the prune; a
+  backup's successor is the first published strictly after it, the
+  backup that moved `latest` on from it;
+  backups published at the same moment are not each other's
+  successors, and the restore window of each runs from that moment;
+- the newest published backup of each of the last
+  `retention.keepDaily` days and of each of the last
+  `retention.keepWeekly` ISO weeks that hold one;
+- each unpublished prefix, never named by `latest` and left by an
+  interrupted run, until its own timestamp is more than
+  `maxRunHours` + 1 hours old;
+
+and deletes the other backup prefixes. Prefixes that are a bare
+timestamp, as runs before the run id wrote, count the same way.
+
+A restore that started from `latest` has at least
+`retention.minAgeHours` to finish, counted from when its backup
+stopped being the newest: `site-import` pins the backup `latest`
+names when it starts, `latest` names each backup until its successor
+replaces it at its `publishedAt`, and an unpublished upload never
+counts as that replacement. The rule needs nothing but the listing,
+the markers and `latest`, so a failed run, a slow run or a long gap between backups does not shorten it.
+Set `minAgeHours` above the longest restore you expect; the chart
+refuses a value under 1. With an hourly `schedule`, the daily and
+weekly counts alone would delete the previous hour's backup.
+
+```yaml
+backup:
+  enabled: true
+  s3:
+    bucket: gerrit-backups
+    region: eu-west-1
+```
+
+A failed run exits non-zero and leaves `latest` on the last good
+backup. The `CronJob` keeps three failed and three successful Jobs;
+alert on a failed Job, or on `latest` growing older than a day.
+
+The Job runs as the Gerrit UID with `concurrencyPolicy: Forbid`, has
+no service account token mounted and runs on the node the Gerrit pod
+runs on, where a `ReadWriteOnce` volume is already attached. It mounts
+the site volume read-only and takes its lock through that mount: the
+Gerrit pod's `site-init` creates `.chart/backup-lock/lock`, owned by
+the Gerrit UID in a directory of mode 0700, on every start right
+after it finds or writes `.chart/initialised`, once `gerrit init` and
+an import's reindex have succeeded; a failed init leaves a new site
+without either, and the export leaves `.chart` out. The volume must support `flock` on a file
+opened read-only, as local and block volumes do; NFS may refuse an
+exclusive lock on a read-only file. With
+`networkPolicy.enabled`, its own `NetworkPolicy` denies ingress and
+allows egress to DNS, 443 and the port of `backup.s3.endpoint`.
+Credentials work as for an [S3 import](#s3-credentials):
+`backup.existingSecret` names a Secret of `AWS_ACCESS_KEY_ID` and
+`AWS_SECRET_ACCESS_KEY`, or, left empty, the pod uses the chart's
+ServiceAccount and the platform's workload identity, such as IRSA.
+The identity needs `s3:PutObject`, `s3:GetObject` and
+`s3:DeleteObject` on `<prefix>/*` and `s3:ListBucket` on the bucket.
+
+The scratch volume holds the copied site and its archives, about
+twice the site's size, plus a bundle of the largest repository while
+it copies; set `backup.scratchSizeLimit` and
+`backup.resources` to fit. The archives hold `secure.config`, the SSH
+host keys and every account: keep the bucket private and turn on
+server-side encryption for it. The backup does not encrypt the
+archives itself, as `site-import` cannot decrypt them yet.
+
+Schedule the backup away from `gc.cronJob.schedule` and Gerrit's own
+`gc.startTime`. The backup copies each repository through a Git
+bundle and checks the copy's connectivity and refs, so a gc or a
+`pack-refs` that runs meanwhile cannot leave an inconsistent backup;
+at worst a gc removes an object while Git bundles it and the export
+fails rather than upload anything, and the next run retries. It copies
+`All-Projects`, which holds the change sequence, after every other
+repository and checks that the sequence exceeds every change number
+it copied, so a restored site never hands out a change number twice.
+
+The repositories in a backup are exact, but the files under `db/` and
+`data/` are copied while Gerrit writes them, so an H2 database there
+may be inconsistent: the reviewed-file flags and plugin data such as
+the events log and the replication queue. Code review data lives in
+the repositories and is not at risk. The manifest records this as
+`"consistency": {"git": "verified", "h2": "best-effort"}`. Where those
+files matter, pair the backup with
+[volume snapshots](#volume-snapshots) of a stopped or quiesced site.
+
+### Restoring a backup
+
+A backup is an import source. To restore the newest one, into this
+release or a new one, point `siteImport` at `latest` and force an
+import:
+
+```yaml
+siteImport:
+  mode: force
+  forceToken: restore-2026-01-05
+  source:
+    type: s3
+    url: s3://gerrit-backups/<namespace>/<fullname>/latest
+    s3:
+      region: eu-west-1
+```
+
+`<namespace>` and `<fullname>` are those of the release that took the
+backup, the default `backup.s3.prefix`; with `backup.s3.prefix` set,
+use `s3://<bucket>/<prefix>/latest` instead.
+`site-import` reads `latest` once and fetches every file from the
+backup it names. Name a backup prefix instead of `latest` to
+restore an older backup. Give `siteImport` read access as in
+[S3 credentials](#s3-credentials). Once the import completes, set
+`siteImport.mode: auto`, so later restarts keep the site.
+
+### Volume snapshots
+
+Where the storage class supports CSI snapshots, a `VolumeSnapshot` of
+the `site-<fullname>-0` claim is a faster, crash-consistent copy of
+the whole volume on the same platform, but not a portable one: it
+stays in the cluster's storage, and restoring it means a new claim
+from the snapshot. Use it beside the S3 backup, not instead of it:
+
+```yaml
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshot
+metadata:
+  name: gerrit-site-20260105
+spec:
+  volumeSnapshotClassName: csi-snapclass
+  source:
+    persistentVolumeClaimName: site-gerrit-0
+```
+
 ## Admin toolbox
 
 `toolbox.enabled` adds the `<fullname>-toolbox` `Deployment`, at zero
@@ -1643,7 +1876,8 @@ plain Ingress and as Traefik objects in `ingress-plain.golden` and
 `templates/servicemonitor.yaml` must render `servicemonitor.golden`,
 and without that API nothing; with `logs.retentionDays` set,
 `templates/log-cleanup-cronjob.yaml` must render
-`log-cleanup-cronjob.golden`; the toolbox helpers run against fixture sites
+`log-cleanup-cronjob.golden`, and with `backup.enabled`,
+`templates/backup-cronjob.yaml` must render `backup-cronjob.golden`; the toolbox helpers run against fixture sites
 with the DNS lookup stubbed. After an intended change to
 the rendered output, regenerate the goldens and review the diff:
 

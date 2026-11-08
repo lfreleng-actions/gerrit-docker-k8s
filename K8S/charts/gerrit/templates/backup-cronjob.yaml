@@ -1,0 +1,184 @@
+{{/*
+SPDX-License-Identifier: Apache-2.0
+SPDX-FileCopyrightText: 2026 The Linux Foundation
+*/}}
+{{- with .Values.backup }}
+{{- if .enabled }}
+{{- $fullname := include "gerrit.fullname" $ }}
+{{- $url := include "gerrit.backupUrl" $ }}
+{{- $s3 := default dict .s3 }}
+{{- /* A CronJob name may hold 52 characters, leaving room for the
+Job names the controller derives from it */}}
+{{- $backupName := printf "%s-backup" ($fullname | trunc 45 | trimSuffix "-") }}
+# Backs the site up to S3 while Gerrit runs: the export tool's backup
+# mode on the site volume, mounted read-only, uploaded with rclone.
+# Runs, scheduled or manual, are serialised by a flock on the site
+# volume's .chart/backup-lock/lock, which site-init creates
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ $backupName }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "gerrit.backupLabels" $ | nindent 4 }}
+spec:
+  schedule: {{ .schedule | quote }}
+  {{- with .timeZone }}
+  timeZone: {{ . | quote }}
+  {{- end }}
+  # A suspended CronJob starts no scheduled run; a Job created from it
+  # with kubectl create job --from still runs
+  suspend: {{ .suspend | default false }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      # Retention takes an unpublished upload older than maxRunHours + 1
+      # hours as abandoned, so no run may outlive maxRunHours
+      activeDeadlineSeconds: {{ mul (int64 (toString .maxRunHours)) 3600 }}
+      template:
+        metadata:
+          labels:
+            {{- include "gerrit.backupLabels" $ | nindent 12 }}
+          annotations:
+            {{- include "gerrit.otelOptOutAnnotations" $ | nindent 12 }}
+        spec:
+          restartPolicy: Never
+          {{- with include "gerrit.serviceAccountName" $ }}
+          serviceAccountName: {{ . }}
+          {{- end }}
+          automountServiceAccountToken: false
+          {{- with include "gerrit.imagePullSecrets" $ | trim }}
+          {{- . | nindent 10 }}
+          {{- end }}
+          securityContext:
+            {{- include "gerrit.podSecurityContext" $ | nindent 12 }}
+          # The site volume is usually ReadWriteOnce: run only on the
+          # node Gerrit runs on, where the volume is already attached
+          affinity:
+            podAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                - topologyKey: kubernetes.io/hostname
+                  labelSelector:
+                    matchLabels:
+                      {{- include "gerrit.selectorLabels" $ | nindent 22 }}
+          containers:
+            - name: backup
+              image: {{ include "gerrit.image" $ }}
+              imagePullPolicy: {{ $.Values.image.pullPolicy }}
+              command: ["python3", "/scripts/site-backup.py"]
+              # Keeps the error in the pod status after kubelet drops the log
+              terminationMessagePolicy: FallbackToLogsOnError
+              env:
+                - name: HOME
+                  value: /tmp
+                - name: SITE_BACKUP_URL
+                  value: {{ $url | quote }}
+                - name: SITE_BACKUP_S3_ENDPOINT
+                  value: {{ $s3.endpoint | default "" | quote }}
+                - name: SITE_BACKUP_S3_REGION
+                  value: {{ $s3.region | default "" | quote }}
+                - name: SITE_BACKUP_S3_PROVIDER
+                  value: {{ $s3.provider | quote }}
+                - name: SITE_BACKUP_KEEP_DAILY
+                  value: {{ .retention.keepDaily | toString | quote }}
+                - name: SITE_BACKUP_KEEP_WEEKLY
+                  value: {{ .retention.keepWeekly | toString | quote }}
+                - name: SITE_BACKUP_MIN_AGE_HOURS
+                  value: {{ .retention.minAgeHours | toString | quote }}
+                - name: SITE_BACKUP_MAX_RUN_HOURS
+                  value: {{ .maxRunHours | toString | quote }}
+                - name: SITE_BACKUP_SITE
+                  value: /mnt/site
+                - name: SITE_BACKUP_SCRATCH
+                  value: /scratch
+                {{- with .existingSecret }}
+                # Static keys for rclone's env_auth
+                {{- range list "AWS_ACCESS_KEY_ID" "AWS_SECRET_ACCESS_KEY" }}
+                - name: {{ . }}
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ $.Values.backup.existingSecret }}
+                      key: {{ . }}
+                {{- end }}
+                {{- end }}
+              securityContext:
+                {{- include "gerrit.containerSecurityContext" $ | nindent 16 }}
+              {{- with .resources }}
+              resources:
+                {{- toYaml . | nindent 16 }}
+              {{- end }}
+              volumeMounts:
+                # flock needs no write access, so the lock is taken
+                # through this mount too
+                - name: site
+                  mountPath: /mnt/site
+                  readOnly: true
+                - name: scripts
+                  mountPath: /scripts
+                  readOnly: true
+                - name: scratch
+                  mountPath: /scratch
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            - name: site
+              persistentVolumeClaim:
+                claimName: site-{{ $fullname }}-0
+            - name: scripts
+              configMap:
+                name: {{ $fullname }}-scripts
+            - name: scratch
+              {{- with .scratchSizeLimit }}
+              emptyDir:
+                sizeLimit: {{ . }}
+              {{- else }}
+              emptyDir: {}
+              {{- end }}
+            - name: tmp
+              emptyDir: {}
+          {{- with $.Values.nodeSelector }}
+          nodeSelector:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $.Values.tolerations }}
+          tolerations:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+{{- if $.Values.networkPolicy.enabled }}
+---
+# The backup pod takes no connections and reaches only DNS and the
+# S3 endpoint
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $backupName }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "gerrit.backupLabels" $ | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "gerrit.backupSelectorLabels" $ | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  egress:
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - ports:
+        - protocol: TCP
+          port: 443
+        {{- $port := include "gerrit.urlPort" ($s3.endpoint | default "") | int }}
+        {{- if and $port (ne $port 443) }}
+        - protocol: TCP
+          port: {{ $port }}
+        {{- end }}
+{{- end }}
+{{- end }}
+{{- end }}

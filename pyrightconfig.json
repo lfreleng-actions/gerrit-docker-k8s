@@ -2,7 +2,8 @@
   "extraPaths": [
     "scripts",
     "scripts/lib",
-    "tests"
+    "tests",
+    "K8S/charts/gerrit/files/scripts"
   ],
   "pythonVersion": "3.11",
   "typeCheckingMode": "standard",

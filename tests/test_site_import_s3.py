@@ -277,20 +277,22 @@ def test_s3_fetch_that_writes_nothing_fails(
 
 
 @needs_tools
+@pytest.mark.parametrize("backup", ["20260102T030405Z", "20260102T030405Z-0123abcd"])
 def test_s3_import_resolves_latest(
     pod: dict[str, Any],
     export: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
+    backup: str,
 ) -> None:
     log = stub_rclone(pod, export)
-    (export / "latest").write_text("20260102T030405Z\n")
+    (export / "latest").write_text(f"{backup}\n")
     latest = "s3://gerrit-backups/gerrit/latest"
     env = s3_env(pod, SITE_IMPORT_SOURCE_URL=latest)
     _, code = run_main(env, monkeypatch)
     out = capsys.readouterr()
     assert code == 0, out.err
-    dated = "gerrit-backups/gerrit/20260102T030405Z"
+    dated = f"gerrit-backups/gerrit/{backup}"
     calls = [line for line in log.read_text().splitlines() if "copyto" in line]
     assert [call.split()[-2] for call in calls] == [
         "siteimport:gerrit-backups/gerrit/latest",
@@ -303,7 +305,10 @@ def test_s3_import_resolves_latest(
 
 
 @needs_tools
-@pytest.mark.parametrize("content", ["", "../20260102T030405Z", "2026-01-02"])
+@pytest.mark.parametrize(
+    "content",
+    ["", "../20260102T030405Z", "2026-01-02", "20260102T030405Z-0123ABCD"],
+)
 def test_s3_import_refuses_a_bad_latest(
     pod: dict[str, Any],
     export: Path,

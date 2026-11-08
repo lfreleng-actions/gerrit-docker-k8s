@@ -108,6 +108,37 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 app.kubernetes.io/part-of: gerrit
 {{- end -}}
 
+{{/* Name label of the backup CronJob's pods: the chart name, cut to 56
+characters so the "-backup" suffix fits the 63-character label limit.
+A name that already ends in "-backup" and would come out unchanged
+takes "-bk" instead, as gerrit.gcName does. */}}
+{{- define "gerrit.backupName" -}}
+{{- $name := include "gerrit.name" . -}}
+{{- $base := $name | trunc 56 | trimSuffix "-" -}}
+{{- $backup := printf "%s-backup" $base -}}
+{{- if eq $backup $name -}}
+{{- $backup = printf "%s-bk" $base -}}
+{{- end -}}
+{{- $backup -}}
+{{- end -}}
+
+{{/* Labels of the backup CronJob's pods. Their name differs from the
+Gerrit pod's, so no Service selector or Gerrit NetworkPolicy matches
+them. */}}
+{{- define "gerrit.backupSelectorLabels" -}}
+app.kubernetes.io/name: {{ include "gerrit.backupName" . }}
+app.kubernetes.io/instance: {{ .Release.Name }}
+app.kubernetes.io/component: backup
+{{- end -}}
+
+{{- define "gerrit.backupLabels" -}}
+helm.sh/chart: {{ include "gerrit.chart" . }}
+{{ include "gerrit.backupSelectorLabels" . }}
+app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+app.kubernetes.io/managed-by: {{ .Release.Service }}
+app.kubernetes.io/part-of: gerrit
+{{- end -}}
+
 {{/* Name label of the admin toolbox's pods: the chart name, cut to 55
 characters so the "-toolbox" suffix fits the 63-character label limit.
 A name that already ends in "-toolbox" and would come out unchanged
@@ -1114,6 +1145,48 @@ s3: the port of siteImport.source.s3.endpoint. */}}
 {{- end }}
 {{- end -}}
 {{- toJson (uniq $ports) -}}
+{{- end -}}
+
+{{/* The backup CronJob's destination, s3://<bucket>/<prefix>, with
+backup.s3.prefix defaulting to <namespace>/<full name>, so two
+releases sharing a bucket never share a prefix. Fails on a bucket or
+prefix that is not a plain S3 path, an endpoint as
+gerrit.siteImportSource refuses one, an empty provider, a retention
+value that is not a whole number, or a minAgeHours or maxRunHours
+under 1; site-backup checks them again. */}}
+{{- define "gerrit.backupUrl" -}}
+{{- $backup := .Values.backup -}}
+{{- $s3 := default dict $backup.s3 -}}
+{{- $bucket := toString (default "" $s3.bucket) -}}
+{{- if not (regexMatch `^[A-Za-z0-9][A-Za-z0-9._-]*$` $bucket) -}}
+{{- fail "backup.s3.bucket must name an S3 bucket" -}}
+{{- end -}}
+{{- $prefix := trimAll "/" (toString (default (printf "%s/%s" .Release.Namespace (include "gerrit.fullname" .)) $s3.prefix)) -}}
+{{- if or (not (regexMatch `^[A-Za-z0-9._/-]+$` $prefix)) (has ".." (splitList "/" $prefix)) (contains "//" $prefix) -}}
+{{- fail "backup.s3.prefix must be a path of letters, digits, '.', '_', '-' and '/', with no '..'" -}}
+{{- end -}}
+{{- with $s3.endpoint -}}
+{{- $port := include "gerrit.urlPort" (toString .) | int64 -}}
+{{- if or (not (regexMatch `^(?i:https?)://([^\s/?#@:\[\]]+|\[[0-9A-Fa-f:.]+\])(:[0-9]{1,5})?$` (toString .))) (lt $port 1) (gt $port 65535) -}}
+{{- fail "backup.s3.endpoint must be an http:// or https:// URL with a host and an optional port, and no user, path, query or fragment" -}}
+{{- end -}}
+{{- end -}}
+{{- if not $s3.provider -}}
+{{- fail "backup.s3.provider must name an rclone S3 provider" -}}
+{{- end -}}
+{{- range list "keepDaily" "keepWeekly" "minAgeHours" -}}
+{{- if not (regexMatch `^[0-9]+$` (toString (index $backup.retention .))) -}}
+{{- fail (printf "backup.retention.%s must be a whole number" .) -}}
+{{- end -}}
+{{- end -}}
+{{- if lt (int64 (toString $backup.retention.minAgeHours)) 1 -}}
+{{- fail "backup.retention.minAgeHours must be at least 1: a restore from latest needs time to read the backup it resolved before a run may prune it" -}}
+{{- end -}}
+{{- $maxRun := toString $backup.maxRunHours -}}
+{{- if or (not (regexMatch `^[0-9]+$` $maxRun)) (lt (int64 $maxRun) 1) -}}
+{{- fail "backup.maxRunHours must be a whole number of at least 1" -}}
+{{- end -}}
+s3://{{ $bucket }}/{{ $prefix }}
 {{- end -}}
 
 {{/* The Gerrit pod's ServiceAccount: serviceAccount.name, else the
