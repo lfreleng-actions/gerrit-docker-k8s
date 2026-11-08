@@ -1408,3 +1408,28 @@ def test_https_refuses_plain_http(pod: dict[str, Any]) -> None:
     )
     with pytest.raises(module.SiteImportError, match="only https://"):
         module.fetch(settings, "manifest.json")
+
+
+@needs_tools
+def test_unexpected_error_mid_import_records_failed(
+    pod: dict[str, Any],
+    export: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    module = load()
+    for key, value in import_env(pod, export).items():
+        monkeypatch.setenv(key, value)
+
+    def place(*_: Any) -> Path:
+        raise RuntimeError("injected after staging")
+
+    monkeypatch.setattr(module, "place", place)
+    assert module.main(import_env(pod, export)) == 1
+    recorded = state(pod["site"])
+    assert recorded["state"] == "failed"
+    assert recorded["reason"] == "RuntimeError: injected after staging"
+    err = capsys.readouterr().err
+    assert "Traceback (most recent call last)" in err
+    assert "error: RuntimeError: injected after staging" in err
+    assert "Traceback" not in (pod["site"] / ".chart" / "site-state.json").read_text()

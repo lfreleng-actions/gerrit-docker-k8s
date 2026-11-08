@@ -330,7 +330,9 @@ ephemeral storage, so it must have room for the archive and its
 unpacked copy at once. `site-import` writes `complete` only
 after the import has passed the checks of section 4 that it can run.
 Any failure writes `failed` and exits non-zero, so the pod's sequence
-stops and Gerrit never starts. A pod killed mid-import leaves
+stops and Gerrit never starts. An unexpected error counts too: its
+type and message become the `reason`, and its traceback goes to the
+log, never to the state file. A pod killed mid-import leaves
 `in-progress` behind. No earlier `complete` state survives a re-import
 to let Gerrit start on a partly restored site.
 

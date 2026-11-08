@@ -426,6 +426,14 @@ directory holding `manifest.json`, `site.tar.zst` and `git.tar.zst`.
         region: eu-west-1
   ```
 
+  A `source.url` ending in `/latest` names the newest backup the
+  chart's backup CronJob wrote under that prefix: `site-import`
+  reads the `latest` object once and fetches every file from the
+  backup it names, so a backup that lands mid-import does not mix in.
+  The backup changes on every run, so leave
+  `source.expectedManifestSha256` empty, or pin the dated prefix
+  instead.
+
 The chart refuses other source types. It does not decrypt `.age` and
 `.gpg` archives yet; decrypt the export and serve it over one of
 these sources.

@@ -66,6 +66,7 @@ import shutil
 import subprocess
 import sys
 import time
+import traceback
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -100,6 +101,7 @@ from site_import_common import (
 from site_import_unpack import skip_regenerated, unpack
 
 NOTHING, FRESH, ADOPT, IMPORT = "nothing", "fresh", "adopt", "import"
+EXPECTED = (SiteImportError, OSError, subprocess.SubprocessError)
 
 STATE_FILE = Path(".chart") / "site-state.json"
 # Kept on the volume across an import: the state, and ext4's own directory
@@ -423,8 +425,12 @@ def main(
     )
     try:
         result = importer(settings)
-    except (SiteImportError, OSError, subprocess.SubprocessError) as exc:
+    except Exception as exc:
+        # Any error, expected or not, must replace in-progress with failed
         reason = str(exc)
+        if not isinstance(exc, EXPECTED):
+            traceback.print_exc(file=sys.stderr)
+            reason = f"{type(exc).__name__}: {exc}"
         write_state(
             settings.site,
             {"state": "failed", **record, "manifestSha256": None, "reason": reason},

@@ -373,7 +373,7 @@ siteImport:
     # s3: an S3 bucket and prefix holding the export, fetched with rclone
     type: none
     # pvc: the export directory, under /mnt/import; https: the base URL;
-    # s3: s3://<bucket>/<prefix>
+    # s3: s3://<bucket>/<prefix>, or <prefix>/latest for the newest backup
     url: ""
     # pvc: a volume source mounted read-only at /mnt/import, for example
     # {persistentVolumeClaim: {claimName: gerrit-export}}
