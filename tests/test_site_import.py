@@ -729,6 +729,30 @@ def test_unpack_skips_state_index_cache_and_binaries(tmp_path: Path) -> None:
 
 
 @needs_tools
+def test_unpack_drops_lock_files_under_etc(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """An archive from an older export may hold a stale config lock."""
+    module = load()
+    archive = tar_zst(
+        tmp_path / "site.tar.zst",
+        {
+            "site/etc/gerrit.config": b"[gerrit]\n",
+            "site/etc/gerrit.config.new.lock": b"stale",
+            "site/etc/secure.config.new.lock": b"stale",
+            "site/etc/mail/x.lock": b"stale",
+            "site/data/keep.lock": b"not a config lock",
+        },
+    )
+    out = tmp_path / "out"
+    module.unpack(archive, out)
+    found = sorted(str(p.relative_to(out)) for p in out.rglob("*") if p.is_file())
+    assert found == ["site/data/keep.lock", "site/etc/gerrit.config"]
+    logged = capsys.readouterr().out
+    assert "skipping site/etc/secure.config.new.lock, a stale lock file" in logged
+
+
+@needs_tools
 @pytest.mark.parametrize("name", ["../escape", "site/../../escape", "other/file"])
 def test_unpack_refuses_members_outside(tmp_path: Path, name: str) -> None:
     module = load()

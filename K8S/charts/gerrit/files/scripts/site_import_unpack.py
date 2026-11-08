@@ -116,6 +116,11 @@ def unpack(
                     break
                 if skipped(name):
                     continue
+                # A stale lock would make site-init's git config fail
+                lock = name.endswith(".lock") and not member.isdir()
+                if lock and parts[:2] == ("site", "etc"):
+                    say(f"skipping {name}, a stale lock file")
+                    continue
                 if not (
                     member.isfile()
                     or member.isdir()
