@@ -2,13 +2,13 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: 2026 The Linux Foundation
 
-# Usage: gerrit-site-export <seed|final> --out <dir> [option ...]
+# Usage: gerrit-site-export <seed|final|backup> --out <dir> [option ...]
 #
 # Run the site export tool the image carries; see its --help. The tool's
 # own check that Gerrit has stopped reads /proc, which shows only this
 # pod's processes, so a final export first runs gerrit-require-offline
 # and refuses while the Gerrit pod exists. --i-stopped-writes skips both
-# checks. A seed export runs while Gerrit serves.
+# checks. A seed or backup export runs while Gerrit serves.
 
 set -eu
 

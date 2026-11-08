@@ -155,8 +155,10 @@ RUN set -eux; \
     rm /tmp/docker-requirements-scripts.txt
 
 # --- Site export tool: standard library only, run with python3 -----------------
-# The chart's admin toolbox wraps it as gerrit-site-export.
+# The chart's admin toolbox wraps it as gerrit-site-export; backup mode
+# loads gerrit_export_git.py from beside it.
 COPY scripts/gerrit-site-export.py /opt/gerrit-site-export/gerrit-site-export.py
+COPY scripts/gerrit_export_git.py /opt/gerrit-site-export/gerrit_export_git.py
 
 # Verify installations work as root
 RUN set -eux; \
@@ -166,6 +168,7 @@ RUN set -eux; \
     test -x "$GERRIT_TOOLS_VENV/bin/change-merged" && \
     "$GERRIT_SCRIPTS_VENV/bin/python" -c "import requests; print('requests:', requests.__version__)" && \
     python3 /opt/gerrit-site-export/gerrit-site-export.py --help >/dev/null && \
+    PYTHONPATH=/opt/gerrit-site-export python3 -c 'import gerrit_export_git' && \
     echo "=== Root verification complete ==="
 
 # Switch back to gerrit user for normal operation
