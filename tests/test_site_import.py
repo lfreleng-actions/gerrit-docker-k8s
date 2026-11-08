@@ -19,10 +19,12 @@ import io
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import tarfile
 import zipfile
+from datetime import datetime
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -547,6 +549,72 @@ def test_site_init_clears_hidden_plugins_and_libraries(pod: dict[str, Any]) -> N
     assert list((site / "lib").iterdir()) == []
 
 
+def test_site_init_marks_the_site_initialised_then_locks(pod: dict[str, Any]) -> None:
+    """site-init writes <site>/.chart/initialised only after "gerrit init"
+    succeeds, and creates the backup lock right after it, private. A
+    start that finds no marker runs init, again after an init that
+    failed part way; a start that finds it skips init. The backup
+    CronJob locks <site>/.chart/backup-lock/lock through a read-only
+    mount and skips a site without it, so the prepare-only pass
+    site-import makes and a failed init leave neither behind.
+    """
+    site: Path = pod["site"]
+    (site / "etc").mkdir()
+    tmp: Path = pod["tmp"]
+    seen = tmp / "lock-at-init.log"
+    path_dir = tmp / "path"
+    path_dir.mkdir()
+    java = path_dir / "java"
+    # Init creates All-Projects.git before it fails, as a real init
+    # that dies part way can
+    java.write_text(
+        "#!/bin/sh\n"
+        'case " $* " in *" version "*) echo "gerrit version 3.13.4"; exit 0;; esac\n'
+        'if [ -e "$GERRIT_SITE/.chart/backup-lock" ]; then state=present; '
+        "else state=absent; fi\n"
+        f'echo "$state" >> {seen}\n'
+        'mkdir -p "$GERRIT_SITE/git/All-Projects.git"\n'
+        'if [ -n "$JAVA_FAIL_INIT" ]; then exit 3; fi\n'
+    )
+    java.chmod(0o755)
+    env = {**os.environ, **pod["env"], "PATH": f"{path_dir}:{os.environ['PATH']}"}
+    marker = site / ".chart" / "initialised"
+    lock = site / ".chart" / "backup-lock" / "lock"
+
+    def site_init(**extra: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["sh", str(SITE_INIT)],
+            env={**env, **extra},
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    assert site_init(GERRIT_SITE_PREPARE_ONLY="1").returncode == 0
+    assert not marker.exists()
+    assert not lock.parent.exists()
+    assert site_init(JAVA_FAIL_INIT="1").returncode != 0
+    assert (site / "git" / "All-Projects.git").is_dir()
+    assert not marker.exists()
+    assert not lock.parent.exists()
+    for _start in range(2):
+        proc = site_init()
+        assert proc.returncode == 0, proc.stderr
+        assert proc.stdout.endswith("is ready; backups may run\n")
+        assert stat.S_IMODE((site / ".chart").stat().st_mode) == 0o700
+        assert stat.S_IMODE(marker.stat().st_mode) == 0o600
+        assert stat.S_IMODE(lock.parent.stat().st_mode) == 0o700
+        assert stat.S_IMODE(lock.stat().st_mode) == 0o600
+        lock.parent.chmod(0o755)
+    record = json.loads(marker.read_text())
+    assert record["gerritVersion"] == "3.13.4"
+    assert datetime.strptime(record["initialisedAt"], "%Y-%m-%dT%H:%M:%SZ")
+    assert not list((site / ".chart").glob("*.new"))
+    # Init ran on the failed start and again on the next, both before
+    # the lock existed; the start after that found the marker
+    assert seen.read_text().split() == ["absent", "absent"]
+
+
 def regular(name: str, data: bytes = b"x") -> tuple[tarfile.TarInfo, bytes]:
     return tarfile.TarInfo(name), data
 
@@ -658,6 +726,30 @@ def test_unpack_skips_state_index_cache_and_binaries(tmp_path: Path) -> None:
         str(p.relative_to(tmp_path / "out")) for p in (tmp_path / "out").rglob("*")
     )
     assert found == ["site", "site/etc", "site/etc/gerrit.config"]
+
+
+@needs_tools
+def test_unpack_drops_lock_files_under_etc(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """An archive from an older export may hold a stale config lock."""
+    module = load()
+    archive = tar_zst(
+        tmp_path / "site.tar.zst",
+        {
+            "site/etc/gerrit.config": b"[gerrit]\n",
+            "site/etc/gerrit.config.new.lock": b"stale",
+            "site/etc/secure.config.new.lock": b"stale",
+            "site/etc/mail/x.lock": b"stale",
+            "site/data/keep.lock": b"not a config lock",
+        },
+    )
+    out = tmp_path / "out"
+    module.unpack(archive, out)
+    found = sorted(str(p.relative_to(out)) for p in out.rglob("*") if p.is_file())
+    assert found == ["site/data/keep.lock", "site/etc/gerrit.config"]
+    logged = capsys.readouterr().out
+    assert "skipping site/etc/secure.config.new.lock, a stale lock file" in logged
 
 
 @needs_tools
@@ -1060,6 +1152,10 @@ def test_import_adopts_the_export(
     assert recorded["manifestSha256"] == digest
     assert recorded["source"] == f"pvc:{export}"
     assert recorded["gerritVersion"] == "3.13.4"
+    # The import's init succeeded, so site-init will not run it again
+    marker = json.loads((site / ".chart" / "initialised").read_text())
+    assert marker["gerritVersion"] == "3.13.4"
+    assert marker["initialisedAt"].endswith("Z")
 
     for repo in ("All-Projects.git", "All-Users.git", "apps/web.git"):
         assert (site / "git" / repo / "HEAD").is_file()
@@ -1186,6 +1282,25 @@ def test_failed_init_records_failed(
     recorded = state(pod["site"])
     assert recorded["state"] == "failed"
     assert recorded["reason"] == "gerrit.war init failed with exit status 3"
+    assert not (pod["site"] / ".chart" / "initialised").exists()
+
+
+@needs_tools
+def test_reimport_clears_the_marker_until_its_init_succeeds(
+    pod: dict[str, Any], export: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    marker = pod["site"] / ".chart" / "initialised"
+    assert run_main(import_env(pod, export), monkeypatch)[1] == 0
+    assert marker.is_file()
+    forced = import_env(
+        pod,
+        export,
+        SITE_IMPORT_MODE="force",
+        SITE_IMPORT_FORCE_TOKEN="1",
+        JAVA_FAIL_INIT="1",
+    )
+    assert run_main(forced, monkeypatch)[1] == 1
+    assert not marker.exists()
 
 
 @needs_tools
@@ -1408,3 +1523,28 @@ def test_https_refuses_plain_http(pod: dict[str, Any]) -> None:
     )
     with pytest.raises(module.SiteImportError, match="only https://"):
         module.fetch(settings, "manifest.json")
+
+
+@needs_tools
+def test_unexpected_error_mid_import_records_failed(
+    pod: dict[str, Any],
+    export: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    module = load()
+    for key, value in import_env(pod, export).items():
+        monkeypatch.setenv(key, value)
+
+    def place(*_: Any) -> Path:
+        raise RuntimeError("injected after staging")
+
+    monkeypatch.setattr(module, "place", place)
+    assert module.main(import_env(pod, export)) == 1
+    recorded = state(pod["site"])
+    assert recorded["state"] == "failed"
+    assert recorded["reason"] == "RuntimeError: injected after staging"
+    err = capsys.readouterr().err
+    assert "Traceback (most recent call last)" in err
+    assert "error: RuntimeError: injected after staging" in err
+    assert "Traceback" not in (pod["site"] / ".chart" / "site-state.json").read_text()

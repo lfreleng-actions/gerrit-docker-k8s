@@ -306,6 +306,9 @@ def image(tmp_path: Path) -> dict[str, str]:
     site = tmp_path / "site"
     (site / "git" / "All-Projects.git").mkdir(parents=True)
     (site / "etc").mkdir()
+    # An initialised site, so site-init skips gerrit init
+    (site / ".chart").mkdir()
+    (site / ".chart" / "initialised").write_text("{}\n", encoding="utf-8")
     return {
         "GERRIT_SITE": str(site),
         "GERRIT_IMAGE_BIN": str(bin_dir),

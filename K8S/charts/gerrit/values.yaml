@@ -373,7 +373,7 @@ siteImport:
     # s3: an S3 bucket and prefix holding the export, fetched with rclone
     type: none
     # pvc: the export directory, under /mnt/import; https: the base URL;
-    # s3: s3://<bucket>/<prefix>
+    # s3: s3://<bucket>/<prefix>, or <prefix>/latest for the newest backup
     url: ""
     # pvc: a volume source mounted read-only at /mnt/import, for example
     # {persistentVolumeClaim: {claimName: gerrit-export}}
@@ -408,6 +408,55 @@ siteImport:
   # the import's most demanding step: a large site needs several GB.
   # init and reindex get container.heapLimit, else 70% of the memory
   # limit, and reindex one thread per core of the CPU limit
+  resources: {}
+
+# A CronJob that backs the site up to S3 while Gerrit runs; see
+# "Backups" in the chart README. Each run writes the export tool's
+# backup archives and manifest.json under s3://<bucket>/<prefix>/<UTC
+# timestamp>-<run id>/, verifies them and only then writes that prefix
+# to <prefix>/latest, which siteImport restores from with
+# source.url s3://<bucket>/<prefix>/latest.
+backup:
+  enabled: false
+  schedule: "0 2 * * *"
+  timeZone: ""                    # e.g. Etc/UTC; "" for the controller's
+  # Pauses scheduled runs without deleting the CronJob (spec.suspend);
+  # kubectl create job --from=cronjob/<fullname>-backup still runs one
+  suspend: false
+  # As siteImport.source.s3. prefix defaults to <namespace>/<full name>;
+  # one you set must be unique to this site: two releases writing the
+  # same prefix overwrite each other's latest and prune each other's
+  # backups, as their locks are on different volumes
+  s3:
+    bucket: ""
+    prefix: ""
+    endpoint: ""
+    region: ""
+    provider: AWS
+  # A Secret with keys AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY; leave
+  # it empty to use the pod's workload identity, such as IRSA through
+  # serviceAccount
+  existingSecret: ""
+  # Kubernetes stops a run, scheduled or created from the CronJob by
+  # hand, after this many hours (activeDeadlineSeconds); an upload no
+  # run published, left by an interrupted run, is deleted once it is
+  # maxRunHours + 1 hours old. Runs are serialised by a lock on the
+  # site volume: one that finds it held skips. At least 1
+  maxRunHours: 6
+  # Counting only published backups (see "Backups" in the chart
+  # README), keep the newest of each of the last keepDaily days and of
+  # each of the last keepWeekly ISO weeks that hold one; older backups
+  # are deleted after each successful run. A run never deletes the
+  # backup latest names, nor one replaced as the newest published
+  # backup less than minAgeHours ago, so a restore from latest has at
+  # least minAgeHours to finish. minAgeHours is at least 1
+  retention:
+    keepDaily: 14
+    keepWeekly: 8
+    minAgeHours: 24
+  # The scratch emptyDir holds the copied site and its archives: about
+  # twice the site's size
+  scratchSizeLimit: ""
   resources: {}
 
 resources:

@@ -16,7 +16,8 @@ in the scratch volume, replaces the site, installs the chart's
 plugins, libraries and configuration through ``site-init.sh``, runs
 Gerrit's ``init`` and a full ``reindex``, checks the result against
 the manifest and records a migration report. Only then does it write
-``complete``. Any failure writes ``failed`` and exits non-zero, so
+``<site>/.chart/initialised``, so ``site-init.sh`` skips ``init``,
+and ``complete``. Any failure writes ``failed`` and exits non-zero, so
 Gerrit never starts on a partial site. Archive contents and secret
 values are never logged.
 
@@ -65,7 +66,7 @@ import os
 import shutil
 import subprocess
 import sys
-import time
+import traceback
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -95,13 +96,18 @@ from site_import_common import (
     gerrit_version,
     run,
     say,
+    utc_now,
     warn,
+    write_json,
 )
 from site_import_unpack import skip_regenerated, unpack
 
 NOTHING, FRESH, ADOPT, IMPORT = "nothing", "fresh", "adopt", "import"
+EXPECTED = (SiteImportError, OSError, subprocess.SubprocessError)
 
 STATE_FILE = Path(".chart") / "site-state.json"
+# Written once Gerrit's init succeeds; site-init.sh runs init without it
+INITIALISED = Path(".chart") / "initialised"
 # Kept on the volume across an import: the state, and ext4's own directory
 KEEP = (".chart", "lost+found")
 JAVA_OPTS = [
@@ -140,25 +146,8 @@ def read_state(site: Path) -> dict[str, Any] | None:
 
 
 def write_state(site: Path, data: dict[str, Any]) -> None:
-    """Write the state atomically: a temporary file renamed over the old."""
-    path = state_path(site)
-    path.parent.mkdir(mode=0o700, exist_ok=True)
-    record = {
-        "schema": 1,
-        **data,
-        "updated": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-    }
-    temp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    with open(temp, "w", encoding="utf-8") as handle:
-        handle.write(json.dumps(record, indent=2) + "\n")
-        handle.flush()
-        os.fsync(handle.fileno())
-    os.replace(temp, path)
-    directory = os.open(path.parent, os.O_RDONLY)
-    try:
-        os.fsync(directory)
-    finally:
-        os.close(directory)
+    """Write the state atomically."""
+    write_json(state_path(site), {"schema": 1, **data, "updated": utc_now()})
 
 
 def occupied(site: Path) -> bool:
@@ -333,6 +322,7 @@ def gerrit(settings: Settings, *args: str) -> None:
 
 def run_import(settings: Settings) -> dict[str, Any]:
     """Import the archive; return what the complete state records."""
+    (settings.site / INITIALISED).unlink(missing_ok=True)
     imported, unpacked = stage(settings)
     store = place(settings, unpacked)
     empty_dir(settings.scratch)
@@ -358,6 +348,11 @@ def run_import(settings: Settings) -> dict[str, Any]:
                 f"gerrit.serverId is {site_id} after init, not the archive's {imported.server_id}"
             )
         say("verified SSH host keys and gerrit.serverId")
+    war = settings.site / "bin" / "gerrit.war"
+    write_json(
+        settings.site / INITIALISED,
+        {"gerritVersion": gerrit_version(war), "initialisedAt": utc_now()},
+    )
     all_projects = config_get(config, "gerrit.allProjects") or "All-Projects"
     warnings = [
         *project_config_report(store, all_projects),
@@ -423,8 +418,12 @@ def main(
     )
     try:
         result = importer(settings)
-    except (SiteImportError, OSError, subprocess.SubprocessError) as exc:
+    except Exception as exc:
+        # Any error, expected or not, must replace in-progress with failed
         reason = str(exc)
+        if not isinstance(exc, EXPECTED):
+            traceback.print_exc(file=sys.stderr)
+            reason = f"{type(exc).__name__}: {exc}"
         write_state(
             settings.site,
             {"state": "failed", **record, "manifestSha256": None, "reason": reason},
