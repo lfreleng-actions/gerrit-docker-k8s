@@ -511,12 +511,21 @@ jobs:
   # tests/test_no_credential_patterns.py, which keeps credential-shaped
   # literals out of the tree; that guard only prevents anything if CI
   # actually runs it.
+  #
+  # The job pins its own Helm and Python rather than taking whatever
+  # the runner image ships: the chart golden tests depend on the Helm
+  # version, and the matrix covers the requires-python floor and the
+  # newest Python release.
   unit-tests:
-    name: 'Unit tests'
+    name: 'Unit tests (Python ${{ matrix.python-version }})'
     runs-on: 'ubuntu-latest'
     permissions:
       contents: read
     timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.11', '3.14']
     steps:
       - name: 'Checkout repository'
         # yamllint disable-line rule:line-length
@@ -524,11 +533,18 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: 'Install Helm'
+        # yamllint disable-line rule:line-length
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: 'v3.22.1'
+
       - name: 'Install uv'
         # yamllint disable-line rule:line-length
         uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
         with:
           enable-cache: true
+          python-version: ${{ matrix.python-version }}
 
       - name: 'Run pytest'
         shell: bash
@@ -640,8 +656,8 @@ jobs:
           enable-cache: true
 
       # Golden tests of the rendered gerrit.config and of secure.config,
-      # with the Helm version pinned above; the pytest job skips them
-      # when its runner has no helm
+      # with the Helm version pinned above; the unit-tests job runs
+      # them as well, with the same pinned Helm
       - name: 'Run the chart golden tests'
         shell: bash
         run: |
