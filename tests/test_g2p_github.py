@@ -5,9 +5,11 @@
 
 from __future__ import annotations
 
+import io
 import json
 from typing import Any
 from unittest.mock import MagicMock, patch
+from urllib.error import HTTPError
 
 from credential_stubs import pem_header
 from g2p_config import (
@@ -66,10 +68,8 @@ def _make_urlopen_response(
 def _make_http_error(
     status: int,
     body: dict[str, Any] | str = "",
-) -> Exception:
-    """Create a mock HTTPError."""
-    from urllib.error import HTTPError
-
+) -> HTTPError:
+    """Create an HTTPError whose body is a real in-memory stream."""
     if isinstance(body, dict):
         raw_bytes = json.dumps(body).encode("utf-8")
     else:
@@ -80,9 +80,8 @@ def _make_http_error(
         code=status,
         msg=f"HTTP {status}",
         hdrs=MagicMock(),
-        fp=None,
+        fp=io.BytesIO(raw_bytes),
     )
-    err.read = MagicMock(return_value=raw_bytes)  # type: ignore[method-assign]
     return err
 
 
@@ -180,11 +179,14 @@ class TestGithubRequest:
 
     @patch("g2p_github.urlopen")
     def test_http_error_json_body(self, mock_urlopen: MagicMock) -> None:
-        mock_urlopen.side_effect = _make_http_error(401, {"message": "Bad credentials"})
+        err = _make_http_error(401, {"message": "Bad credentials"})
+        mock_urlopen.side_effect = err
         status, data = _github_request(f"{GITHUB_API_BASE}/user", "ghp_bad")
         assert status == 401
         assert isinstance(data, dict)
         assert data["message"] == "Bad credentials"
+        # The error response must be closed, not left for the GC to reap
+        assert err.fp.closed
 
     @patch("g2p_github.urlopen")
     def test_http_error_text_body(self, mock_urlopen: MagicMock) -> None:

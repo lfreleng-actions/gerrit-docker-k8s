@@ -181,7 +181,9 @@ def _github_request(
                 data = raw
             return resp.status, data
     except HTTPError as exc:
-        raw_err = exc.read().decode("utf-8", errors="replace")
+        # An HTTPError wraps the open error response; close it once read
+        with exc:
+            raw_err = exc.read().decode("utf-8", errors="replace")
         try:
             data = json.loads(raw_err)
         except json.JSONDecodeError:

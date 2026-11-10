@@ -10,6 +10,7 @@ container setup — with Docker and HTTP interactions mocked.
 
 from __future__ import annotations
 
+import io
 import json
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -161,9 +162,8 @@ def _make_http_error(
         code=status,
         msg=f"HTTP {status}",
         hdrs=MagicMock(),
-        fp=None,
+        fp=io.BytesIO(raw_bytes),
     )
-    err.read = MagicMock(return_value=raw_bytes)  # type: ignore[method-assign]
     return err
 
 
