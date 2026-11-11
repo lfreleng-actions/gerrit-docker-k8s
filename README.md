@@ -1019,7 +1019,12 @@ repository names (e.g. `foo-bar`).
 `scripts/gerrit-site-export.py` copies an existing Gerrit site into the
 archive layout the Helm chart's import Job and backup CronJob consume:
 `<out>/site` (the site minus `cache`, `index`, `logs`, `tmp`, `bin`,
-`.gerritcodereview/tmp` and `.chart`, the chart's own import state),
+`.gerritcodereview/tmp`, `.chart`, the chart's own import state, and
+`.ssh` and `.config/gerrit_to_platform`, credentials the chart
+supplies from Secrets; a credential reachable by another name, through
+a symlink at or on the path to either directory, a link in it that
+could leave it (an absolute or `..` target), a hard link or a store
+that holds it, stops the run),
 `<out>/git` (the bare repositories under `gerrit.basePath`) and
 `<out>/manifest.json`. It needs only Python 3.8 or newer and its
 standard library, plus `rsync` and `git`, so it runs with the `python3`

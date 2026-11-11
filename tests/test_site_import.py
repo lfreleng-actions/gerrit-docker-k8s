@@ -656,8 +656,8 @@ def directory(name: str) -> tuple[tarfile.TarInfo, bytes]:
                 (link("site/etc/state", "up/.chart/site-state.json"), b""),
                 (link("site/etc/up", ".."), b""),
             ],
-            "symlinks resolve outside their tree or into a skipped path: "
-            "site/etc/state",
+            "symlinks resolve outside their tree, into a skipped path or on "
+            "its path: site/etc/state",
         ),
         (
             [
@@ -726,6 +726,38 @@ def test_unpack_skips_state_index_cache_and_binaries(tmp_path: Path) -> None:
         str(p.relative_to(tmp_path / "out")) for p in (tmp_path / "out").rglob("*")
     )
     assert found == ["site", "site/etc", "site/etc/gerrit.config"]
+
+
+@needs_tools
+@pytest.mark.parametrize(
+    "target", ["../.ssh/id_ed25519", "../.config/gerrit_to_platform/token.ini"]
+)
+def test_unpack_refuses_links_into_credentials(tmp_path: Path, target: str) -> None:
+    module = load()
+    archive = tar_zst_members(
+        tmp_path / "site.tar.zst",
+        [directory("site/etc"), (link("site/etc/key", target), b"")],
+    )
+    with pytest.raises(module.SiteImportError, match="into a skipped path"):
+        module.unpack(archive, tmp_path / "out")
+
+
+@needs_tools
+@pytest.mark.parametrize("link_first", [True, False])
+def test_unpack_refuses_a_link_on_a_credential_path(
+    tmp_path: Path, link_first: bool
+) -> None:
+    """site/.config -> settings would carry the g2p token in as settings/."""
+    module = load()
+    token = regular("site/settings/gerrit_to_platform/gerrit_to_platform.ini")
+    members = [directory("site/settings/gerrit_to_platform"), token]
+    alias = (link("site/.config", "settings"), b"")
+    members = [alias, *members] if link_first else [*members, alias]
+    archive = tar_zst_members(tmp_path / "site.tar.zst", members)
+    out = tmp_path / "out"
+    with pytest.raises(module.SiteImportError, match="on the path of a skipped one"):
+        module.unpack(archive, out)
+    assert not os.path.lexists(out / "site/.config")
 
 
 @needs_tools
@@ -846,7 +878,9 @@ def test_unpack_leaves_out_links_site_init_recreates(
     logged = capsys.readouterr().out
     for name, target in G2P_HOOK_LINKS.items():
         assert f"skipping site/{hooks_dir}/{name} -> {target}" in logged
-    assert f"skipping {G2P_REPLICATION[0]} -> {G2P_REPLICATION[1]}" in logged
+    # Its directory holds the g2p token, so unpack leaves all of it out
+    assert "skipping site/.config/gerrit_to_platform/, credentials" in logged
+    assert " -> " + G2P_REPLICATION[1] not in logged
 
 
 @needs_tools
@@ -868,8 +902,6 @@ def test_unpack_leaves_out_links_site_init_recreates(
             ),
             "custom",
         ),
-        (link(G2P_REPLICATION[0], "/etc/passwd"), None),
-        (link("site/.config/gerrit_to_platform/other", G2P_REPLICATION[1]), None),
     ],
 )
 def test_unpack_refuses_other_absolute_links(
@@ -880,6 +912,152 @@ def test_unpack_refuses_other_absolute_links(
     members.append((member, b""))
     with pytest.raises(module.SiteImportError, match="symlinks to absolute paths"):
         unpack_and_skip(tmp_path, members)
+
+
+@needs_tools
+@pytest.mark.parametrize(
+    "member",
+    [
+        link("site/.ssh/id_ed25519", "keys/id_ed25519"),
+        link("site/.ssh/id_ed25519", "site/.ssh/keys/id_ed25519", hard=True),
+        link("site/.ssh/id_ed25519", "..data/id_ed25519"),
+    ],
+)
+def test_unpack_leaves_out_links_that_stay_in_a_credential_path(
+    tmp_path: Path, member: tarfile.TarInfo
+) -> None:
+    """A link that cannot leave .ssh/, as a projected Secret holds, is skipped."""
+    members = g2p_site()
+    members += [regular("site/.ssh/keys/id_ed25519"), (member, b"")]
+    out = unpack_and_skip(tmp_path, members)
+    assert not os.path.lexists(out / "site/.config/gerrit_to_platform")
+    assert not os.path.lexists(out / "site/.ssh")
+
+
+@needs_tools
+@pytest.mark.parametrize("link_first", [True, False])
+@pytest.mark.parametrize(
+    ("alias", "target", "secret"),
+    [
+        ("site/.ssh", "keys", "site/keys/id_ed25519"),
+        ("site/.ssh", "/var/gerrit/keys", "site/keys/id_ed25519"),
+        ("site/.ssh", "/srv/gerrit/keys", "site/keys/id_ed25519"),
+        ("site/.ssh", "/home/gerrit/.ssh", "site/id_ed25519"),
+        ("site/.ssh", ".", "site/id_ed25519"),
+        ("site/.ssh", "/var/gerrit", "site/id_ed25519"),
+        ("site/.ssh", "..", "site/id_ed25519"),
+        ("site/.ssh/id_ed25519", "../keys/id_ed25519", "site/keys/id_ed25519"),
+        ("site/.ssh/keys", "../../git/keys", "git/keys/id_ed25519"),
+        ("site/.config/gerrit_to_platform", "../g2p", "site/g2p/token.ini"),
+        (
+            "site/.config/gerrit_to_platform/gerrit_to_platform.ini",
+            G2P_REPLICATION[1],
+            "site/etc/replication.config",
+        ),
+        (G2P_REPLICATION[0], "/etc/passwd", "site/etc/passwd"),
+        (G2P_REPLICATION[0], "/var/gerrit/etc/../etc/token.ini", "site/etc/x"),
+        ("site/.config/gerrit_to_platform/up", "../../../elsewhere", "site/etc/x"),
+        ("site/.config/gerrit_to_platform/here", ".", "site/etc/x"),
+    ],
+)
+def test_unpack_refuses_a_credential_link_to_the_rest_of_the_archive(
+    tmp_path: Path, link_first: bool, alias: str, target: str, secret: str
+) -> None:
+    """Skipping site/.ssh -> keys would still import keys/ under its name.
+
+    Where an absolute target or one holding ".." lands cannot be told
+    from the archive, so such a link is refused wherever it seems to go.
+    """
+    module = load()
+    members = [(link(alias, target), b""), regular(secret, b"credential")]
+    members = members if link_first else members[::-1]
+    archive = tar_zst_members(tmp_path / "site.tar.zst", members)
+    with pytest.raises(module.SiteImportError, match="could carry credentials in"):
+        module.unpack(archive, tmp_path / "out")
+
+
+@needs_tools
+def test_unpack_refuses_a_credential_hard_link_to_the_rest_of_the_archive(
+    tmp_path: Path,
+) -> None:
+    module = load()
+    secret = "site/keys/id_ed25519"
+    members = [
+        regular(secret, b"key"),
+        (link("site/.ssh/id_ed25519", secret, True), b""),
+    ]
+    archive = tar_zst_members(tmp_path / "site.tar.zst", members)
+    with pytest.raises(module.SiteImportError, match="could carry credentials in"):
+        module.unpack(archive, tmp_path / "out")
+
+
+@needs_tools
+@pytest.mark.parametrize("order", [(0, 1, 2), (2, 1, 0), (1, 2, 0)])
+def test_unpack_refuses_a_credential_link_through_another_link(
+    tmp_path: Path, order: tuple[int, int, int]
+) -> None:
+    """With up -> ., up/../keys is site/keys, not a path under site/.ssh."""
+    module = load()
+    members = [
+        (link("site/.ssh/up", "."), b""),
+        (link("site/.ssh/id_ed25519", "up/../keys/id_ed25519"), b""),
+        regular("site/keys/id_ed25519", b"credential"),
+    ]
+    archive = tar_zst_members(tmp_path / "site.tar.zst", [members[i] for i in order])
+    with pytest.raises(module.SiteImportError, match="could carry credentials in"):
+        module.unpack(archive, tmp_path / "out")
+
+
+@needs_tools
+@pytest.mark.parametrize("order", [(0, 1, 2), (2, 1, 0), (1, 2, 0)])
+def test_unpack_refuses_a_credential_hard_link_through_another_link(
+    tmp_path: Path, order: tuple[int, int, int]
+) -> None:
+    """With up -> ., site/.ssh/up/../keys is site/keys, not a path in .ssh/."""
+    module = load()
+    members = [
+        (link("site/.ssh/up", "."), b""),
+        regular("site/keys/id_ed25519", b"credential"),
+        (link("site/.ssh/id_ed25519", "site/.ssh/up/../keys/id_ed25519", True), b""),
+    ]
+    archive = tar_zst_members(tmp_path / "site.tar.zst", [members[i] for i in order])
+    with pytest.raises(module.SiteImportError, match="could carry credentials in"):
+        module.unpack(archive, tmp_path / "out")
+
+
+@needs_tools
+@pytest.mark.parametrize("link_first", [True, False])
+def test_unpack_refuses_a_g2p_link_to_the_regenerated_link(
+    tmp_path: Path, link_first: bool
+) -> None:
+    """gerrit_to_platform.ini -> replication.config reaches the site's etc/."""
+    module = load()
+    ini = "site/.config/gerrit_to_platform/gerrit_to_platform.ini"
+    members = [(link(*G2P_REPLICATION), b""), (link(ini, "replication.config"), b"")]
+    members = members if link_first else members[::-1]
+    members.append(regular("site/etc/replication.config", b"token"))
+    archive = tar_zst_members(tmp_path / "site.tar.zst", members)
+    with pytest.raises(module.SiteImportError, match="could carry credentials in"):
+        module.unpack(archive, tmp_path / "out")
+
+
+@needs_tools
+@pytest.mark.parametrize("order", [(0, 1, 2), (2, 0, 1)])
+def test_unpack_refuses_a_credential_path_linked_through_an_alias(
+    tmp_path: Path, order: tuple[int, int, int]
+) -> None:
+    """site/alias -> . makes site/alias/.config the link site/.config."""
+    module = load()
+    members = [
+        (link("site/alias", "."), b""),
+        (link("site/alias/.config", "settings"), b""),
+        regular("site/settings/gerrit_to_platform/gerrit_to_platform.ini"),
+    ]
+    archive = tar_zst_members(tmp_path / "site.tar.zst", [members[i] for i in order])
+    out = tmp_path / "out"
+    with pytest.raises(module.SiteImportError, match="on the path of a skipped one"):
+        module.unpack(archive, out)
+    assert not os.path.lexists(out / "site/.config")
 
 
 def test_keystore_must_match_the_secret(tmp_path: Path) -> None:
@@ -1190,8 +1368,60 @@ def test_import_adopts_the_export(
     assert len(java_runs(pod)) == 2
 
 
+CREDENTIAL_FILES = {
+    "site/.ssh/id_ed25519": b"replication key",
+    "site/.ssh/known_hosts": b"github.com ssh-ed25519 AAAA",
+    "site/.config/gerrit_to_platform/gerrit_to_platform.ini": b"[github.com]\n",
+}
+
+
+@needs_tools
+def test_import_leaves_out_credentials(
+    pod: dict[str, Any],
+    export: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """An archive from an older export may hold the source's credentials.
+
+    The chart supplies them from Secrets, so the import writes neither
+    directory to the volume and says once for each that it left it out.
+    """
+    site_tar = export / "site.tar"
+    subprocess.run(
+        ["zstd", "-q", "-d", str(export / "site.tar.zst"), "-o", str(site_tar)],
+        check=True,
+    )
+    with tarfile.open(site_tar, "a") as tar:
+        for name, data in CREDENTIAL_FILES.items():
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+    (export / "site.tar.zst").unlink()
+    subprocess.run(["zstd", "-q", "--rm", str(site_tar)], check=True)
+    manifest = json.loads((export / "manifest.json").read_text())
+    data = (export / "site.tar.zst").read_bytes()
+    manifest["archives"]["site.tar.zst"] = hashlib.sha256(data).hexdigest()
+    (export / "manifest.json").write_text(json.dumps(manifest))
+
+    site: Path = pod["site"]
+    _, code = run_main(import_env(pod, export), monkeypatch)
+    logged = capsys.readouterr()
+    assert code == 0, logged.err
+    assert state(site)["state"] == "complete"
+    assert not (site / ".ssh").exists()
+    assert not (site / ".config" / "gerrit_to_platform").exists()
+    for path in ("site/.ssh", "site/.config/gerrit_to_platform"):
+        assert logged.out.count(f"skipping {path}/, credentials") == 1
+    assert "replication key" not in logged.out + logged.err
+
+
 def add_g2p_links(source: Path, target_dir: str = "/opt/gerrit-tools/bin") -> None:
-    """Give the source site the links a chart site with g2p hooks holds."""
+    """Give the source site the links a chart site with g2p hooks holds.
+
+    The export refuses any other replication.config link, so only the
+    hook links take target_dir.
+    """
     with open(source / "etc" / "gerrit.config", "a", encoding="utf-8") as config:
         config.write("[hooks]\n\tpath = /var/gerrit/hooks\n")
     (source / "hooks").mkdir()
@@ -1199,11 +1429,7 @@ def add_g2p_links(source: Path, target_dir: str = "/opt/gerrit-tools/bin") -> No
         (source / "hooks" / name).symlink_to(f"{target_dir}/{name}")
     g2p = source / ".config" / "gerrit_to_platform"
     g2p.mkdir(parents=True)
-    (g2p / "replication.config").symlink_to(
-        "/var/gerrit/etc/replication.config"
-        if target_dir == "/opt/gerrit-tools/bin"
-        else "/etc/passwd"
-    )
+    (g2p / "replication.config").symlink_to("/var/gerrit/etc/replication.config")
 
 
 @needs_tools

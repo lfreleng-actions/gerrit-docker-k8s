@@ -531,16 +531,27 @@ names a deleted one never starts, even after a complete import.
    plugin or library built for the source release can stop the new
    one starting. It also drops any `*.lock` file under `etc/`, a stale
    lock that would fail `site-init`'s `git config`, and logs each. It
-   refuses links that resolve outside the archive's
-   `site/` or `git/` tree, or into `.chart/`, `index/`, `cache/`,
-   `bin/`, `plugins/` or `lib/`, except two kinds `site-init` recreates at
+   leaves out `.ssh/` and `.config/gerrit_to_platform/`, logging once
+   for each: the chart supplies the replication key and the
+   gerrit-to-platform token they hold from Secrets
+   (`replication.sshKeySecret`, `hooks.g2p.existingSecret`), so an
+   imported copy is never needed. It refuses links that resolve
+   outside the archive's `site/` or `git/` tree, or into `.chart/`,
+   `index/`, `cache/`, `bin/`, `plugins/`, `lib/`, `.ssh/` or
+   `.config/gerrit_to_platform/`, and a link at `.config` itself or
+   on its path, which would bring the gerrit-to-platform directory in
+   under another name. It refuses any other link at or in `.ssh/`
+   unless it provably stays inside, as a projected Secret's links do:
+   a hard link within the directory or a relative symlink below its
+   top, either with no `..`. In `.config/gerrit_to_platform/` it
+   refuses every link but `site-init`'s `replication.config` link to
+   `/var/gerrit/etc/replication.config`, which any other link there
+   could reach. The exception is the links `site-init` recreates at
    every start, which it leaves out and logs: links in the site's
    `hooks.path` (default `hooks`) to the gerrit-to-platform entry
-   point of the same name in `/opt/gerrit-tools/bin`, and
-   `.config/gerrit_to_platform/replication.config` when it links to
-   `/var/gerrit/etc/replication.config`. It refuses an export whose
-   `gerrit.allProjects` or `gerrit.allUsers` differs from the chart's
-   (`All-Projects` and `All-Users` by default): the chart's
+   point of the same name in `/opt/gerrit-tools/bin`. It refuses an
+   export whose `gerrit.allProjects` or `gerrit.allUsers` differs from
+   the chart's (`All-Projects` and `All-Users` by default): the chart's
    `gerrit.config` replaces the export's, and `init` would create
    empty repositories under the chart's names, leaving the imported
    permissions and accounts unused. Set the export's names in
