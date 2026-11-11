@@ -5,8 +5,7 @@ Usage: python3 scripts/gerrit-site-export.py <seed|final|backup> --out <dir> [op
 
 Copy a Gerrit site to <out>/site and <out>/git with manifest.json; stdlib, Python 3.8+.
   seed                Incremental rsync; safe while Gerrit runs, and to re-run.
-  final               Last rsync, with --checksum. Refuses while Gerrit serves the site
-                      (gerrit.pid, /proc) or if unsure, unless --i-stopped-writes.
+  final               Last rsync, --checksum; refused while Gerrit may serve the site.
   backup              Packed live final: git checks repositories; db/, data/ (H2 flags,
                       events, queue) may be inconsistent: snapshot a stopped site.
   --site <dir>        Gerrit site (default: $GERRIT_SITE).
@@ -20,8 +19,9 @@ Copy a Gerrit site to <out>/site and <out>/git with manifest.json; stdlib, Pytho
   --dry-run           Print the commands without writing anything.
 
 Left out of <out>/site, any type: cache, index, logs, tmp, bin, .chart, *.lock files,
-.gerritcodereview/tmp and the repositories as configured and resolved. Store symlinks
-and symlinked outputs are refused. Old manifest (uploaded too) and archives go first,
+.gerritcodereview/tmp, credentials (.ssh, .config/gerrit_to_platform) and repositories
+as resolved. Refused: store and output symlinks, and a store, hard link or link that may
+leave (absolute, '..') copying credentials. Old manifest (uploaded too), archives first,
 manifest last: manifest.json marks a complete export; errors exit non-zero. -h, --help.
 """
 
@@ -39,23 +39,22 @@ import sys
 import tarfile
 import time
 import zipfile
-from collections.abc import Iterator
 from pathlib import Path
 from subprocess import PIPE
 from types import SimpleNamespace
-from typing import Any, NoReturn
+from typing import Any, Iterator, NoReturn
 
-PROG = "gerrit-site-export.py"
+PROG, CREDENTIALS = "gerrit-site-export.py", [".ssh", ".config/gerrit_to_platform"]
 EXCLUDED = ["cache", "index", "logs", "tmp", "bin", ".gerritcodereview/tmp", ".chart"]
-PROC_ENV = "GERRIT_SITE_EXPORT_PROC"  # Reserved for tests: stands in for /proc.
+EXCLUDED += CREDENTIALS  # Last; the chart supplies them from Secrets.
+G2P = (f"{CREDENTIALS[1]}/replication.config", "/var/gerrit/etc/replication.config")
 VALUES = ("--site", "--git", "--out", "--encrypt", "--upload")
 FLAGS = ("--i-stopped-writes", "--pack", "--include-cache", "--dry-run")
 HINT = "stop writes and pass --i-stopped-writes"
 ELSEWHERE = "another filesystem namespace, so its site cannot be compared"
 NEW_FILE = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
-ZSTD = ["zstd", "-q", "-T0", "-c"]
+ZSTD, S3_COPY = ["zstd", "-q", "-T0", "-c"], ["aws", "s3", "cp", "--sse", "aws:kms"]
 ENCRYPT = {"age": ["-r"], "gpg": ["--batch", "--yes", "--encrypt", "--recipient"]}
-S3_COPY = ["aws", "s3", "cp", "--sse", "aws:kms"]
 PARTS = ("site", "git")
 ARCHIVES = [f"{p}.tar.zst{s}" for p in PARTS for s in ("", ".age", ".gpg")]
 VERSION_JAR = "WEB-INF/lib/com_google_gerrit_common_libversion.jar"
@@ -96,8 +95,7 @@ def step(opts: Any, command: list[str], what: str, tolerate: int = 0) -> int:
 def parse_args(argv: list[str]) -> Any:
     opts = SimpleNamespace(mode="", **{o[2:]: "" for o in VALUES})
     opts.__dict__.update({o[2:].replace("-", "_"): False for o in FLAGS})
-    opts.site = os.environ.get("GERRIT_SITE", "")
-    args = list(argv)
+    opts.site, args = os.environ.get("GERRIT_SITE", ""), list(argv)
     while args:
         arg = args.pop(0)
         name, equals, value = arg.partition("=")
@@ -165,8 +163,7 @@ def require_tools(opts: Any, site: str) -> None:
 
 
 def base_path(site: str) -> str:
-    config = os.path.join(site, "etc", "gerrit.config")
-    if not os.access(config, os.R_OK):
+    if not os.access(config := os.path.join(site, "etc", "gerrit.config"), os.R_OK):
         die(f"cannot read {config}; pass --git")
     result = run(["git", "config", "-f", config, "--get", "gerrit.basePath"], True)
     if result.returncode > 1:
@@ -211,7 +208,7 @@ def fs_view(proc: str, pid: str) -> tuple[int, int, str] | None:
 
 def refuse_running(site: str) -> None:
     """Die while a Gerrit serves site; reads /proc, as ps output truncates."""
-    proc = os.environ.get(PROC_ENV) or "/proc"
+    proc = os.environ.get("GERRIT_SITE_EXPORT_PROC") or "/proc"  # Set by tests.
     running = f"Gerrit is running on {site} (pid %s); stop it, or {HINT}"
     try:
         pids = sorted((e for e in os.listdir(proc) if e.isdigit()), key=int)
@@ -253,6 +250,17 @@ def refuse_running(site: str) -> None:
 
 
 def copy(opts: Any, site: str, git_dir: str, git_given: str, out: Path) -> None:
+    for cred, top in ((c, os.path.join(site, c)) for c in CREDENTIALS):  # As import
+        bad = [str(p) for p in (Path(top), *Path(top).parents) if p.is_symlink()]
+        for f in tree_paths(top) if not bad and os.path.isdir(top) else ():
+            to = os.readlink(f) if os.path.islink(f) else ""
+            safe = cred == ".ssh" and to[:1] != "/" and ".." not in to.split("/")
+            safe = not to or safe or (f[len(site) + 1 :], to) == G2P
+            bad += [f] * (not safe or os.path.isfile(f) and os.stat(f).st_nlink > 1)
+        if os.path.exists(top) and os.path.commonpath([top, git_dir]) in (top, git_dir):
+            bad.append(git_dir)
+        if bad:
+            die(f"{bad[0]} could copy credential {top} under another name")
     # Any type matches; a linked basePath goes as both, or as its first linked ancestor.
     names, given = list(opts.excluded), os.path.abspath(opts.site)
     for path, base in ((git_given, site), (git_given, given), (git_dir, site)):
@@ -289,8 +297,7 @@ def pack(opts: Any, out: Path) -> list[Path]:
                 except (OSError, tarfile.TarError) as exc:
                     failure = str(exc)
                 zstd.communicate()
-            # zstd failing breaks the pipe, so its status is reported first.
-            if status := zstd.returncode:
+            if status := zstd.returncode:  # First, as zstd failing breaks the pipe.
                 die(f"zstd failed with exit status {status} packing {archive.name}")
             if failure:
                 die(f"cannot pack {part}/: {failure}")
@@ -298,11 +305,9 @@ def pack(opts: Any, out: Path) -> list[Path]:
         if opts.encrypt:
             kind, _, who = opts.encrypt.partition(":")
             sealed = archive.with_name(f"{archive.name}.{kind}")
-            output = "-o" if kind == "age" else "--output"
-            command = [kind, *ENCRYPT[kind], who, output, str(sealed), str(archive)]
+            command = [kind, *ENCRYPT[kind], who, "-o", str(sealed), str(archive)]
             step(opts, command, f"{kind} encryption of {archive.name}")
-            if not opts.dry_run:
-                refuse_unsafe(sealed, regular=True)
+            refuse_unsafe(sealed, regular=True)
             step(opts, ["rm", "-f", str(archive)], f"removal of {archive.name}")
             archive = sealed
         archives.append(archive)
@@ -325,13 +330,8 @@ def gerrit_version(site: str) -> str | None:
     return text.strip().lstrip("v") or None
 
 
-def git_head(git: list[str]) -> str | None:  # The ref HEAD names, or its commit.
-    heads = (run([*git, *probe], True).stdout.strip() for probe in HEAD_PROBES)
-    return next(filter(None, heads), None)
-
-
 def build_manifest(opts: Any, site: str, git_dir: str, out: Path) -> dict[str, Any]:
-    repos = {}
+    repos, keys = {}, {}
     for top, dirs, _files in os.walk(out / "git", onerror=die):
         for name in [d for d in dirs if d.endswith(".git")]:
             dirs.remove(name)
@@ -341,10 +341,10 @@ def build_manifest(opts: Any, site: str, git_dir: str, out: Path) -> dict[str, A
             if result.returncode:
                 die(f"cannot read refs of repository: {rel}\n{result.stderr.strip()}")
             refs = [line.split(" ") for line in result.stdout.splitlines()]
-            meta = [r[2] or r[1] for r in refs if r[0] == "refs/meta/config"]  # Peeled
-            repos[rel] = {"refs": len(refs), "meta_config": next(iter(meta), None)}
-            repos[rel]["head"] = git_head(repo)
-    keys = {}
+            cfg = next((r[2] or r[1] for r in refs if r[0] == "refs/meta/config"), None)
+            heads = (run([*repo, *p], True).stdout.strip() for p in HEAD_PROBES)
+            head = next(filter(None, heads), None)  # The ref HEAD names, or its commit.
+            repos[rel] = {"refs": len(refs), "meta_config": cfg, "head": head}
     for key in host_keys(out / "site" / "etc"):
         result = run(["ssh-keygen", "-l", "-E", "sha256", "-f", str(key)], True)
         fields = result.stdout.split()

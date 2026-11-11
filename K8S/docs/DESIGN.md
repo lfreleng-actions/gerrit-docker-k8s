@@ -405,12 +405,28 @@ volume. It never takes the archive's `site/bin/`, `site/plugins/` or
 `site/lib/`: `site-init` installs the image's war and the chart's
 plugins and libraries, and a jar built for the source release, such
 as a hidden `plugins/.jar` an official image left behind, can stop
-the new release starting. It leaves out, and logs, the two absolute links `site-init`
-recreates at every start: a link in the site's `hooks.path` to the
-gerrit-to-platform entry point of the same name in
-`/opt/gerrit-tools/bin`, and `.config/gerrit_to_platform/replication.config`
-linking to `/var/gerrit/etc/replication.config`; it refuses any other
-absolute link. With
+the new release starting. Nor does it take `site/.ssh/` or
+`site/.config/gerrit_to_platform/`, which a site that is also the
+service account's home holds, logging once for each that it left it
+out: they carry the replication plugin's private key and the
+gerrit-to-platform token, which the chart supplies from Secrets
+(`replication.sshKeySecret`, `hooks.g2p.existingSecret`), so an
+imported copy is never needed. It refuses a symlink on the path to a
+skipped directory, such as `site/.config` or a link that leads to
+it, which would otherwise bring that directory's contents in under
+another name. It refuses any other link at or in a skipped directory,
+such as `site/.ssh` linked to `site/keys` or `/srv/gerrit/keys`, which
+could bring credentials in under another name. In `site/.ssh/` it
+accepts only links that provably stay inside, as a projected Secret's
+do: a hard link within the directory or a relative symlink below its
+top, either with no `..` component. In
+`site/.config/gerrit_to_platform/` it accepts only the
+`replication.config` link to `/var/gerrit/etc/replication.config`
+that `site-init` makes, since any other link there could reach it. It leaves
+out, and logs, the absolute links `site-init` recreates at every
+start: a link in the site's
+`hooks.path` to the gerrit-to-platform entry point of the same name in
+`/opt/gerrit-tools/bin`. It refuses any other absolute link. With
 `siteImport.verify` it checks the unpacked copy there, before the site
 volume changes: the repositories are those the manifest lists, each
 with its ref count and `refs/meta/config` head, and the SSH host keys
@@ -668,8 +684,9 @@ An export directory `<out>` holds:
 ```
 
 - `site/` leaves out `cache`, `index`, `logs`, `tmp`, `bin`,
-  `.gerritcodereview/tmp` and `.chart`, plus the repository store when
-  it sits inside the site. `--include-cache` keeps `cache`. The import
+  `.gerritcodereview/tmp`, `.chart`, `.ssh` and
+  `.config/gerrit_to_platform`, plus the repository store when it
+  sits inside the site. `--include-cache` keeps `cache`. The import
   rebuilds the index and caches and takes `bin/gerrit.war` from the
   image. `plugins/` and `lib/` stay in the export, for the record;
   `site-import` leaves them out (section 1.7).
@@ -677,6 +694,27 @@ An export directory `<out>` holds:
   the source release rather than the export. `site-import` skips
   `site/.chart/` whatever the archive holds (section 1.7); leaving it
   out of the export as well keeps archives free of it.
+- `.ssh/` and `.config/gerrit_to_platform/` appear at the top of a
+  site that is also the Gerrit service account's home directory. They
+  hold outbound credentials, the replication plugin's private key and
+  the gerrit-to-platform token, which the chart supplies from Secrets
+  (`replication.sshKeySecret`, `hooks.g2p.existingSecret`), so no
+  export carries them in any mode, `backup` included. The export
+  stops before writing when a credential could leave under another
+  name, and follows the rule `site-import` applies (section 1.7): it
+  accepts only links that cannot leave the directory, since where an
+  absolute or `..` link leads depends on where the volume is mounted,
+  and the backup Job mounts it at `/mnt/site`, not Gerrit's
+  `/var/gerrit`. It stops on a symlink at either directory or on its
+  path, such as `.config`; in `.ssh/` on any link but a relative
+  symlink with no `..` component, as a projected Secret's are; in
+  `.config/gerrit_to_platform/` on any link but `site-init`'s
+  `replication.config` link to `/var/gerrit/etc/replication.config`;
+  on a hard-linked file in either; and on a repository store that
+  holds or sits in either directory, as with `gerrit.basePath = .`.
+  `site-import` also skips both, so archives written before this rule
+  are safe to import, and refuses links that would bring their
+  contents in under another name (section 1.7).
 - `git/` holds every repository under `gerrit.basePath` at the same
   relative path. A symlink inside the repository store stops the
   export.
@@ -765,7 +803,7 @@ the `final` one and is never an import source.
 | `site` | object | `path`: the source site directory, resolved; `bytes`: total size of `<out>/site`. |
 | `git` | object | `path`: the source repository directory, resolved; `bytes`: total size of `<out>/git`; `repositories`: see below. |
 | `ssh_host_keys` | object | Each regular file in the site's `etc/` named `ssh_host_*` and not ending `.pub`, mapped to its `SHA256:` fingerprint from `ssh-keygen -l -E sha256`. |
-| `excluded` | array of strings | The site paths left out of `<out>/site`, in the order section 3.1 lists them; `cache` is absent with `--include-cache`. |
+| `excluded` | array of strings | The site paths left out of `<out>/site`, in the order section 3.1 lists them, ending with the credential paths `.ssh` and `.config/gerrit_to_platform`; `cache` is absent with `--include-cache`. |
 | `archives` | object | Each archive file name mapped to the hex SHA-256 of its contents; `{}` without `--pack`. |
 
 `git.repositories` maps the path of each directory ending `.git` under

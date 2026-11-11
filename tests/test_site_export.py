@@ -40,6 +40,8 @@ SCRIPT = Path(__file__).parent.parent / "scripts" / "gerrit-site-export.py"
 PROC_ENV = "GERRIT_SITE_EXPORT_PROC"
 GERRIT_VERSION = "3.10.1"
 EXCLUDED = ["cache", "index", "logs", "tmp", "bin", ".gerritcodereview/tmp", ".chart"]
+CREDENTIALS = [".ssh", ".config/gerrit_to_platform"]
+EXCLUDED += CREDENTIALS
 ARCHIVES = ["git.tar.zst", "site.tar.zst"]
 GIT_ENV = {
     "GIT_AUTHOR_NAME": "Fixture",
@@ -410,6 +412,261 @@ def test_include_cache_copies_the_cache(site: dict[str, Any]) -> None:
     manifest = export_ok(site, "seed")
     assert not (site["out"] / "site" / "cache").exists()
     assert "cache" in manifest["excluded"]
+
+
+@needs_zstd
+@pytest.mark.parametrize("mode", ["final", "backup"])
+def test_export_leaves_out_credentials(site: dict[str, Any], mode: str) -> None:
+    """A site that is also the service account's home holds its credentials.
+
+    The chart supplies them from Secrets, so no export, nor its archive,
+    carries the replication key or the gerrit-to-platform token.
+    """
+    root = site["root"]
+    (root / ".ssh").mkdir()
+    (root / ".ssh" / "id_ed25519").write_text("replication key\n")
+    g2p = root / ".config" / "gerrit_to_platform"
+    g2p.mkdir(parents=True)
+    (g2p / "gerrit_to_platform.ini").write_text("[github.com]\ntoken = x\n")
+    (root / ".config" / "other").write_text("kept\n")
+
+    manifest = export_ok(site, mode, "--pack")
+    assert manifest["excluded"] == EXCLUDED
+    out = site["out"] / "site"
+    assert (out / ".config" / "other").is_file()
+    for name in CREDENTIALS:
+        assert not (out / name).exists(), name
+    tar_path = site["out"] / "site.tar"
+    subprocess.run(
+        ["zstd", "-q", "-d", str(site["out"] / "site.tar.zst"), "-o", str(tar_path)],
+        check=True,
+    )
+    with tarfile.open(tar_path) as tar:
+        names = tar.getnames()
+    assert "site/.config/other" in names
+    for name in CREDENTIALS:
+        assert not any(
+            n == f"site/{name}" or n.startswith(f"site/{name}/") for n in names
+        )
+
+
+@pytest.mark.parametrize("mode", ["final", "backup"])
+@pytest.mark.parametrize(
+    ("alias", "target", "secret"),
+    [
+        (".config", "settings", "settings/gerrit_to_platform/gerrit_to_platform.ini"),
+        (".ssh", "keys", "keys/id_ed25519"),
+        (".config/gerrit_to_platform", "../g2p", "g2p/gerrit_to_platform.ini"),
+        (".ssh", ".", "id_ed25519"),
+        (".ssh", "..", "../id_ed25519"),
+        (".ssh", "git/keys", "git/keys/id_ed25519"),
+        (".ssh/id_ed25519", "../keys/id_ed25519", "keys/id_ed25519"),
+        (".ssh/keys", "../git/keys", "git/keys/id_ed25519"),
+        (
+            ".config/gerrit_to_platform/gerrit_to_platform.ini",
+            "../../etc/token.ini",
+            "etc/token.ini",
+        ),
+        (
+            ".config/gerrit_to_platform/gerrit_to_platform.ini",
+            "../../etc/replication.config",
+            "etc/replication.config",
+        ),
+    ],
+)
+def test_export_refuses_credentials_linked_into_the_site(
+    site: dict[str, Any], mode: str, alias: str, target: str, secret: str
+) -> None:
+    """Leaving out the alias alone would copy its target under another name."""
+    root = site["root"]
+    (root / secret).parent.mkdir(parents=True, exist_ok=True)
+    (root / secret).write_text("credential\n")
+    (root / alias).parent.mkdir(parents=True, exist_ok=True)
+    (root / alias).symlink_to(target)
+
+    export_fails(site, "under another name", mode)
+    leaked = [p for p in site["out"].rglob("*") if p.is_file()]
+    assert not [p for p in leaked if "credential" in p.read_text()]
+
+
+@pytest.mark.parametrize("mode", ["final", "backup"])
+def test_export_refuses_credentials_linked_into_an_outside_store(
+    site: dict[str, Any], tmp_path: Path, mode: str
+) -> None:
+    """The repository store is copied apart from the site, so its own check."""
+    store = tmp_path / "store"
+    shutil.move(str(site["root"] / "git"), store)
+    (store / "keys").mkdir()
+    (store / "keys" / "id_ed25519").write_text("credential\n")
+    (site["root"] / ".ssh").symlink_to(store / "keys")
+    result = run_export(
+        mode,
+        "--site",
+        str(site["root"]),
+        "--git",
+        str(store),
+        "--out",
+        str(site["out"]),
+    )
+    assert result.returncode != 0
+    assert "under another name" in result.stderr
+    assert not list(site["out"].rglob("id_ed25519"))
+
+
+@pytest.mark.parametrize("mode", ["final", "backup"])
+def test_export_refuses_a_credential_link_through_another_link(
+    site: dict[str, Any], mode: str
+) -> None:
+    """With up -> ., up/../keys is the site's keys/, as the OS resolves it."""
+    root = site["root"]
+    (root / "keys").mkdir()
+    (root / "keys" / "id_ed25519").write_text("credential\n")
+    (root / ".ssh").mkdir()
+    (root / ".ssh" / "up").symlink_to(".")
+    (root / ".ssh" / "id_ed25519").symlink_to("up/../keys/id_ed25519")
+
+    export_fails(site, "under another name", mode)
+    assert not list(site["out"].rglob("id_ed25519"))
+
+
+@pytest.mark.parametrize("mode", ["final", "backup"])
+def test_export_refuses_a_credential_directory_link_out(
+    site: dict[str, Any], tmp_path: Path, mode: str
+) -> None:
+    """The walk does not enter .ssh/keys -> elsewhere, so it cannot vouch for it.
+
+    Here elsewhere links the key back into the site's keys/.
+    """
+    root = site["root"]
+    (root / "keys").mkdir()
+    (root / "keys" / "id_ed25519").write_text("credential\n")
+    external = tmp_path / "external-keys"
+    external.mkdir()
+    (external / "id_ed25519").symlink_to(root / "keys" / "id_ed25519")
+    (root / ".ssh").mkdir()
+    (root / ".ssh" / "keys").symlink_to(external)
+
+    export_fails(site, "under another name", mode)
+    assert not list(site["out"].rglob("id_ed25519"))
+
+
+@pytest.mark.parametrize("mode", ["final", "backup"])
+def test_export_refuses_a_hard_linked_credential(
+    site: dict[str, Any], mode: str
+) -> None:
+    """rsync copies the other name of a hard-linked key as a file of its own."""
+    root = site["root"]
+    (root / "keys").mkdir()
+    (root / "keys" / "id_ed25519").write_text("credential\n")
+    (root / ".ssh").mkdir()
+    os.link(root / "keys" / "id_ed25519", root / ".ssh" / "id_ed25519")
+
+    export_fails(site, "under another name", mode)
+    assert not list(site["out"].rglob("id_ed25519"))
+
+
+@pytest.mark.parametrize("mode", ["final", "backup"])
+def test_export_refuses_a_store_holding_credentials(
+    site: dict[str, Any], mode: str
+) -> None:
+    """With --git the site itself, the repository copy would take .ssh/ too."""
+    (site["root"] / ".ssh").mkdir()
+    (site["root"] / ".ssh" / "id_ed25519").write_text("credential\n")
+    result = run_export(
+        mode,
+        "--site",
+        str(site["root"]),
+        "--git",
+        str(site["root"]),
+        "--out",
+        str(site["out"]),
+    )
+    assert result.returncode != 0
+    assert "under another name" in result.stderr
+    assert not list(site["out"].rglob("id_ed25519"))
+
+
+@needs_zstd
+@pytest.mark.parametrize("mode", ["final", "backup"])
+def test_export_accepts_the_links_a_chart_site_holds(
+    site: dict[str, Any], mode: str
+) -> None:
+    """site-init's g2p replication.config link, and a projected Secret's."""
+    root = site["root"]
+    (root / "etc" / "replication.config").write_text("[remote]\n")
+    g2p = root / ".config" / "gerrit_to_platform"
+    g2p.mkdir(parents=True)
+    (g2p / "replication.config").symlink_to("/var/gerrit/etc/replication.config")
+
+    (root / ".ssh" / "..2026_11_11").mkdir(parents=True)
+    (root / ".ssh" / "..2026_11_11" / "id_ed25519").write_text("key\n")
+    (root / ".ssh" / "..data").symlink_to("..2026_11_11")
+    (root / ".ssh" / "id_ed25519").symlink_to("..data/id_ed25519")
+
+    export_ok(site, mode)
+    out = site["out"] / "site"
+    assert (out / "etc" / "replication.config").is_file()
+    assert not os.path.lexists(out / ".config" / "gerrit_to_platform")
+    assert not os.path.lexists(out / ".ssh")
+
+
+@pytest.mark.parametrize("mode", ["final", "backup"])
+@pytest.mark.parametrize(
+    ("alias", "target", "secret"),
+    [
+        (".ssh", "keys", "keys/id_ed25519"),
+        (".ssh/id_ed25519", "keys/id_ed25519", "keys/id_ed25519"),
+        (".ssh/keys", "keys", "keys/id_ed25519"),
+        (".config", "settings", "settings/gerrit_to_platform/gerrit_to_platform.ini"),
+        (
+            ".config/gerrit_to_platform/gerrit_to_platform.ini",
+            "keys/token.ini",
+            "keys/token.ini",
+        ),
+        (
+            ".config/gerrit_to_platform/replication.config",
+            "keys/token.ini",
+            "keys/token.ini",
+        ),
+    ],
+)
+def test_export_refuses_an_absolute_credential_link_mounted_elsewhere(
+    site: dict[str, Any],
+    tmp_path: Path,
+    mode: str,
+    alias: str,
+    target: str,
+    secret: str,
+) -> None:
+    """The backup mounts the volume at another path than Gerrit's pod does.
+
+    A link written as /var/gerrit/keys then dangles here, so no resolved
+    path shows that it names the site's keys/, which rsync would copy.
+    """
+    root, pod_site = site["root"], tmp_path / "var-gerrit"
+    (root / secret).parent.mkdir(parents=True, exist_ok=True)
+    (root / secret).write_text("credential\n")
+    (root / alias).parent.mkdir(parents=True, exist_ok=True)
+    (root / alias).symlink_to(pod_site / target)
+    assert not pod_site.exists()
+
+    export_fails(site, "under another name", mode)
+    leaked = [p for p in site["out"].rglob("*") if p.is_file()]
+    assert not [p for p in leaked if "credential" in p.read_text()]
+
+
+@pytest.mark.parametrize("alias", [".ssh", ".config"])
+def test_export_refuses_a_credential_link_leaving_the_site(
+    site: dict[str, Any], tmp_path: Path, alias: str
+) -> None:
+    """Where the link leads in Gerrit's own mounts cannot be told from here."""
+    home = tmp_path / "home"
+    (home / "gerrit_to_platform").mkdir(parents=True)
+    (home / "gerrit_to_platform" / "gerrit_to_platform.ini").write_text("x\n")
+    (site["root"] / alias).symlink_to(home)
+
+    export_fails(site, "under another name", "final")
+    assert not list(site["out"].rglob("gerrit_to_platform*"))
 
 
 def test_dry_run_writes_nothing(site: dict[str, Any]) -> None:
