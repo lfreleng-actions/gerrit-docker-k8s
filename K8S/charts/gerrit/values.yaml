@@ -90,7 +90,8 @@ auth:
     metadataFromSecret: false
     serviceProviderEntityId: ""   # "" for gerrit.canonicalWebUrl
     # Each key below is the [saml] key of the same name, left out when
-    # null or "" so the module's default applies
+    # null or "" so the module's default applies. Any other [saml] key
+    # of the module may be set here the same way.
     userNameAttr: null
     displayNameAttr: null
     emailAddressAttr: null
@@ -98,6 +99,9 @@ auth:
     lastNameAttr: null
     computedDisplayName: false
     maxAuthLifetime: null
+    # Set false when the identity provider sends a NameQualifier that
+    # must not qualify the user name; see the SAML module's docs
+    useNameQualifier: null
     # Assertion attribute naming the user's groups; set to turn on the
     # group sync into saml/<name> groups. See "Group membership sync"
     # in the chart README.
