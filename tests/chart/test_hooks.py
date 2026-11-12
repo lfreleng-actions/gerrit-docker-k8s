@@ -11,8 +11,13 @@ and with a mixed set of plugin toggles, with
 gerrit-to-platform Secret and mounts, and the render failures for bad
 values. Then runs ``site-init.sh`` against a scratch site, with stand-ins
 for the image's files, to check the hooks directory and the INI it
-installs, and that it installs ``etc/log4j.properties``. The default
-render must carry none of the hooks.
+installs, and that it installs ``etc/log4j.properties``, installs
+and removes ``etc/events-log.config``, replaces an imported symlink
+in place of a chart-owned file rather than write through it, and
+refuses a hooks directory that a link on the site leads into a
+reserved directory or out of the site, or that holds a link a
+reserved directory resolves through. The default render must carry
+none of the hooks.
 
 After an intended change to the rendered output, regenerate the
 goldens with ``UPDATE_GOLDEN=1 uv run pytest tests/chart`` and review
@@ -254,6 +259,9 @@ def test_g2p_hooks_may_be_narrowed(tmp_path: Path) -> None:
         ({"hooks": {"enabled": True, "path": ""}}, "must be a relative path"),
         ({"hooks": {"enabled": True, "path": "etc"}}, "site directory"),
         ({"hooks": {"enabled": True, "path": "git/hooks"}}, "site directory"),
+        # The events-log plugin's local store, which copyLocal rewrites
+        ({"hooks": {"enabled": True, "path": "events-db"}}, "site directory"),
+        ({"hooks": {"enabled": True, "path": "events-db/hooks"}}, "site directory"),
     ],
 )
 def test_invalid_values_fail(
@@ -375,6 +383,52 @@ def test_site_init_installs_log4j_properties(image: dict[str, str]) -> None:
     assert installed.read_text(encoding="utf-8") == rendered.read_text(encoding="utf-8")
 
 
+def test_site_init_owns_events_log_config(image: dict[str, str]) -> None:
+    site = Path(image["GERRIT_SITE"])
+    installed = site / "etc" / "events-log.config"
+    installed.write_text(
+        "[events-log]\n\tstoreUrl = jdbc:h2:/opt/gerrit/data/events-log-db\n",
+        encoding="utf-8",
+    )
+    rendered = Path(image["GERRIT_RENDERED_CONFIG"]) / "events-log.config"
+    rendered.write_text(
+        "[events-log]\n\tstoreUrl = jdbc:h2:/var/gerrit/data/db\n",
+        encoding="utf-8",
+    )
+    proc = run_site_init(image)
+    assert proc.returncode == 0, proc.stderr
+    assert installed.read_text(encoding="utf-8") == rendered.read_text(encoding="utf-8")
+    # Disabled, the chart renders no file and the site's copy goes
+    rendered.unlink()
+    proc = run_site_init(image)
+    assert proc.returncode == 0, proc.stderr
+    assert not installed.exists()
+
+
+@pytest.mark.parametrize("name", ["events-log.config", "healthcheck.config"])
+def test_site_init_replaces_an_imported_symlink(
+    image: dict[str, str], name: str
+) -> None:
+    # site-import keeps relative symlinks within the site, so a chart-owned
+    # file may arrive as a link to gerrit.config; cp would write through it
+    site = Path(image["GERRIT_SITE"])
+    rendered = Path(image["GERRIT_RENDERED_CONFIG"])
+    (rendered / name).write_text(f"[{name}]\n\tkey = value\n", encoding="utf-8")
+    gerrit_config = site / "etc" / "gerrit.config"
+    gerrit_config.write_text("[gerrit]\n\tserverId = site-id\n", encoding="utf-8")
+    installed = site / "etc" / name
+    installed.symlink_to("gerrit.config")
+    proc = run_site_init(image)
+    assert proc.returncode == 0, proc.stderr
+    assert not installed.is_symlink()
+    assert installed.read_text(encoding="utf-8") == (rendered / name).read_text(
+        encoding="utf-8"
+    )
+    config = gerrit_config.read_text(encoding="utf-8")
+    assert "basePath = git" in config
+    assert "serverId = site-id" in config
+
+
 def test_site_init_removes_what_is_disabled(image: dict[str, str]) -> None:
     assert run_site_init(image).returncode == 0
     site = Path(image["GERRIT_SITE"])
@@ -395,6 +449,72 @@ def test_site_init_leaves_hooks_alone_when_disabled(image: dict[str, str]) -> No
     proc = run_site_init({**image, "GERRIT_HOOKS_PATH": ""})
     assert proc.returncode == 0, proc.stderr
     assert [p.name for p in (site / "hooks").iterdir()] == ["ref-updated"]
+
+
+@pytest.mark.parametrize(
+    ("link", "target", "path", "kept"),
+    [
+        # An imported alias -> . leads a valid hooks.path into the
+        # events-log local store, or to the site itself
+        ("alias", ".", "alias/events-db", "events-db/events.dat"),
+        ("alias", ".", "alias", "kept.txt"),
+        ("alias", ".chart", "alias", ".chart/initialised"),
+        # Where a reserved name leads, as an imported data -> store
+        ("data", "store", "store", "store/events.mv.db"),
+        ("alias", "..", "alias/outside", "../outside/kept"),
+    ],
+)
+def test_site_init_refuses_hooks_led_by_a_link(
+    image: dict[str, str], link: str, target: str, path: str, kept: str
+) -> None:
+    site = Path(image["GERRIT_SITE"])
+    file = site / kept
+    file.parent.mkdir(parents=True, exist_ok=True)
+    file.write_text("kept\n", encoding="utf-8")
+    (site / link).symlink_to(target)
+    proc = run_site_init({**image, "GERRIT_HOOKS_PATH": path})
+    assert proc.returncode != 0
+    assert f"hooks.path {path} leads to" in proc.stderr
+    assert file.read_text(encoding="utf-8") == "kept\n"
+
+
+@pytest.mark.parametrize(
+    ("links", "kept"),
+    [
+        # data -> hooks/store-link -> ../store: the cleanup would remove
+        # hooks/store-link and leave data dangling
+        ({"data": "hooks/store-link", "hooks/store-link": "../store"}, "store"),
+        # A link the chain passes through on the way, not at its end
+        ({"data": "hooks/x/data", "hooks/x": "../store"}, "store/data"),
+        ({"db": "alias/db-store", "alias": "hooks/up", "hooks/up": ".."}, "db-store"),
+    ],
+)
+def test_site_init_keeps_a_link_a_reserved_name_resolves_through(
+    image: dict[str, str], links: dict[str, str], kept: str
+) -> None:
+    site = Path(image["GERRIT_SITE"])
+    (site / "hooks").mkdir()
+    file = site / kept / "events.mv.db"
+    file.parent.mkdir(parents=True, exist_ok=True)
+    file.write_text("kept\n", encoding="utf-8")
+    for link, target in links.items():
+        (site / link).symlink_to(target)
+    first = next(iter(links))
+    before = (site / first).resolve()
+    proc = run_site_init(image)
+    assert proc.returncode != 0
+    assert "hooks.path hooks holds a link" in proc.stderr
+    assert all((site / link).is_symlink() for link in links)
+    assert (site / first).resolve() == before
+
+
+def test_site_init_follows_a_link_to_a_hooks_directory(image: dict[str, str]) -> None:
+    site = Path(image["GERRIT_SITE"])
+    (site / "site-hooks").mkdir()
+    (site / "hooks").symlink_to("site-hooks")
+    proc = run_site_init(image)
+    assert proc.returncode == 0, proc.stderr
+    assert "ref-updated" in [p.name for p in (site / "site-hooks").iterdir()]
 
 
 def test_site_init_fails_on_a_missing_entry_point(image: dict[str, str]) -> None:

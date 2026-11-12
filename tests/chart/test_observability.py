@@ -4,7 +4,10 @@
 """Tests for the Gerrit chart's health checks, metrics and logs.
 
 Checks the probes and ``etc/healthcheck.config`` with
-``plugins.healthcheck`` on and off, the metrics plugin's Secret, its
+``plugins.healthcheck`` on and off, ``etc/events-log.config`` with
+``plugins.events-log`` on and off, its store file and its refusal of
+store keys and bad store files, the
+metrics plugin's Secret, its
 bearer token in ``secure.config`` and the NetworkPolicy rule for the
 scraper, the ``[log]`` section of ``gerrit.config`` and the
 ``etc/log4j.properties`` that sends the error log to stderr as JSON
@@ -41,6 +44,7 @@ from chart.test_secure_config import SECRET_ENV, run_script
 CRD = ("--api-versions", "monitoring.coreos.com/v1")
 HEALTHCHECK = {"plugins": {"healthcheck": {"enabled": True}}}
 METRICS = {"plugins": {"metrics-reporter-prometheus": {"enabled": True}}}
+EVENTS_LOG = {"events-log": {"enabled": True}}
 MONITOR = {**METRICS, "metrics": {"serviceMonitor": {"enabled": True}}}
 CLEANUP = {"logs": {"retentionDays": 30}}
 CLEANUP_SCRIPT = CHART / "files" / "scripts" / "log-cleanup.sh"
@@ -195,12 +199,179 @@ def test_healthcheck_config_renders_the_values(tmp_path: Path) -> None:
 
 @needs_helm
 def test_plugin_values_stay_out_of_the_plugins_section(tmp_path: Path) -> None:
-    values = {"plugins": {**HEALTHCHECK["plugins"], **METRICS["plugins"]}}
+    values = {"plugins": {**HEALTHCHECK["plugins"], **METRICS["plugins"], **EVENTS_LOG}}
     docs = render(tmp_path, values)
     config = gerrit_config(docs)
     assert "[plugins]\n\tallowRemoteAdmin = false\n" in config
     assert '[plugins "' not in config
-    assert plugins(docs) == ["healthcheck", "metrics-reporter-prometheus"]
+    assert plugins(docs) == ["healthcheck", "events-log", "metrics-reporter-prometheus"]
+
+
+@needs_helm
+def test_events_log_is_off_by_default(tmp_path: Path) -> None:
+    docs = render(tmp_path)
+    assert "events-log" not in plugins(docs)
+    assert "events-log.config" not in config_data(docs)
+
+
+@needs_helm
+def test_events_log_keeps_its_store_under_the_site(tmp_path: Path) -> None:
+    docs = render(tmp_path, {"plugins": EVENTS_LOG})
+    assert plugins(docs) == ["healthcheck", "events-log"]
+    config = config_data(docs)["events-log.config"]
+    assert git_config(config, tmp_path, "--list").splitlines() == [
+        "events-log.localstorepath=/var/gerrit/events-db/",
+        "events-log.storeurl=jdbc:h2:/var/gerrit/data/db",
+    ]
+
+
+@needs_helm
+def test_events_log_store_file_names_the_store(tmp_path: Path) -> None:
+    values = {
+        "plugins": {"events-log": {"enabled": True, "storeFile": "events-log-db"}}
+    }
+    config = config_data(render(tmp_path, values))["events-log.config"]
+    url = git_config(config, tmp_path, "--get", "events-log.storeUrl")
+    assert url == "jdbc:h2:/var/gerrit/data/events-log-db"
+
+
+@needs_helm
+@pytest.mark.parametrize("enabled", [True, False])
+@pytest.mark.parametrize(
+    "store_file", ["../db", "a/db", ".", "..", "db;MODE=x", "e db"]
+)
+def test_events_log_refuses_a_bad_store_file(
+    tmp_path: Path, store_file: str, enabled: bool
+) -> None:
+    values = {"plugins": {"events-log": {"enabled": enabled, "storeFile": store_file}}}
+    message = helm_fails(tmp_path, values)
+    assert f'plugins.events-log.storeFile "{store_file}" is not supported' in message
+
+
+@needs_helm
+def test_events_log_config_renders_the_values(tmp_path: Path) -> None:
+    config_values = {"maxAge": 30, "returnLimit": 5000, "copyLocal": ""}
+    values = {"plugins": {"events-log": {"enabled": True, "config": config_values}}}
+    config = config_data(render(tmp_path, values))["events-log.config"]
+    assert git_config(config, tmp_path, "--list").splitlines() == [
+        "events-log.localstorepath=/var/gerrit/events-db/",
+        "events-log.maxage=30",
+        "events-log.returnlimit=5000",
+        "events-log.storeurl=jdbc:h2:/var/gerrit/data/db",
+    ]
+
+
+@needs_helm
+@pytest.mark.parametrize("enabled", [True, False])
+@pytest.mark.parametrize(
+    "key",
+    [
+        "storeUrl",
+        "storeUsername",
+        "storePassword",
+        "localStorePath",
+        "STOREURL",
+        "storeurl",
+        "storepassword",
+        "StoreUsername",
+        "LocalStorePath",
+    ],
+)
+def test_events_log_refuses_store_keys(tmp_path: Path, key: str, enabled: bool) -> None:
+    values = {"plugins": {"events-log": {"enabled": enabled, "config": {key: "x"}}}}
+    message = helm_fails(tmp_path, values)
+    assert f"plugins.events-log.config.{key} is not supported" in message
+
+
+@needs_helm
+@pytest.mark.parametrize("enabled", [True, False])
+@pytest.mark.parametrize(
+    "key",
+    [
+        "storePassword ",
+        "storeurl ",
+        " storeUrl",
+        "store Url",
+        "storeUrl\n",
+        "1maxAge",
+        "max_age",
+    ],
+)
+def test_events_log_refuses_a_key_git_cannot_name(
+    tmp_path: Path, key: str, enabled: bool
+) -> None:
+    values = {"plugins": {"events-log": {"enabled": enabled, "config": {key: "x"}}}}
+    message = helm_fails(tmp_path, values)
+    assert "is not supported: it must be a git config variable name" in message
+
+
+@needs_helm
+@pytest.mark.parametrize("enabled", [True, False])
+def test_events_log_refuses_a_subsection(tmp_path: Path, enabled: bool) -> None:
+    config = {"sub": {"storePassword": "x"}}
+    values = {"plugins": {"events-log": {"enabled": enabled, "config": config}}}
+    message = helm_fails(tmp_path, values)
+    assert "plugins.events-log.config.sub is not supported" in message
+
+
+@needs_helm
+@pytest.mark.parametrize("enabled", [True, False])
+@pytest.mark.parametrize(
+    "value",
+    [
+        [["x\nstoreUrl = jdbc:h2:/tmp/other\n#"]],
+        [{"storePassword": "x"}],
+        ["a", ["b"]],
+    ],
+)
+def test_events_log_refuses_a_nested_list(
+    tmp_path: Path, value: list[Any], enabled: bool
+) -> None:
+    values = {"plugins": {"events-log": {"enabled": enabled, "config": {"zzz": value}}}}
+    message = helm_fails(tmp_path, values)
+    assert "plugins.events-log.config.zzz is not supported: a list" in message
+
+
+@needs_helm
+@pytest.mark.parametrize("enabled", [True, False])
+@pytest.mark.parametrize(
+    ("key", "value", "name"),
+    [
+        ("urlOptions", "USER=sa", "USER"),
+        ("urlOptions", ["MODE=MySQL", "PASSWORD=x"], "PASSWORD"),
+        ("urloptions", [" user = sa"], "user"),
+        ("URLOPTIONS", "MODE=MySQL;Password=x", "Password"),
+        ("urlOptions", ["userName=sa"], "userName"),
+        ("urlOptions", "FILE_PASSWORD=x", "FILE_PASSWORD"),
+    ],
+)
+def test_events_log_refuses_credentials_in_url_options(
+    tmp_path: Path, key: str, value: Any, name: str, enabled: bool
+) -> None:
+    values = {"plugins": {"events-log": {"enabled": enabled, "config": {key: value}}}}
+    message = helm_fails(tmp_path, values)
+    assert (
+        f'plugins.events-log.config.{key} option "{name}" is not supported' in message
+    )
+
+
+@needs_helm
+def test_events_log_keeps_other_url_options(tmp_path: Path) -> None:
+    config_values = {"urlOptions": ["MODE=MySQL", "DB_CLOSE_DELAY=-1"]}
+    values = {"plugins": {"events-log": {"enabled": True, "config": config_values}}}
+    config = config_data(render(tmp_path, values))["events-log.config"]
+    options = git_config(config, tmp_path, "--get-all", "events-log.urlOptions")
+    assert options.splitlines() == ["MODE=MySQL", "DB_CLOSE_DELAY=-1"]
+
+
+@needs_helm
+def test_events_log_config_repeats_a_list_key(tmp_path: Path) -> None:
+    values = {"plugins": {"events-log": {"enabled": True, "config": {"x": ["a", 2]}}}}
+    config = config_data(render(tmp_path, values))["events-log.config"]
+    assert git_config(config, tmp_path, "--get-all", "events-log.x").splitlines() == [
+        "a",
+        "2",
+    ]
 
 
 @needs_helm

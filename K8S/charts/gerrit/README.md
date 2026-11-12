@@ -22,7 +22,7 @@ volume holds state only.
 | `Ingress` `<fullname>`            | With `ingress.enabled`; see [Exposing Gerrit](#exposing-gerrit) |
 | `IngressRoute` `<fullname>`, `Middleware`s, `Certificate` `<fullname>-tls` | Instead of the `Ingress`, with `ingress.traefik.enabled` |
 | `ConfigMap` `<fullname>-scripts`  | `files/scripts/*.sh` and the `site-import` Python modules      |
-| `ConfigMap` `<fullname>-config`   | Rendered `gerrit.config`, `jgit.config` and `notedb.config`, `replication.config` with `replication.enabled`, and `healthcheck.config` with `plugins.healthcheck.enabled` |
+| `ConfigMap` `<fullname>-config`   | Rendered `gerrit.config`, `jgit.config` and `notedb.config`, `replication.config` with `replication.enabled`, `healthcheck.config` with `plugins.healthcheck.enabled`, and `events-log.config` with `plugins.events-log.enabled` |
 | `ConfigMap` `<fullname>-hooks`    | `hooks.scripts`; with `hooks.enabled`, see [Hooks](#hooks)     |
 | `ConfigMap` `<fullname>-known-hosts` | SSH host keys of the replication remotes; with `replication.enabled`, see [Replication](#replication) |
 | `Secret` `<fullname>-admin`       | Admin credential placeholder; not consumed yet                 |
@@ -92,7 +92,8 @@ empty or absent optional key leaves its entry out of `secure.config`.
    and the `saml` library with `auth.saml.enabled`, and copies the rendered `gerrit.config`, `jgit.config`,
    `notedb.config`, `log4j.properties` and `replication.config` over the site's own, and with
    `plugins.its-jira.enabled`, `etc/its/actions-its-jira.config`, and
-   with `plugins.healthcheck.enabled`, `etc/healthcheck.config`. With
+   with `plugins.healthcheck.enabled`, `etc/healthcheck.config`, and
+   with `plugins.events-log.enabled`, `etc/events-log.config`. With
    replication disabled it removes the site's `etc/replication.config`. On a site
    without the `.chart/initialised` marker it then runs
    `gerrit init --batch --no-auto-start` on that configuration,
@@ -254,6 +255,9 @@ Argo CD; `K8S/docs/DESIGN.md` section 6 explains its settings.
 | `plugins.its-jira.extraConfig`           | `""`                             | Appended verbatim to `etc/its/actions-its-jira.config`     |
 | `plugins.healthcheck.enabled`            | `true`                           | Adds `healthcheck` and moves the readiness probe to it; see [Health checks](#health-checks) |
 | `plugins.healthcheck.config`             | `auth` and `querychanges` off    | `etc/healthcheck.config`; a map per check                  |
+| `plugins.events-log.enabled`             | `false`                          | Adds `events-log`; see [Events log](#events-log)           |
+| `plugins.events-log.storeFile`           | `db`                             | H2 store file under `data/`; see [Events log](#events-log) |
+| `plugins.events-log.config`              | `maxAge`, `returnLimit` unset    | `[events-log]` keys in `etc/events-log.config`; no store keys |
 | `plugins.metrics-reporter-prometheus.enabled` | `false`                     | Adds the Prometheus metrics plugin; see [Metrics](#metrics) |
 | `metrics.existingSecret`                 | `""`                             | Secret with the bearer `token`; `""` creates `<fullname>-metrics` |
 | `metrics.serviceMonitor.enabled`         | `false`                          | Renders a `ServiceMonitor` where the CRD exists            |
@@ -583,9 +587,16 @@ keystore differs from the Secret's, before the site changes; see
 `site-import` then logs a migration report: projects that leave
 `receive.rejectImplicitMerges` unset, `commentlink` sections with
 `html`, `rules.pl` files, `auth.cookieSecure`, `secure.config` names
-the chart does not write and so drops, and a reminder that a new
+the chart does not write and so drops, a reminder that a new
 `registerEmailPrivateKey` invalidates outstanding email verification
-links. Read it with `kubectl logs <fullname>-0 -c site-import`.
+links, and the H2 file an imported `etc/events-log.config` keeps its
+events in, with the `plugins.events-log.storeFile` that keeps that
+history when its `storeUrl` names the exported site's own `data/` and
+the archive holds that database there;
+see [Events log](#events-log). Read it with `kubectl logs <fullname>-0 -c site-import`.
+The removed `gerrit.config` keys and the events-log store are logged
+as soon as the archive is checked, before `site-init` replaces the
+imported files, so a failed init or reindex still shows them.
 
 ### Recovery
 
@@ -1135,7 +1146,15 @@ from `pluginCatalogue.path` and renders `[hooks]` with `path` set to
 `/var/gerrit/<hooks.path>` and `syncHookTimeout`. The image must hold
 `<pluginCatalogue.path>/plugins/hooks.jar`; the official image ships
 it in `/var/gerrit/plugins`. `hooks.path` is a relative path that may
-not start with a site directory such as `etc`, `git` or `plugins`.
+not start with a site directory such as `etc`, `git`, `plugins` or
+`events-db`, the events-log plugin's local store. A link on the site,
+such as an imported `alias -> .`, could still lead a valid path into
+one, so `site-init` resolves the directory and fails the start when it
+lies outside the site, under a hidden or reserved top-level directory,
+or under where a reserved directory's own link leads. It fails it as
+well when the directory holds a link a reserved directory resolves
+through, such as `hooks/store` in `data -> hooks/store -> ../store`,
+since removing it would leave `data` dangling.
 
 The chart owns the hooks directory. At every start `site-init` removes
 the files and links at its top level, then installs:
@@ -1286,6 +1305,73 @@ plugins:
       querychanges:
         enabled: false
         timeout: 5s
+```
+
+### Events log
+
+`plugins.events-log.enabled` adds `events-log` to the jars `site-init`
+copies, so the image must hold `events-log.jar` under
+`<pluginCatalogue.path>/plugins/`; the published image's catalogue
+holds it. The plugin records stream events and serves them at
+`<urlPrefix>/plugins/events-log/events/` on the HTTP port, so a client
+such as Jenkins Gerrit Trigger can replay the events it missed while
+disconnected. It needs no `NetworkPolicy` rule of its own.
+
+`plugins.events-log.config` renders the `[events-log]` section of
+`etc/events-log.config`, each key under its own name, and leaves out a
+key set to `null` or `""`, such as `maxAge` (days an event is kept)
+and `returnLimit` (the most events one request returns); see the
+plugin's configuration. The chart sets `storeUrl` to
+`jdbc:h2:/var/gerrit/data/<storeFile>`, the H2 store under the site,
+and `localStorePath` to `/var/gerrit/events-db/`. Setting `storeUrl`,
+`storeUsername`, `storePassword` or `localStorePath` in
+`plugins.events-log.config`, in any letter case, fails the render
+whether or not the plugin is enabled: the store lives on the site
+volume, and credentials never go in values. So does a `urlOptions`
+entry, which the plugin hands the JDBC driver as a property, naming a
+user or password: an entry, or a `;`-separated part of one, whose name
+is `user` or `username` or contains `password`, in any case. So does a
+key that is not a git config variable name, a letter followed by
+letters, digits and `-`, such as `"storePassword "`, which git would read as
+`storePassword`, a key holding a map, since the file has no
+subsections, and a list holding a map or a list: a list of single
+values repeats the key.
+
+`plugins.events-log.storeFile` names the store file and defaults to
+`db`, the plugin's own default, so a site that ran the plugin with no
+`events-log.config`, such as one that listed it only in
+`pluginCatalogue.plugins`, keeps its history with no setting. A site
+whose `events-log.config` named another file, `events-log-db` being
+common, sets `storeFile` to that name to keep its history; the
+`site-import` migration report names the file an imported
+`events-log.config` uses and the `storeFile` that keeps it. It offers
+that setting only when the file's `storeUrl` names the exported
+site's own `data/`, at the site path in the export's manifest or, for
+a `backup` manifest from the backup CronJob's `/mnt/site` mount, at
+`/var/gerrit`, where Gerrit served that site, and the archive holds
+the database, such as `events-log-db.mv.db`, there; a store kept
+elsewhere, in a nested `data/`, outside the site, at a relative path
+or through a `..` component, starts empty unless its files are moved
+there, even when an unrelated database of the same name sits in
+`data/`. The value is one file name of letters, digits, `.`, `_` and
+`-`, never `.` or `..`; anything else fails the render.
+
+`site-init` replaces the file at each start, so an imported
+`events-log.config`, whose `storeUrl` typically names the source
+site's absolute path, never configures the plugin, and removes it when
+the plugin is disabled, leaving the store in `data/` for a later
+re-enable. Listing `events-log` only in `pluginCatalogue.plugins`
+installs the jar with no `etc/events-log.config`, on the plugin's
+defaults.
+
+```yaml
+plugins:
+  events-log:
+    enabled: true
+    storeFile: events-log-db    # an imported site's store; db by default
+    config:
+      maxAge: 30
+      returnLimit: 5000
 ```
 
 ### Metrics

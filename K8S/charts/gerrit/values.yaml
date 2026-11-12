@@ -203,6 +203,31 @@ plugins:
         enabled: false
       querychanges:
         enabled: false
+  # Missed-event playback for clients such as Jenkins Gerrit Trigger,
+  # through the events-log plugin. Enabling it adds events-log to the
+  # plugins site-init copies from the image catalogue and renders
+  # etc/events-log.config, whose storeUrl the chart sets to the H2
+  # store data/<storeFile> on the site. See "Events log" in the chart
+  # README.
+  events-log:
+    enabled: false
+    # File name of the H2 store under data/ on the site: db, the
+    # plugin's own default, keeps the history of a site that ran on
+    # it; a site whose events-log.config named another file sets that
+    # name, which the site-import migration report gives. One path
+    # component of letters, digits, ".", "_" and "-".
+    storeFile: db
+    # Each key is the [events-log] key of the same name, left out when
+    # null or "". storeUrl, storeUsername, storePassword and
+    # localStorePath, in any case, fail the render: the chart keeps
+    # the store on the site volume, and credentials never go in values.
+    # So does a urlOptions entry, split at ";", whose name is user,
+    # username or contains password, in any case. So do a key that is not a git config variable name (a letter,
+    # then letters, digits and "-"), a key holding a map, and a list
+    # holding a map or a list; a list of single values repeats the key.
+    config:
+      maxAge: null                # days an event is kept
+      returnLimit: null           # most events one request returns
   # Prometheus metrics through the metrics-reporter-prometheus plugin.
   # Enabling it adds the plugin to the plugins site-init copies from
   # the image catalogue and writes the bearer token from

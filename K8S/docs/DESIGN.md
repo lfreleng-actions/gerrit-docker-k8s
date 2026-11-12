@@ -114,8 +114,9 @@ must succeed before the next starts:
    `pluginCatalogue`, and installs the rendered `gerrit.config`,
    `jgit.config`, `notedb.config`, `log4j.properties`, with
    replication enabled `replication.config`, with its-jira enabled
-   `etc/its/actions-its-jira.config`, and with healthcheck enabled
-   `etc/healthcheck.config` (section 1.4). On a site without
+   `etc/its/actions-its-jira.config`, with healthcheck enabled
+   `etc/healthcheck.config`, and with events-log enabled
+   `etc/events-log.config` (section 1.4). On a site without
    `.chart/initialised` it then runs
    `gerrit init --batch --no-auto-start` on that configuration,
    installs the rendered files again over whatever init added, and
@@ -123,7 +124,12 @@ must succeed before the next starts:
    so a restart never re-initialises a site and one after an init that
    failed part way, even past creating `All-Projects`, runs it again.
    Right after the marker it creates the backup lock (section 1.8).
-   With `hooks.enabled` it then
+   With `hooks.enabled` it then resolves the hooks directory, and
+   fails when a link on the site, such as an imported `alias -> .`,
+   leads it out of the site, under a hidden or reserved top-level
+   directory, or under where a reserved directory's link leads, or
+   when it holds a link a reserved directory resolves through, such
+   as `hooks/store` in `data -> hooks/store -> ../store`; it then
    replaces the files at the top of the hooks directory with the
    `hooks.scripts` entries and, with `hooks.g2p.enabled`, links to the
    gerrit-to-platform entry points in `/opt/gerrit-tools/bin`, and
@@ -162,6 +168,30 @@ Secrets in two stages, as #234 specifies:
   settings the chart reasons about, one top-level value per
   `gerrit.config` section; `gerrit.extraConfig` is appended verbatim
   for the rest.
+- **Plugin configuration files from Helm.** The same ConfigMap carries
+  the files of the plugins the chart configures: `replication.config`,
+  `its/actions-its-jira.config`, `healthcheck.config` and
+  `events-log.config`, each only while its plugin is enabled.
+  `site-init` owns each of them: it replaces the site's copy at every
+  start and removes it once the plugin is disabled, so a stale or
+  imported file never configures a plugin. It removes the site's entry
+  before copying, so an imported relative symlink in its place, such
+  as `etc/events-log.config` linked to `gerrit.config`, is replaced
+  rather than written through. `events-log.config` points
+  the plugin's store at the H2 database `data/<storeFile>` under the
+  site, from `plugins.events-log.storeFile`: values name the file, one
+  path component, but never the store's location or credentials,
+  which includes a `urlOptions` entry naming a user or password. The
+  default, `db`, is the plugin's own, so a site that ran on it keeps
+  its history; an imported file typically names the source site's
+  absolute path and often another file, such as `events-log-db`, and
+  the `site-import` migration report names that file and, when its
+  `storeUrl` names the exported site's own `data/`, at the site path
+  the export's manifest records, or `/var/gerrit` for a `backup`
+  manifest from the backup CronJob's `/mnt/site`, with no `..`
+  component, and the archive holds its database there, the
+  `storeFile` that keeps its history, since `site-init` replaces the
+  imported file at every start.
 - **`secure.config` from Secrets.** The `render-config` init
   container writes `etc/secure.config` at every start from individual
   environment variables, each filled from one Secret key with

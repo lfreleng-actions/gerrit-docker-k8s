@@ -512,7 +512,8 @@ github.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQCj7ndNxQowgcQnjshcLrqPEiiphnt+V
 
 {{/* Plugin jars site-init copies from the catalogue: those
 pluginCatalogue.plugins names, plus replication, hooks, its-jira,
-healthcheck and metrics-reporter-prometheus when each is enabled.
+healthcheck, events-log and metrics-reporter-prometheus when each is
+enabled.
 its-base is compiled into its-jira.jar, so it is not a jar of its
 own. */}}
 {{- define "gerrit.plugins" -}}
@@ -528,6 +529,9 @@ own. */}}
 {{- end -}}
 {{- if include "gerrit.healthcheckEnabled" . -}}
 {{- $plugins = append $plugins "healthcheck" -}}
+{{- end -}}
+{{- if include "gerrit.eventsLogEnabled" . -}}
+{{- $plugins = append $plugins "events-log" -}}
 {{- end -}}
 {{- if include "gerrit.metricsEnabled" . -}}
 {{- $plugins = append $plugins "metrics-reporter-prometheus" -}}
@@ -564,6 +568,73 @@ true
 {{/* "true" when plugins.healthcheck is enabled, else empty */}}
 {{- define "gerrit.healthcheckEnabled" -}}
 {{- if dig "healthcheck" "enabled" false (default dict .Values.plugins) }}true{{ end -}}
+{{- end -}}
+
+{{/* "true" when plugins.events-log is enabled, else empty. Fails,
+enabled or not, on a key in plugins.events-log.config that is not a
+git config variable name or holds a map, since git would read a name
+such as "storePassword " as storePassword, and on a list holding a map
+or a list, which would render unescaped and could add keys of its own.
+Fails as well on a store key, compared case-insensitively as git
+config keys are: the chart keeps the store on the site volume, and
+credentials never go in values. For that reason it fails on a
+urlOptions entry, which the plugin hands the JDBC driver as a
+property, naming a user or a password. Fails too on a
+plugins.events-log.storeFile that is not a single path component. */}}
+{{- define "gerrit.eventsLogEnabled" -}}
+{{- $plugin := index (default dict .Values.plugins) "events-log" | default dict -}}
+{{- $config := default dict $plugin.config -}}
+{{- range $key := keys $config | sortAlpha -}}
+{{- if not (regexMatch "^[A-Za-z][A-Za-z0-9-]*$" $key) -}}
+{{- fail (printf "plugins.events-log.config key %q is not supported: it must be a git config variable name, a letter followed by letters, digits and '-'" $key) -}}
+{{- end -}}
+{{- $value := index $config $key -}}
+{{- if kindIs "map" $value -}}
+{{- fail (printf "plugins.events-log.config.%s is not supported: events-log.config takes no subsections" $key) -}}
+{{- end -}}
+{{- if kindIs "slice" $value -}}
+{{- range $value -}}
+{{- if or (kindIs "map" .) (kindIs "slice" .) -}}
+{{- fail (printf "plugins.events-log.config.%s is not supported: a list may hold only single values" $key) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- if has (lower $key) (list "storeurl" "localstorepath") -}}
+{{- fail (printf "plugins.events-log.config.%s is not supported: the chart sets it to the events-log store on the site volume" $key) -}}
+{{- end -}}
+{{- if has (lower $key) (list "storeusername" "storepassword") -}}
+{{- fail (printf "plugins.events-log.config.%s is not supported: the store on the site volume needs no credentials, and credentials never go in values" $key) -}}
+{{- end -}}
+{{- if eq (lower $key) "urloptions" -}}
+{{- range $option := (kindIs "slice" $value | ternary $value (list $value)) -}}
+{{- range $part := splitList ";" (toString $option) -}}
+{{- $name := lower (trim (first (splitList "=" $part))) -}}
+{{- if or (has $name (list "user" "username")) (contains "password" $name) -}}
+{{- fail (printf "plugins.events-log.config.%s option %q is not supported: the store on the site volume needs no credentials, and credentials never go in values" $key (trim (first (splitList "=" $part)))) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- $file := toString (default "db" $plugin.storeFile) -}}
+{{- if or (not (regexMatch "^[A-Za-z0-9._-]+$" $file)) (has $file (list "." "..")) -}}
+{{- fail (printf "plugins.events-log.storeFile %q is not supported: it must be one file name under data/ on the site, of letters, digits, '.', '_' and '-'" $file) -}}
+{{- end -}}
+{{- if $plugin.enabled }}true{{ end -}}
+{{- end -}}
+
+{{/* etc/events-log.config: plugins.events-log.config under
+[events-log], with the store set to the H2 database
+plugins.events-log.storeFile under data/ on the site, db by default,
+where the plugin keeps it with no configuration, and the local copy at
+events-db/ */}}
+{{- define "gerrit.eventsLogConfig" -}}
+{{- $plugin := index .Values.plugins "events-log" -}}
+{{- $config := deepCopy (default dict $plugin.config) -}}
+{{- $file := toString (default "db" $plugin.storeFile) -}}
+{{- $_ := set $config "storeUrl" (printf "jdbc:h2:/var/gerrit/data/%s" $file) -}}
+{{- $_ := set $config "localStorePath" "/var/gerrit/events-db/" -}}
+{{- include "gerrit.configSection" (dict "name" "events-log" "values" $config) -}}
 {{- end -}}
 
 {{/* Path the readiness probe calls: the healthcheck plugin's status
@@ -661,7 +732,7 @@ a directory Gerrit or the chart keeps anything else in. */}}
 {{- if or (not (regexMatch (printf `^%s(/%s)*$` $segment $segment) $path)) (regexMatch `(^|/)\.\.?(/|$)` $path) -}}
 {{- fail (printf "hooks.path %q must be a relative path of plain names under the site" .Values.hooks.path) -}}
 {{- end -}}
-{{- $reserved := list "bin" "cache" "data" "db" "etc" "git" "index" "lib" "logs" "plugins" "static" "tmp" -}}
+{{- $reserved := list "bin" "cache" "data" "db" "etc" "events-db" "git" "index" "lib" "logs" "plugins" "static" "tmp" -}}
 {{- if has (first (splitList "/" $path)) $reserved -}}
 {{- fail (printf "hooks.path %q must not lie in a site directory Gerrit uses for anything else" .Values.hooks.path) -}}
 {{- end -}}

@@ -6,13 +6,15 @@
 ``backup.enabled`` adds a CronJob that runs
 ``files/scripts/site-backup.py`` on the site volume, mounted read-only,
 and its own NetworkPolicy. The rendered CronJob is compared with
-``tests/chart/golden/backup-cronjob.golden``; after an intended
+``tests/chart/golden/backup-cronjob.golden``, and its site mount with
+the one site-import's report maps to Gerrit's path; after an intended
 change, regenerate it with ``UPDATE_GOLDEN=1 uv run pytest tests/chart``
 and review the diff.
 """
 
 from __future__ import annotations
 
+import importlib
 import os
 import shutil
 from pathlib import Path
@@ -130,6 +132,16 @@ def test_backup_defaults(tmp_path: Path) -> None:
     assert "site-backup.py" in scripts["data"]
     assert "site_backup_retention.py" in scripts["data"]
     assert "site_backup_volume.py" in scripts["data"]
+
+
+def test_site_import_knows_the_backup_mount(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """site-import's report maps the CronJob's mount to Gerrit's path."""
+    monkeypatch.syspath_prepend(str(CHART / "files" / "scripts"))
+    report = importlib.import_module("site_import_report")
+    env = env_of(render(tmp_path, backup_values()))
+    assert {env["SITE_BACKUP_SITE"]: "/var/gerrit"} == report.CHART_BACKUP_MOUNTS
 
 
 def test_default_prefix_differs_by_namespace(tmp_path: Path) -> None:

@@ -36,6 +36,8 @@ SCRIPT = ROOT / "K8S" / "charts" / "gerrit" / "files" / "scripts" / "site-import
 SITE_INIT = SCRIPT.with_name("site-init.sh")
 EXPORT = ROOT / "scripts" / "gerrit-site-export.py"
 SERVER_ID = "4f9b2b2e-0000-4000-8000-000000000001"
+# The import report's advice for a storeUrl outside the site's data/
+ELSEWHERE = "which storeUrl does not place in the exported site's data/"
 GIT_ENV = {
     "GIT_AUTHOR_NAME": "Fixture",
     "GIT_AUTHOR_EMAIL": "fixture@example.invalid",
@@ -136,6 +138,11 @@ def source(tmp_path: Path) -> Path:
         check=True,
     )
     (etc / "samlKeystore.jks").write_bytes(b"source keystore")
+    (etc / "events-log.config").write_text(
+        f"[events-log]\n\tstoreUrl = jdbc:h2:{root}/data/events-log-db\n"
+    )
+    (root / "data").mkdir()
+    (root / "data" / "events-log-db.mv.db").write_bytes(b"events")
     (root / "plugins").mkdir()
     (root / "plugins" / "replication.jar").write_bytes(b"old plugin")
     # The official 3.8.10 image leaves a plugin named .jar behind
@@ -1158,10 +1165,190 @@ def test_secure_config_report_names_dropped_entries() -> None:
 
 
 def test_removed_keys_report() -> None:
-    module = load()
+    module = load_archive()
     assert module.removed_keys_report(["auth.cookiesecure", "auth.type"]) == [
         "gerrit.config sets auth.cookiesecure, which Gerrit 3.13 removed"
     ]
+
+
+@pytest.mark.parametrize(
+    ("text", "files", "expected"),
+    [
+        (None, [], None),
+        ("[events-log]\n\tmaxAge = 30\n", [], None),
+        (
+            "[events-log]\n\tstoreUrl = jdbc:h2:/srv/gerrit/data/events-log-db\n",
+            ["data/events-log-db.mv.db"],
+            "H2 file events-log-db; set plugins.events-log.storeFile: 'events-log-db'",
+        ),
+        *(
+            # YAML would read these unquoted as null, a boolean or a
+            # number, and Helm's default would then pick db
+            (
+                f"[events-log]\n\tstoreUrl = jdbc:h2:/srv/gerrit/data/{name}\n",
+                [f"data/{name}.mv.db"],
+                f"set plugins.events-log.storeFile: '{name}' to keep",
+            )
+            for name in ("null", "false", "0", "1e3")
+        ),
+        (
+            "[events-log]\n\tstoreurl = jdbc:h2:file:/srv/gerrit/data/db;AUTO_SERVER=TRUE\n",
+            ["data/db.h2.db"],
+            "H2 file db; the default plugins.events-log.storeFile, db, keeps",
+        ),
+        (
+            # '..' after a component the source site's links may have
+            # led elsewhere: never normalised into the site's data/db
+            "[events-log]\n\tstoreUrl = jdbc:h2:/srv/gerrit/etc/../data/db\n",
+            ["data/db.mv.db"],
+            f"H2 file db, {ELSEWHERE}",
+        ),
+        (
+            # A trace file alone is no database
+            "[events-log]\n\tstoreUrl = jdbc:h2:/srv/gerrit/data/events\n",
+            ["data/events.trace.db"],
+            "H2 file events, which the imported site does not hold in data/",
+        ),
+        (
+            "[events-log]\n\tstoreUrl = jdbc:h2:/srv/gerrit/db/events\n",
+            [],
+            f"H2 file events, {ELSEWHERE}",
+        ),
+        (
+            # Nested under the site's archive/data/, beside an unrelated
+            # data/events.mv.db the chart would open instead
+            "[events-log]\n\tstoreUrl = jdbc:h2:/srv/gerrit/archive/data/events\n",
+            ["archive/data/events.mv.db", "data/events.mv.db"],
+            f"H2 file events, {ELSEWHERE}",
+        ),
+        (
+            # An external directory named data, left out of the export,
+            # beside an unrelated data/db.mv.db in the site
+            "[events-log]\n\tstoreUrl = jdbc:h2:/srv/events/data/db\n",
+            ["data/db.mv.db"],
+            f"H2 file db, {ELSEWHERE}",
+        ),
+        (
+            # Relative to the source JVM's working directory, unknown here
+            "[events-log]\n\tstoreUrl = jdbc:h2:./data/db\n",
+            ["data/db.mv.db"],
+            f"H2 file db, {ELSEWHERE}",
+        ),
+        (
+            "[events-log]\n\tstoreUrl = jdbc:postgresql://db.example.invalid/events\n",
+            [],
+            "a store other than a local H2 file",
+        ),
+        (
+            "[events-log]\n\tstoreUrl = "
+            "jdbc:sqlserver://db.example.invalid;databaseName=events\n",
+            [],
+            "a store other than a local H2 file",
+        ),
+        (
+            "[events-log]\n\tstoreUrl = jdbc:h2:/srv/gerrit/data/a b\n",
+            [],
+            "an H2 file plugins.events-log.storeFile cannot name",
+        ),
+        ("[events-log\n", [], "cannot be read"),
+    ],
+)
+def test_events_log_report_names_the_store_file(
+    tmp_path: Path, text: str | None, files: list[str], expected: str | None
+) -> None:
+    load()
+    module = sys.modules["site_import_report"]
+    (tmp_path / "etc").mkdir()
+    if text is not None:
+        (tmp_path / "etc" / "events-log.config").write_text(text)
+    for name in files:
+        stored = tmp_path / name
+        stored.parent.mkdir(parents=True, exist_ok=True)
+        stored.write_bytes(b"")
+    warnings = module.events_log_report(tmp_path, "/srv/gerrit")
+    if expected is None:
+        assert warnings == []
+        return
+    assert len(warnings) == 1
+    assert expected in warnings[0]
+    if "does not hold" in expected or ELSEWHERE in expected:
+        assert "keeps its history" not in warnings[0]
+    # The file name only: never the source site's path or a remote URL
+    assert "/srv/" not in warnings[0]
+    assert "example.invalid" not in warnings[0]
+
+
+def test_events_log_report_withholds_advice_through_a_link(tmp_path: Path) -> None:
+    load()
+    module = sys.modules["site_import_report"]
+    # link -> archive/branch, so link/../data/events is archive/data/events,
+    # not the unrelated data/events.mv.db that normalising would pick
+    (tmp_path / "etc").mkdir()
+    (tmp_path / "etc" / "events-log.config").write_text(
+        "[events-log]\n\tstoreUrl = jdbc:h2:/srv/gerrit/link/../data/events\n"
+    )
+    for name in ("archive/branch", "archive/data", "data"):
+        (tmp_path / name).mkdir(parents=True)
+    (tmp_path / "link").symlink_to("archive/branch")
+    (tmp_path / "archive" / "data" / "events.mv.db").write_bytes(b"history")
+    (tmp_path / "data" / "events.mv.db").write_bytes(b"unrelated")
+    warnings = module.events_log_report(tmp_path, "/srv/gerrit")
+    assert len(warnings) == 1
+    assert f"H2 file events, {ELSEWHERE}" in warnings[0]
+    assert "keeps its history" not in warnings[0]
+
+
+@pytest.mark.parametrize(
+    ("manifest", "advised"),
+    [
+        ({"site": {"path": "/srv/gerrit"}}, True),
+        ({"site": {"path": "/srv/other"}}, False),
+        ({}, False),
+    ],
+)
+def test_imported_config_report_takes_the_manifests_site(
+    tmp_path: Path, manifest: dict[str, Any], advised: bool
+) -> None:
+    load()
+    module = sys.modules["site_import_report"]
+    (tmp_path / "etc").mkdir()
+    (tmp_path / "etc" / "gerrit.config").write_text("[gerrit]\n\tbasePath = git\n")
+    (tmp_path / "etc" / "events-log.config").write_text(
+        "[events-log]\n\tstoreUrl = jdbc:h2:/srv/gerrit/data/events\n"
+    )
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "events.mv.db").write_bytes(b"")
+    warnings = module.imported_config_report(tmp_path, manifest)
+    assert any("storeFile: 'events' to keep" in w for w in warnings) is advised
+    assert any(ELSEWHERE in w for w in warnings) is not advised
+
+
+@pytest.mark.parametrize(
+    ("manifest", "advised"),
+    [
+        # The backup CronJob exports from /mnt/site; Gerrit serves the
+        # site at /var/gerrit, which the chart's storeUrl names
+        ({"mode": "backup", "site": {"path": "/mnt/site"}}, True),
+        # Only the CronJob's backups: an arbitrary export keeps the check
+        ({"mode": "final", "site": {"path": "/mnt/site"}}, False),
+        ({"mode": "backup", "site": {"path": "/mnt/other"}}, False),
+    ],
+)
+def test_imported_config_report_places_a_chart_backup(
+    tmp_path: Path, manifest: dict[str, Any], advised: bool
+) -> None:
+    load()
+    module = sys.modules["site_import_report"]
+    (tmp_path / "etc").mkdir()
+    (tmp_path / "etc" / "gerrit.config").write_text("[gerrit]\n\tbasePath = git\n")
+    (tmp_path / "etc" / "events-log.config").write_text(
+        "[events-log]\n\tstoreUrl = jdbc:h2:/var/gerrit/data/events\n"
+    )
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "events.mv.db").write_bytes(b"")
+    warnings = module.imported_config_report(tmp_path, manifest)
+    assert any("storeFile: 'events' to keep" in w for w in warnings) is advised
+    assert any(ELSEWHERE in w for w in warnings) is not advised
 
 
 def test_gerrit_version_reads_the_release_war(tmp_path: Path) -> None:
@@ -1315,6 +1502,7 @@ def test_reindex_keeps_gerrits_default_threads_without_a_cpu_limit(
 @needs_tools
 def test_import_adopts_the_export(
     pod: dict[str, Any],
+    source: Path,
     export: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -1358,6 +1546,10 @@ def test_import_adopts_the_export(
     assert any("rules.pl" in w and "apps/web.git" in w for w in warnings)
     assert any("auth.cookiesecure" in w for w in warnings)
     assert any("ldap.password" in w for w in warnings)
+    assert any("storeFile: 'events-log-db'" in w for w in warnings)
+    # Logged once, before site-init replaced the imported file
+    assert out.out.count("H2 file events-log-db") == 1
+    assert str(source) not in json.dumps(recorded)
     # Names only: no secret value reaches the log or the state
     assert "old-ldap" not in out.out + out.err
     assert "old-ldap" not in json.dumps(recorded)
@@ -1509,6 +1701,25 @@ def test_failed_init_records_failed(
     assert recorded["state"] == "failed"
     assert recorded["reason"] == "gerrit.war init failed with exit status 3"
     assert not (pod["site"] / ".chart" / "initialised").exists()
+
+
+@needs_tools
+def test_failed_init_still_logs_the_imported_store(
+    pod: dict[str, Any],
+    export: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """site-init has replaced events-log.config by the time init fails.
+
+    The report on the imported file is logged before that, so the
+    store's name survives the failure.
+    """
+    _, code = run_main(import_env(pod, export, JAVA_FAIL_INIT="1"), monkeypatch)
+    assert code == 1
+    assert state(pod["site"])["state"] == "failed"
+    logged = capsys.readouterr().out
+    assert logged.count("storeFile: 'events-log-db' to keep") == 1
 
 
 @needs_tools
