@@ -19,7 +19,9 @@ Each run:
    progress or failed, is not one to back up;
 2. runs ``gerrit-site-export.py backup`` on the site volume, mounted
    read-only, into the scratch volume, with ``--git`` naming the git
-   store ``gerrit.basePath`` names on that volume, then reads the state file again
+   store ``gerrit.basePath`` names on that volume and the
+   ``--exclude=<path>`` arguments the script takes, the chart's
+   ``backup.exclude``, passed on; it then reads the state file again
    and discards the export, exiting 0, if it changed, as an import
    started meanwhile;
 3. uploads ``site.tar.zst``, ``git.tar.zst`` and then
@@ -57,8 +59,8 @@ is older than that.
 rclone, as for site-import's s3 source, is configured only through
 environment variables, with ``env_auth`` reading the AWS credentials
 or the web identity token from the container's environment; no
-credential reaches a command line or the log. Configuration, all from
-the environment:
+credential reaches a command line or the log. Configuration, besides
+those ``--exclude=<path>`` arguments, all from the environment:
 
 - ``SITE_BACKUP_URL``: ``s3://<bucket>/<prefix>``
 - ``SITE_BACKUP_S3_ENDPOINT``, ``SITE_BACKUP_S3_REGION``,
@@ -83,7 +85,7 @@ import secrets
 import shutil
 import subprocess
 import sys
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -107,16 +109,8 @@ LOCK_FILE = Path(".chart") / "backup-lock" / "lock"
 UPLOADS = ("site.tar.zst", "git.tar.zst", MANIFEST)
 URL = re.compile(r"s3://([^/]+)(/.*)?")
 EXPORTER = "/opt/gerrit-site-export/gerrit-site-export.py"
-RCLONE_FLAGS = [
-    "--stats",
-    "0",
-    "--retries",
-    "5",
-    "--retries-sleep",
-    "3s",
-    "--low-level-retries",
-    "10",
-]
+RCLONE_FLAGS = ["--stats", "0", "--retries", "5", "--retries-sleep", "3s"]
+RCLONE_FLAGS += ["--low-level-retries", "10"]
 
 
 class BackupError(Exception):
@@ -215,13 +209,15 @@ def rclone(*args: str) -> list[str]:
     return ["rclone", args[0], *RCLONE_FLAGS, *args[1:]]
 
 
-def export(settings: Settings, env: Mapping[str, str]) -> Path:
+def export(settings: Settings, env: Mapping[str, str], argv: Sequence[str]) -> Path:
     """Run the export tool's backup mode; return its output directory."""
+    if bad := [arg for arg in argv if not arg.startswith("--exclude=")]:
+        raise BackupError(f"{bad[0]}: site-backup takes only --exclude=<path>")
     out = settings.scratch / "export"
     # The export tool needs no S3 credential
     clean = {k: v for k, v in env.items() if not k.startswith(("AWS_", "RCLONE_"))}
     git = git_store(clean, settings.site)
-    command = [sys.executable, settings.exporter, "backup"]
+    command = [sys.executable, settings.exporter, "backup", *argv]
     command += ["--site", str(settings.site), "--git", str(git), "--out", str(out)]
     run(command, clean, "the site export")
     return out
@@ -384,7 +380,7 @@ def complete(state: bytes | None) -> str | None:
     return None if recorded == "complete" else f"records state {recorded!r}"
 
 
-def main(env: Mapping[str, str]) -> int:
+def main(env: Mapping[str, str], argv: Sequence[str] = ()) -> int:
     lock = None
     try:
         settings = Settings.from_env(env)
@@ -407,7 +403,7 @@ def main(env: Mapping[str, str]) -> int:
             return 0
         stamp = f"{clock().strftime(STAMP_FORMAT)}-{run_id()}"
         say(f"backing up {settings.site} to {settings.url(stamp)}")
-        out = export(settings, env)
+        out = export(settings, env, argv)
         if site_state(settings.site) != before:
             say(
                 f"discarding the export: {state_path} changed while it ran, "
@@ -436,4 +432,4 @@ def main(env: Mapping[str, str]) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main(os.environ))
+    sys.exit(main(os.environ, sys.argv[1:]))

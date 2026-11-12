@@ -479,6 +479,14 @@ backup:
     keepDaily: 14
     keepWeekly: 8
     minAgeHours: 24
+  # Site-relative paths each backup leaves out, passed to the export
+  # tool as --exclude: a file or directory, or a name ending in * for a
+  # file-name prefix within one directory. For disposable plugin data,
+  # such as the events-log plugin's H2 store, data/events-log-db*: on a
+  # restore the plugin starts an empty store, so the last maxAge days of
+  # events are not replayable. The tool refuses site structure, the git
+  # store, All-Users state and paths it already leaves out
+  exclude: []
   # The scratch emptyDir holds the copied site and its archives: about
   # twice the site's size
   scratchSizeLimit: ""

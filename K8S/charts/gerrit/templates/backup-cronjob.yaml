@@ -68,7 +68,7 @@ spec:
             - name: backup
               image: {{ include "gerrit.image" $ }}
               imagePullPolicy: {{ $.Values.image.pullPolicy }}
-              command: ["python3", "/scripts/site-backup.py"]
+              command: ["python3", "/scripts/site-backup.py"{{ range .exclude }}, {{ printf "--exclude=%s" . | toJson }}{{ end }}]
               # Keeps the error in the pod status after kubelet drops the log
               terminationMessagePolicy: FallbackToLogsOnError
               env:

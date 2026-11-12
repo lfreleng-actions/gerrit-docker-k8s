@@ -1351,6 +1351,26 @@ def test_imported_config_report_places_a_chart_backup(
     assert any(ELSEWHERE in w for w in warnings) is not advised
 
 
+def test_imported_config_report_names_operator_exclusions(tmp_path: Path) -> None:
+    load()
+    module = sys.modules["site_import_report"]
+    spec = importlib.util.spec_from_file_location("site_export", EXPORT)
+    assert spec is not None and spec.loader is not None
+    export = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(export)
+    # The report's list of built-ins follows the export tool's
+    assert list(module.BUILTIN_EXCLUDED) == export.EXCLUDED
+    (tmp_path / "etc").mkdir()
+    (tmp_path / "etc" / "gerrit.config").write_text("[gerrit]\n\tbasePath = git\n")
+    builtins = {"excluded": export.EXCLUDED[1:]}
+    assert module.imported_config_report(tmp_path, builtins) == []
+    manifest = {"excluded": [*export.EXCLUDED, "data/events-log-db*", "data/x"]}
+    assert module.imported_config_report(tmp_path, manifest) == [
+        "the export left out data/events-log-db*, data/x (--exclude); "
+        "the site lacks them"
+    ]
+
+
 def test_gerrit_version_reads_the_release_war(tmp_path: Path) -> None:
     module = load()
     nested = io.BytesIO()

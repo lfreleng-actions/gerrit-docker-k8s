@@ -292,6 +292,7 @@ Argo CD; `K8S/docs/DESIGN.md` section 6 explains its settings.
 | `backup.maxRunHours`                     | `6`                              | Hours before Kubernetes stops a run (`activeDeadlineSeconds`); at least 1 |
 | `backup.retention.keepDaily`, `.keepWeekly` | `14`, `8`                     | Newest published backup kept per day and per ISO week      |
 | `backup.retention.minAgeHours`           | `24`                             | Hours a backup is kept after a newer published one replaces it; at least 1 |
+| `backup.exclude`                         | `[]`                             | Site paths each run leaves out (`--exclude`); see [Backups](#backups) |
 | `backup.scratchSizeLimit`                | `""`                             | `sizeLimit` of the scratch `emptyDir`                      |
 | `backup.resources`                       | `{}`                             | Resources of the backup container                          |
 
@@ -1695,6 +1696,26 @@ backup:
     bucket: gerrit-backups
     region: eu-west-1
 ```
+
+`backup.exclude` lists site-relative paths each run leaves out,
+passed to the export tool as `--exclude`: a file or directory, or a
+name ending in `*` for a file-name prefix within one directory. It is
+for large, disposable plugin data, such as the events-log plugin's H2
+store, which never shrinks although the plugin keeps only `maxAge`
+days of events:
+
+```yaml
+backup:
+  exclude:
+    - data/events-log-db*
+```
+
+The trade-off: on a restore from such a backup the plugin starts an
+empty store, so the last `maxAge` days of events are not replayable;
+`site-import` names the left-out paths in its report. The tool refuses
+site structure, the git store, `All-Users` state and the paths it
+already leaves out, which fails the run; "Exporting a Gerrit Site" in
+the repository README lists the rules.
 
 A failed run exits non-zero and leaves `latest` on the last good
 backup. The `CronJob` keeps three failed and three successful Jobs;

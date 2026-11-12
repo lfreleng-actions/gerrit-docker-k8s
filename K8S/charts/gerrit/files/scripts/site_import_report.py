@@ -7,7 +7,9 @@ site-init replaces the imported configuration at its first start, so
 the migration report reads it first: gerrit.config keys the image's
 release removed, and the H2 file an imported etc/events-log.config
 kept its store in, with the plugins.events-log.storeFile that keeps
-its history. ``site-import.py`` is the entry point.
+its history. It also names the paths an export's ``--exclude`` left
+out, which the imported site does not hold. ``site-import.py`` is the
+entry point.
 """
 
 from __future__ import annotations
@@ -28,6 +30,20 @@ H2_SUFFIXES = (".mv.db", ".h2.db")
 # (SITE_BACKUP_SITE in backup-cronjob.yaml), which the manifest records,
 # while the site's files name the Gerrit container's path for it
 CHART_BACKUP_MOUNTS = {"/mnt/site": "/var/gerrit"}
+# The paths the export tool always leaves out, EXCLUDED in
+# scripts/gerrit-site-export.py; a manifest's excluded array lists an
+# operator's --exclude paths after them
+BUILTIN_EXCLUDED = (
+    "cache",
+    "index",
+    "logs",
+    "tmp",
+    "bin",
+    ".gerritcodereview/tmp",
+    ".chart",
+    ".ssh",
+    ".config/gerrit_to_platform",
+)
 
 
 def imported_config_report(site: Path, manifest: dict[str, Any]) -> list[str]:
@@ -41,7 +57,19 @@ def imported_config_report(site: Path, manifest: dict[str, Any]) -> list[str]:
     return [
         *removed_keys_report(config_names(site / "etc" / "gerrit.config")),
         *events_log_report(site, *roots),
+        *excluded_report(manifest),
     ]
+
+
+def excluded_report(manifest: dict[str, Any]) -> list[str]:
+    """Name the paths the export left out beyond the tool's own."""
+    excluded = manifest.get("excluded")
+    if not isinstance(excluded, list):
+        return []
+    extra = [str(p) for p in excluded if p not in BUILTIN_EXCLUDED]
+    if not extra:
+        return []
+    return [f"the export left out {', '.join(extra)} (--exclude); the site lacks them"]
 
 
 def in_site_data(store: str, source_site: str) -> bool:
