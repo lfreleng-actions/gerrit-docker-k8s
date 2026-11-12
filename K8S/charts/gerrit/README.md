@@ -224,6 +224,7 @@ Argo CD; `K8S/docs/DESIGN.md` section 6 explains its settings.
 | `auth.saml.metadataFromSecret`           | `false`                          | Read the IdP metadata from the Secret's `idp-metadata.xml` |
 | `auth.saml.serviceProviderEntityId`      | `""`                             | `""` for `gerrit.canonicalWebUrl`                          |
 | `auth.saml.*Attr`, `.computedDisplayName`, `.maxAuthLifetime` | See `values.yaml` | The `[saml]` keys of the same name             |
+| `auth.saml.useNameQualifier`             | `null`                           | `false` ignores the IdP's NameQualifier; see [SAML](#saml) |
 | `auth.saml.memberOfAttr`                 | `null`                           | Group membership sync, off when unset; see [Group membership sync](#group-membership-sync) |
 | `replication.enabled`                    | `false`                          | See [Replication](#replication)                            |
 | `replication.autoReload`                 | `true`                           | `gerrit.autoReload` in `replication.config`                |
@@ -1044,9 +1045,14 @@ auth:
 Set exactly one of `metadataUrl` and `metadataFromSecret`; neither or
 both fail the render, as does a `metadataUrl` that is not an `http://`
 or `https://` URL. `serviceProviderEntityId` defaults to
-`gerrit.canonicalWebUrl`. The attribute keys, `computedDisplayName`
-and `maxAuthLifetime` are the `[saml]` keys of the same name; `null`
-or `""` leaves a key out, so the module's default applies.
+`gerrit.canonicalWebUrl`. The attribute keys, `computedDisplayName`,
+`maxAuthLifetime` and `useNameQualifier` are the `[saml]` keys of the
+same name; `null` or `""` leaves a key out, so the module's default
+applies. Set `useNameQualifier: false` when the identity provider
+sends a NameQualifier that must not qualify the user name; see the
+SAML module's documentation. Any other `[saml]` key of the module may
+be set under `auth.saml` the same way, rather than in
+`gerrit.extraConfig`, which would render a second `[saml]` section.
 
 Create the Secret from a Java keystore holding the service provider's
 signing key, and the two passwords:

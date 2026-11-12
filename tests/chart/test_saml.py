@@ -9,7 +9,9 @@ enabled, once per identity provider metadata source, with
 Secret, the mounts, the library, the NetworkPolicy egress and the
 passwords ``render-config.sh`` writes to ``secure.config``. The default
 render must carry none of it. With ``memberOfAttr`` set, the render
-must match ``tests/chart/golden/saml-member-of-attr.config``. No test needs a real keystore: the chart
+must match ``tests/chart/golden/saml-member-of-attr.config``. Other
+``[saml]`` keys, such as ``useNameQualifier``, pass through from
+``auth.saml``. No test needs a real keystore: the chart
 never reads the keystore's contents.
 
 After an intended change to the rendered output, regenerate the
@@ -168,6 +170,25 @@ def test_member_of_attr_unset_renders_no_key(
     )
     assert "[saml]" in config
     assert "memberofattr" not in config.lower()
+
+
+@pytest.mark.parametrize(("value", "line"), [(False, "false"), (None, None)])
+def test_use_name_qualifier_passes_through(
+    tmp_path: Path, value: bool | None, line: str | None
+) -> None:
+    values = yaml.safe_load((CHART / "values.yaml").read_text(encoding="utf-8"))
+    assert values["auth"]["saml"]["useNameQualifier"] is None
+    config = gerrit_config(render(tmp_path, saml_values("url", useNameQualifier=value)))
+    path = tmp_path / "gerrit.config"
+    path.write_text(config, encoding="utf-8")
+    read = subprocess.run(
+        ["git", "config", "-f", str(path), "--get-all", "saml.useNameQualifier"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert read.stdout.splitlines() == ([line] if line else [])
+    assert ("usenamequalifier" in config.lower()) == (line is not None)
 
 
 @pytest.mark.parametrize("source", sorted(SOURCES))
