@@ -1102,13 +1102,41 @@ directory, the copied repositories and the archives give no other
 local user access to the site's history or secrets. The import
 restores the site as the Gerrit user.
 
+`--exclude <path>`, repeatable and in every mode, leaves out more of
+the site: a file or directory relative to the site root, or a name
+ending in `*` for a file-name prefix within one directory. The
+manifest's `excluded` lists these paths after the tool's own, and
+`site-import` names them in its report. It is for large, disposable
+plugin data, such as the events-log plugin's H2 store, which never
+shrinks although the plugin keeps only `maxAge` days of events:
+
+```bash
+python3 scripts/gerrit-site-export.py final --site /var/gerrit \
+  --out /backup/gerrit --pack --exclude 'data/events-log-db*'
+```
+
+That leaves out `data/events-log-db.h2.db` and its `.lock.db` and
+`.trace.db` files. The trade-off: on a restore the plugin starts an
+empty store, so the last `maxAge` days of events are not replayable.
+The tool refuses, before writing anything and naming the path, an
+absolute path, a trailing `/`, a `..`, `.` or empty component, any
+other wildcard, and a path that overlaps the repository store, a path
+it already leaves out, `etc/gerrit.config`, `etc/secure.config`, `git`
+or `data/replication`, or that names `All-Users`, could match an
+`All-Users` name through its `*`, or leaves out a directory holding an
+`All-Users` entry at any depth: exclusions are for disposable data,
+not for site structure. It also refuses a pattern whose matches it
+cannot read through. A repository store that is the site, or holds
+it, refuses every `--exclude`, since the store's copy would carry the
+path anyway.
+
 `seed` and `final` need only the tool itself, so a copy of
 `scripts/gerrit-site-export.py` alone runs them on an existing Gerrit
-host. `backup` also loads `scripts/gerrit_export_git.py` from beside
-the tool, as the chart image installs it; without it, `backup` stops
-with an error before writing anything. Every mode leaves out `*.lock`
-files, in the site and in the repositories, and deletes any an earlier
-run left in the export directory.
+host. `backup` and `--exclude` also load `scripts/gerrit_export_git.py`
+from beside the tool, as the chart image installs it; without it, they
+stop with an error before writing anything. Every mode leaves out
+`*.lock` files, in the site and in the repositories, and deletes any an
+earlier run left in the export directory.
 
 Run `python3 scripts/gerrit-site-export.py --help` for every option.
 The chart README covers the import side: how the import Job reads this

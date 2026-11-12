@@ -254,3 +254,17 @@ def test_backup_deadline_follows_max_run_hours(tmp_path: Path) -> None:
     docs = render(tmp_path, backup_values(maxRunHours=2))
     assert cronjob(docs)["spec"]["jobTemplate"]["spec"]["activeDeadlineSeconds"] == 7200
     assert env_of(docs)["SITE_BACKUP_MAX_RUN_HOURS"] == "2"
+
+
+def test_backup_exclude_renders_into_the_command(tmp_path: Path) -> None:
+    (default,) = pod_of(render(tmp_path, backup_values()))["spec"]["containers"]
+    assert default["command"] == ["python3", "/scripts/site-backup.py"]
+    paths = ["data/events-log-db*", 'data/odd "name"']
+    docs = render(tmp_path, backup_values(exclude=paths))
+    (container,) = pod_of(docs)["spec"]["containers"]
+    assert container["command"] == [
+        "python3",
+        "/scripts/site-backup.py",
+        "--exclude=data/events-log-db*",
+        '--exclude=data/odd "name"',
+    ]

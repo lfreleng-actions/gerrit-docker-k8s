@@ -180,6 +180,7 @@ def backup(
     monkeypatch: pytest.MonkeyPatch,
     stamp: str,
     run: str = RUN,
+    argv: tuple[str, ...] = (),
 ) -> tuple[int, str]:
     """Run a backup whose clock stands still at stamp; return its exit
     status and its prefix.
@@ -187,7 +188,7 @@ def backup(
     module = load()
     monkeypatch.setattr(module, "clock", lambda: taken(stamp))
     monkeypatch.setattr(module, "run_id", lambda: run)
-    return module.main(world["env"]), f"{stamp}-{run}"
+    return module.main(world["env"], argv), f"{stamp}-{run}"
 
 
 @pytest.mark.parametrize(
@@ -753,6 +754,45 @@ def test_failed_export_uploads_nothing(
     code, _ = backup(world, monkeypatch, "20260106T020000Z")
     assert code == 1
     assert "the site export failed" in capsys.readouterr().err
+    assert not world["log"].exists()
+
+
+@needs_tools
+def test_backup_passes_exclude_to_the_export(
+    world: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    source: Path,
+) -> None:
+    (source / "data").mkdir(exist_ok=True)
+    for suffix in (".h2.db", ".lock.db", ".trace.db"):
+        (source / "data" / f"events-log-db{suffix}").write_text("events\n")
+    (source / "data" / "kept.db").write_text("kept\n")
+    argv = ("--exclude=data/events-log-db*",)
+    code, stamp = backup(world, monkeypatch, "20260106T020000Z", argv=argv)
+    assert code == 0, capsys.readouterr().err
+    manifest = json.loads((world["prefix"] / stamp / "manifest.json").read_text())
+    assert manifest["excluded"][-1] == "data/events-log-db*"
+    archive = world["prefix"] / stamp / "site.tar.zst"
+    listing = subprocess.run(
+        ["tar", "--zstd", "-tf", str(archive)], capture_output=True, text=True
+    )
+    assert listing.returncode == 0, listing.stderr
+    names = listing.stdout.splitlines()
+    assert any(n.endswith("data/kept.db") for n in names)
+    assert not [n for n in names if "events-log-db" in n]
+
+
+@pytest.mark.parametrize("arg", ["--pack", "--exclude", "data/x", "--upload=s3://b/p"])
+def test_backup_takes_only_exclude_arguments(
+    world: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    arg: str,
+) -> None:
+    code, _ = backup(world, monkeypatch, "20260106T020000Z", argv=(arg,))
+    assert code == 1
+    assert f"{arg}: site-backup takes only --exclude=<path>" in capsys.readouterr().err
     assert not world["log"].exists()
 
 

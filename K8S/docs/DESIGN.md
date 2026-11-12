@@ -716,7 +716,10 @@ An export directory `<out>` holds:
 - `site/` leaves out `cache`, `index`, `logs`, `tmp`, `bin`,
   `.gerritcodereview/tmp`, `.chart`, `.ssh` and
   `.config/gerrit_to_platform`, plus the repository store when it
-  sits inside the site. `--include-cache` keeps `cache`. The import
+  sits inside the site, and each `--exclude` path, which may end in
+  `*` for a name prefix within one directory and may not overlap site
+  structure (`README.md`, "Exporting a Gerrit Site"). `--include-cache`
+  keeps `cache`. The import
   rebuilds the index and caches and takes `bin/gerrit.war` from the
   image. `plugins/` and `lib/` stay in the export, for the record;
   `site-import` leaves them out (section 1.7).
@@ -833,7 +836,7 @@ the `final` one and is never an import source.
 | `site` | object | `path`: the source site directory, resolved; `bytes`: total size of `<out>/site`. |
 | `git` | object | `path`: the source repository directory, resolved; `bytes`: total size of `<out>/git`; `repositories`: see below. |
 | `ssh_host_keys` | object | Each regular file in the site's `etc/` named `ssh_host_*` and not ending `.pub`, mapped to its `SHA256:` fingerprint from `ssh-keygen -l -E sha256`. |
-| `excluded` | array of strings | The site paths left out of `<out>/site`, in the order section 3.1 lists them, ending with the credential paths `.ssh` and `.config/gerrit_to_platform`; `cache` is absent with `--include-cache`. |
+| `excluded` | array of strings | The site paths left out of `<out>/site`, in the order section 3.1 lists them, then the credential paths `.ssh` and `.config/gerrit_to_platform`, then each `--exclude` path as given; `cache` is absent with `--include-cache`. `site-import` reports the paths after the built-in ones. |
 | `archives` | object | Each archive file name mapped to the hex SHA-256 of its contents; `{}` without `--pack`. |
 
 `git.repositories` maps the path of each directory ending `.git` under

@@ -16,6 +16,7 @@ Copy a Gerrit site to <out>/site and <out>/git with manifest.json; stdlib, Pytho
   --encrypt <spec>    Implies --pack: age:<recipient> or gpg:<key-id>; drops plaintext.
   --upload <url>      Implies --pack: SSE-KMS copy of the outputs to s3://bucket/prefix.
   --include-cache     Copy <site>/cache too; the import rebuilds caches.
+  --exclude <path>    Leave out <path> under the site; repeatable; may end in *.
   --dry-run           Print the commands without writing anything.
 
 Left out of <out>/site, any type: cache, index, logs, tmp, bin, .chart, *.lock files,
@@ -48,14 +49,14 @@ PROG, CREDENTIALS = "gerrit-site-export.py", [".ssh", ".config/gerrit_to_platfor
 EXCLUDED = ["cache", "index", "logs", "tmp", "bin", ".gerritcodereview/tmp", ".chart"]
 EXCLUDED += CREDENTIALS  # Last; the chart supplies them from Secrets.
 G2P = (f"{CREDENTIALS[1]}/replication.config", "/var/gerrit/etc/replication.config")
-VALUES = ("--site", "--git", "--out", "--encrypt", "--upload")
+VALUES = ("--site", "--git", "--out", "--encrypt", "--upload", "--exclude")
 FLAGS = ("--i-stopped-writes", "--pack", "--include-cache", "--dry-run")
 HINT = "stop writes and pass --i-stopped-writes"
 ELSEWHERE = "another filesystem namespace, so its site cannot be compared"
 NEW_FILE = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
 ZSTD, S3_COPY = ["zstd", "-q", "-T0", "-c"], ["aws", "s3", "cp", "--sse", "aws:kms"]
 ENCRYPT = {"age": ["-r"], "gpg": ["--batch", "--yes", "--encrypt", "--recipient"]}
-PARTS = ("site", "git")
+PARTS, ESCAPE = ("site", "git"), "".maketrans({c: "\\" + c for c in "*?[\\"})
 ARCHIVES = [f"{p}.tar.zst{s}" for p in PARTS for s in ("", ".age", ".gpg")]
 VERSION_JAR = "WEB-INF/lib/com_google_gerrit_common_libversion.jar"
 VERSION_FILE = "com/google/gerrit/common/Version"  # In VERSION_JAR.
@@ -94,8 +95,8 @@ def step(opts: Any, command: list[str], what: str, tolerate: int = 0) -> int:
 
 def parse_args(argv: list[str]) -> Any:
     opts = SimpleNamespace(mode="", **{o[2:]: "" for o in VALUES})
-    opts.__dict__.update({o[2:].replace("-", "_"): False for o in FLAGS})
-    opts.site, args = os.environ.get("GERRIT_SITE", ""), list(argv)
+    (fields := vars(opts)).update({o[2:].replace("-", "_"): False for o in FLAGS})
+    opts.site, opts.exclude, args = os.environ.get("GERRIT_SITE", ""), [], list(argv)
     while args:
         arg = args.pop(0)
         name, equals, value = arg.partition("=")
@@ -113,7 +114,7 @@ def parse_args(argv: list[str]) -> Any:
                 value = args.pop(0)
             if not value:
                 die(f"{name} needs a value")
-            setattr(opts, name[2:], value)
+            fields[name[2:]] = [*opts.exclude, value] if name == "--exclude" else value
         else:
             die(f"unknown argument: {arg} (see --help)")
     kind, _, who = opts.encrypt.partition(":")
@@ -121,7 +122,6 @@ def parse_args(argv: list[str]) -> Any:
     bad_s3 = opts.upload and (opts.upload[:5] != "s3://" or opts.upload == "s3://")
     opts.pack = opts.pack or bool(opts.encrypt or opts.upload) or opts.mode == "backup"
     seed_pack = opts.pack and opts.mode == "seed"
-    lone = opts.mode == "backup" and not importlib.util.find_spec(COMPANION)
     for failed, message in (
         (not opts.mode, "give a mode, seed, final or backup (see --help)"),
         (not opts.site, "no site: pass --site or set GERRIT_SITE"),
@@ -129,16 +129,14 @@ def parse_args(argv: list[str]) -> Any:
         (bad_key, "--encrypt takes age:<recipient> or gpg:<key-id>"),
         (bad_s3, "--upload takes s3://bucket/prefix"),
         (seed_pack, "--pack, --encrypt and --upload need final or backup mode"),
-        (lone, f"backup needs {COMPANION}.py beside the script, as in the chart image"),
     ):
         if failed:
             die(message)
-    opts.excluded = [e for e in EXCLUDED if e != "cache" or not opts.include_cache]
+    need = "backup" if opts.mode == "backup" else "--exclude" * bool(opts.exclude)
+    if need and not importlib.util.find_spec(COMPANION):
+        die(f"{need} needs {COMPANION}.py beside the script, as in the chart image")
+    opts.excluded = [*EXCLUDED[opts.include_cache :], *opts.exclude]  # cache is first
     return opts
-
-
-def is_within(path: str, root: str) -> bool:
-    return path == root or path.startswith(root.rstrip("/") + "/")
 
 
 def readable_dir(path: str, what: str) -> str:
@@ -264,12 +262,12 @@ def copy(opts: Any, site: str, git_dir: str, git_given: str, out: Path) -> None:
     # Any type matches; a linked basePath goes as both, or as its first linked ancestor.
     names, given = list(opts.excluded), os.path.abspath(opts.site)
     for path, base in ((git_given, site), (git_given, given), (git_dir, site)):
-        if path != base and is_within(path, base):
+        if path != base and os.path.commonpath([path, base]) == base:
             p = Path(path[len(base.rstrip("/")) + 1 :]).parts
             up = [i for i in range(1, len(p)) if Path(base, *p[:i]).is_symlink()]
             names.append("/".join(p[: (up or [len(p)])[0]]))
-    escape = "".maketrans({c: "\\" + c for c in "*?[\\"})
-    filters = [f"--exclude=/{n.translate(escape)}" for n in dict.fromkeys(names)]
+    globs = {**{n: n.translate(ESCAPE) for n in names}, **{n: n for n in opts.exclude}}
+    filters = [f"--exclude=/{glob}" for glob in globs.values()]
     rsync = ["rsync", "-a", "--chmod=go-rwx", "--delete"]
     rsync += ["--checksum"] * (opts.mode == "final")
     git = [("git", git_dir, ("--delete-excluded",))] * (opts.mode != "backup")
@@ -278,7 +276,7 @@ def copy(opts: Any, site: str, git_dir: str, git_given: str, out: Path) -> None:
         # 24: files vanished mid-copy, expected while Gerrit writes.
         if step(opts, command, "rsync", 0 if opts.mode == "final" else 24) == 24:
             say("warning: files vanished during the copy; re-run to copy them")
-    if not git:  # rsync would race live repositories; only backup loads COMPANION.
+    if not git:  # rsync would race live repositories, so backup uses COMPANION.
         importlib.import_module(COMPANION).copy(git_dir, out, opts.dry_run)
 
 
@@ -385,9 +383,11 @@ def main(argv: list[str]) -> None:
     require_tools(opts, site)
     git_raw = opts.git or os.path.join(site, base_path(site))
     git_dir, git_given = readable_dir(git_raw, "repository"), os.path.abspath(git_raw)
+    if opts.exclude:  # Before anything is written; raises an OSError to refuse.
+        importlib.import_module(COMPANION).refuse_exclude(opts, EXCLUDED, git_raw)
     out = Path(opts.out).resolve()  # Before mkdir: no '..' or link dodges the check.
     for source in (site, git_dir):
-        if is_within(str(out), source) or is_within(source, str(out)):
+        if os.path.commonpath([str(out), source]) in (str(out), source):
             die(f"export directory {out} overlaps {source}")
     # Walk errors pass: seed sees entries vanish, and rsync fails on unreadable ones.
     if links := [p for p in tree_paths(git_dir, err=None) if os.path.islink(p)]:

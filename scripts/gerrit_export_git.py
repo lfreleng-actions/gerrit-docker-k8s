@@ -29,10 +29,24 @@ sequence must exceed every change number in the copies, or a restored
 site would hand out a number twice.
 
 Any failure raises RepositoryCopyError, an OSError the export tool
-reports like its other failures, and nothing is published. The export
-tool loads this module only in backup mode, from its own directory;
-seed and final need only the tool itself. Standard library only,
-Python 3.8 or newer.
+reports like its other failures, and nothing is published.
+
+``refuse_exclude`` checks the tool's ``--exclude`` patterns before
+anything is written. A pattern is a path under the site, optionally
+ending in ``*`` to match a name prefix within one directory, with no
+trailing ``/``; it may not overlap, as an ancestor, a match or a
+descendant, a path the tool already leaves out, the repository store,
+``etc/gerrit.config``, ``etc/secure.config``, ``git``,
+``data/replication``, or name or match All-Users: exclusions are for
+disposable data, not for site structure. A pattern whose matches hold
+an All-Users entry at any depth is refused too, and so is one whose
+matches cannot be read through. A store that is the site, or holds
+it, puts every site path in the store and refuses any pattern.
+
+The export tool loads this module only in backup mode and for
+``--exclude``, from its own directory; seed and final without
+``--exclude`` need only the tool itself. Standard library only, Python
+3.8 or newer.
 """
 
 from __future__ import annotations
@@ -40,10 +54,12 @@ from __future__ import annotations
 import os
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from typing import Any
 
 PROG = "gerrit-site-export.py"
 GIT = ["git", "-c", "safe.directory=*", "-c", "core.sharedRepository=umask"]
@@ -61,10 +77,102 @@ RSYNC = [
     "--exclude=*.lock",
 ]
 VANISHED = 24  # rsync: files vanished mid-copy, expected while Gerrit writes.
+PROTECTED = ("etc/gerrit.config", "etc/secure.config", "git", "data/replication")
+WILDCARDS = "?[\\"  # Refused in --exclude; '*' only as its last character.
 
 
 class RepositoryCopyError(OSError):
     """A repository could not be copied, or its copy failed a check."""
+
+
+class ExcludeError(OSError):
+    """An --exclude pattern names something the export must copy."""
+
+
+def overlaps(pattern: list[str], path: list[str]) -> bool:
+    """Whether a --exclude pattern leaves out path, or lies within it."""
+    last = len(pattern) - 1
+    return all(
+        a == b or (i == last and a.endswith("*") and b.startswith(a[:-1]))
+        for i, (a, b) in enumerate(zip(pattern, path))
+    )
+
+
+def users(site: str, pattern: list[str]) -> list[list[str]]:
+    """The All-Users paths pattern could leave out: the name All-Users if
+    a final * would match it, and every entry under site, at any depth,
+    within a path it matches. Links are not followed: rsync leaves out
+    the link alone.
+    """
+    *parent, last = pattern
+    if last.endswith("*"):
+        try:
+            names = os.listdir(os.path.join(site, *parent))
+        except OSError as error:
+            unreadable(error)
+            names = []
+        matched = [n for n in names if n.startswith(last[:-1])]
+        found = [[*parent, "All-Users"]] * ("All-Users".startswith(last[:-1]))
+    else:
+        matched, found = [last], []
+    for name in matched:
+        top = os.path.join(site, *parent, name)
+        found += [[*parent, name]] * ("All-Users" in name)
+        try:  # Not isdir(), which hides an unsearchable ancestor.
+            mode = os.lstat(top).st_mode
+        except OSError as error:
+            unreadable(error)
+            continue
+        if not stat.S_ISDIR(mode):
+            continue
+        for root, dirs, files in os.walk(top, onerror=unreadable):
+            rel = [*parent, name, *Path(os.path.relpath(root, top)).parts]
+            found += [[*rel, n] for n in dirs + files if "All-Users" in n]
+    return found
+
+
+def unreadable(error: OSError) -> None:
+    """Refuse a path users() cannot inspect; one missing, or gone since its
+    listing, passes.
+    """
+    if not isinstance(error, (FileNotFoundError, NotADirectoryError)):
+        raise ExcludeError(
+            f"--exclude: cannot inspect {error.filename}: {error.strerror}"
+        )
+
+
+def refuse_exclude(opts: Any, builtins: list[str], store: str) -> None:
+    """Raise ExcludeError unless the export takes every opts.exclude pattern.
+
+    builtins are the paths the tool leaves out; opts.site and store, the
+    site and the repository store, count both as given and resolved.
+    """
+    kept = [p.split("/") for p in [*builtins, *PROTECTED]]
+    roots, stores = (
+        [os.path.abspath(p), os.path.realpath(p)] for p in (opts.site, store)
+    )
+    for path, root in ((s, r) for s in stores for r in roots):
+        common = os.path.commonpath([path, root])
+        if common == root:  # The store is the site or lies within it.
+            kept.append(list(Path(path).relative_to(root).parts))
+        elif common == path:  # The store holds the site: so is every path.
+            kept.append([])
+    for pattern in opts.exclude:
+        parts = pattern.split("/")
+        loose = any(c in pattern for c in WILDCARDS) or "*" in pattern[:-1]
+        if pattern[:1] == "/" or loose or {"", ".", ".."} & set(parts):
+            raise ExcludeError(
+                f"--exclude {pattern}: give a path under the site, a final * at most"
+            )
+        if (
+            any("All-Users" in p for p in parts)
+            or any(overlaps(parts, k) for k in kept)
+            or users(opts.site, parts)
+        ):
+            raise ExcludeError(
+                f"--exclude {pattern} overlaps site structure or a path the export"
+                " already leaves out; exclusions are for disposable data"
+            )
 
 
 def repositories(root: str | Path) -> list[str]:

@@ -306,6 +306,7 @@ def test_help_documents_every_option() -> None:
         "--encrypt",
         "--upload",
         "--include-cache",
+        "--exclude",
         "--dry-run",
         "--help",
     ):
@@ -742,6 +743,18 @@ def test_backup_from_a_lone_copy_names_the_missing_module(
     assert result.returncode != 0
     assert result.stderr.splitlines() == [
         "gerrit-site-export.py: error: backup needs gerrit_export_git.py beside"
+        " the script, as in the chart image"
+    ]
+    assert not site["out"].exists()
+
+
+def test_exclude_from_a_lone_copy_names_the_missing_module(
+    site: dict[str, Any], tmp_path: Path
+) -> None:
+    result = run_lone_copy(site, tmp_path, "seed", "--exclude", "data/x")
+    assert result.returncode != 0
+    assert result.stderr.splitlines() == [
+        "gerrit-site-export.py: error: --exclude needs gerrit_export_git.py beside"
         " the script, as in the chart image"
     ]
     assert not site["out"].exists()
@@ -2128,3 +2141,165 @@ def test_backup_refuses_a_ref_without_its_object(site: dict[str, Any]) -> None:
     assert "missing object" in result.stderr
     assert "refs/heads/broken" in result.stderr
     assert not (site["out"] / "git.tar.zst").exists()
+
+
+H2_TRIO = ["events-log-db.h2.db", "events-log-db.lock.db", "events-log-db.trace.db"]
+
+
+@pytest.mark.parametrize(
+    "mode", ["seed", "final", pytest.param("backup", marks=needs_zstd)]
+)
+def test_exclude_leaves_out_the_named_paths(site: dict[str, Any], mode: str) -> None:
+    data = site["root"] / "data"
+    (data / "big").mkdir(parents=True)
+    (data / "big" / "blob").write_text("disposable\n")
+    (data / "sub").mkdir()
+    for name in [*H2_TRIO, "kept.db", "sub/events-log-db.h2.db"]:
+        (data / name).write_text(f"{name}\n")
+    # A copy without the exclusions first: the export drops them from it
+    export_ok(site, "seed")
+    assert (site["out"] / "site" / "data" / H2_TRIO[0]).is_file()
+
+    patterns = ["data/events-log-db*", "data/big"]
+    args = [a for p in patterns for a in ("--exclude", p)]
+    manifest = export_ok(site, mode, *args)
+    copy = site["out"] / "site" / "data"
+    for name in [*H2_TRIO, "big"]:
+        assert not (copy / name).exists(), name
+    # A trailing * matches names within its own directory only
+    assert (copy / "kept.db").is_file()
+    assert (copy / "sub" / "events-log-db.h2.db").is_file()
+    assert manifest["excluded"] == [*EXCLUDED, *patterns]
+
+
+def test_exclude_reaches_rsync_unescaped(site: dict[str, Any]) -> None:
+    result = run_on(site, "seed", "--dry-run", "--exclude=data/events-log-db*")
+    assert result.returncode == 0, result.stderr
+    assert "--exclude=/data/events-log-db*" in result.stdout
+
+
+@pytest.mark.parametrize(
+    "pattern",
+    [
+        "/data/events",
+        "../data",
+        "data/../etc",
+        "./data",
+        "data//x",
+        "data/*/x",
+        "data/x?",
+        "data/[ab]",
+        "git",
+        "git/plain.git",
+        "etc",
+        "etc/gerrit.config",
+        "etc/secure.config",
+        "data",
+        "data/replication",
+        "data/replication/ref-updates",
+        "cache",
+        "logs/*",
+        ".ssh",
+        ".chart/backup-lock",
+        "All-Users.git",
+        "data/All-Users-cache",
+        "data/All-User*",
+        "A*",
+        "data/events-log-db*/",
+        "data/big/",
+    ],
+)
+@pytest.mark.parametrize("mode", ["seed", "backup"])
+def test_exclude_refuses_site_structure(
+    site: dict[str, Any], pattern: str, mode: str
+) -> None:
+    before = snapshot(site["root"])
+    export_fails(
+        site, f"--exclude {pattern}", mode, "--exclude", "tmpdata", "--exclude", pattern
+    )
+    assert not site["out"].exists()
+    assert snapshot(site["root"]) == before
+
+
+def test_exclude_refuses_a_wildcard_matching_all_users_state(
+    site: dict[str, Any],
+) -> None:
+    (site["root"] / "data" / "x-All-Users-state").mkdir(parents=True)
+    export_fails(site, "--exclude data/x*", "seed", "--exclude", "data/x*")
+    assert not site["out"].exists()
+
+
+@pytest.mark.parametrize("pattern", ["data/plugin", "data/pl*", "data/plugin/deep"])
+@pytest.mark.parametrize("kind", ["dir", "file"])
+def test_exclude_refuses_a_directory_holding_all_users_state(
+    site: dict[str, Any], pattern: str, kind: str
+) -> None:
+    state = site["root"] / "data" / "plugin" / "deep" / "All-Users-state"
+    state.parent.mkdir(parents=True)
+    if kind == "dir":
+        state.mkdir()
+    else:
+        state.write_text("state\n")
+    export_fails(site, f"--exclude {pattern}", "seed", "--exclude", pattern)
+    assert not site["out"].exists()
+
+
+def test_exclude_does_not_follow_links_out_of_the_excluded_path(
+    site: dict[str, Any], tmp_path: Path
+) -> None:
+    outside = tmp_path / "outside"
+    (outside / "All-Users-state").mkdir(parents=True)
+    plugin = site["root"] / "data" / "plugin"
+    plugin.mkdir(parents=True)
+    (plugin / "link").symlink_to(outside)
+    (site["root"] / "data" / "pl-link").symlink_to(outside)
+    for pattern in ["data/plugin", "data/pl-link", "data/pl*"]:
+        export_ok(site, "seed", "--exclude", pattern)
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads any directory")
+@pytest.mark.parametrize(
+    "pattern", ["data/plugin", "data/plugin/locked/x*", "data/plugin/locked/x"]
+)
+def test_exclude_refuses_a_directory_it_cannot_inspect(
+    site: dict[str, Any], pattern: str
+) -> None:
+    locked = site["root"] / "data" / "plugin" / "locked"
+    (locked / "x").mkdir(parents=True)
+    locked.chmod(0)
+    try:
+        export_fails(site, f"cannot inspect {locked}", "seed", "--exclude", pattern)
+        assert not site["out"].exists()
+    finally:
+        locked.chmod(0o700)
+
+
+@pytest.mark.parametrize("where", ["site", "parent"])
+def test_exclude_refuses_any_path_when_the_store_holds_the_site(
+    site: dict[str, Any], where: str
+) -> None:
+    store = site["root"] if where == "site" else site["root"].parent
+    export_fails(
+        site, "--exclude data/x", "seed", "--git", str(store), "--exclude", "data/x"
+    )
+    assert not site["out"].exists()
+
+
+def test_exclude_refuses_a_store_given_inside_the_site(
+    site: dict[str, Any],
+) -> None:
+    store = site["root"] / "srv" / "repos"
+    shutil.copytree(site["root"] / "git", store, symlinks=True)
+    export_fails(site, "--exclude srv", "seed", "--git", str(store), "--exclude", "srv")
+    assert not site["out"].exists()
+    link = site["root"] / "repos-link"
+    link.symlink_to(store)
+    export_fails(
+        site,
+        "--exclude srv/repos",
+        "seed",
+        "--git",
+        str(link),
+        "--exclude",
+        "srv/repos",
+    )
