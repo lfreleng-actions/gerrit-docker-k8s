@@ -5,15 +5,15 @@
 # Prepare the Gerrit site on the persistent volume. Every start
 # replaces etc/gerrit.config, jgit.config, notedb.config,
 # log4j.properties, replication.config, its/actions-its-jira.config,
-# healthcheck.config and events-log.config with the files the chart
-# rendered, refreshes the binaries and enabled plugins from the image,
-# and installs the hooks and gerrit-to-platform configuration. A site
-# without .chart/initialised also gets "gerrit init" on the rendered
-# configuration, then that marker and .chart/backup-lock, the backup
-# CronJob's sign that the site is ready. With GERRIT_SITE_PREPARE_ONLY
-# set it stops after the binaries, jars and configuration, for
-# site-import. The volume is mounted at GERRIT_SITE so the image's
-# /var/gerrit stays visible.
+# healthcheck.config, events-log.config and lfs.config with the files
+# the chart rendered, refreshes the binaries and enabled plugins from
+# the image, and installs the hooks and gerrit-to-platform
+# configuration. A site without .chart/initialised also gets "gerrit
+# init" on the rendered configuration, then that marker and
+# .chart/backup-lock, the backup CronJob's sign that the site is ready.
+# With GERRIT_SITE_PREPARE_ONLY set it stops after the binaries, jars
+# and configuration, for site-import. The volume is mounted at
+# GERRIT_SITE so the image's /var/gerrit stays visible.
 
 set -eu
 
@@ -137,6 +137,13 @@ install_config() {
     replace_file "$rendered/events-log.config" "$site/etc/events-log.config"
   else
     rm -f "$site/etc/events-log.config"
+  fi
+  # Rendered only with lfs enabled, and owned by the chart in the same
+  # way; render-config writes the keys to lfs.secure.config
+  if [ -e "$rendered/lfs.config" ]; then
+    replace_file "$rendered/lfs.config" "$site/etc/lfs.config"
+  else
+    rm -f "$site/etc/lfs.config"
   fi
 }
 

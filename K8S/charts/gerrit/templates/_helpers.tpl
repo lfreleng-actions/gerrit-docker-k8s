@@ -512,8 +512,8 @@ github.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQCj7ndNxQowgcQnjshcLrqPEiiphnt+V
 
 {{/* Plugin jars site-init copies from the catalogue: those
 pluginCatalogue.plugins names, plus replication, hooks, its-jira,
-healthcheck, events-log and metrics-reporter-prometheus when each is
-enabled.
+healthcheck, events-log, metrics-reporter-prometheus and lfs when each
+is enabled.
 its-base is compiled into its-jira.jar, so it is not a jar of its
 own. */}}
 {{- define "gerrit.plugins" -}}
@@ -535,6 +535,9 @@ own. */}}
 {{- end -}}
 {{- if include "gerrit.metricsEnabled" . -}}
 {{- $plugins = append $plugins "metrics-reporter-prometheus" -}}
+{{- end -}}
+{{- if include "gerrit.lfsEnabled" . -}}
+{{- $plugins = append $plugins "lfs" -}}
 {{- end -}}
 {{- join " " (uniq $plugins) -}}
 {{- end -}}
@@ -835,6 +838,75 @@ empty */}}
 {{- if include "gerrit.itsJiraEnabled" . -}}
 {{- $port := include "gerrit.urlPort" (include "gerrit.itsJiraUrl" .) | int -}}
 {{- if and $port (ne $port 443) }}{{ $port }}{{ end -}}
+{{- end -}}
+{{- end -}}
+
+{{/* The etc/lfs.config sections plugins.lfs renders */}}
+{{- define "gerrit.lfsSections" -}}storage s3 fs locks auth{{- end -}}
+
+{{/* "true" when plugins.lfs is enabled, else empty. Fails, enabled or
+not, on a key in an etc/lfs.config section that is not a git config
+variable name or holds a map or a list, on s3.accessKey or s3.secretKey
+in any case, which come from plugins.lfs.existingSecret, and on a
+storage.backend other than s3 or fs when enabled. */}}
+{{- define "gerrit.lfsEnabled" -}}
+{{- $plugin := default dict (index (default dict .Values.plugins) "lfs") -}}
+{{- range $section := splitList " " (include "gerrit.lfsSections" .) -}}
+{{- $values := index $plugin $section -}}
+{{- if not (or (kindIs "invalid" $values) (kindIs "map" $values)) -}}
+{{- fail (printf "plugins.lfs.%s is not supported: it must be a map of etc/lfs.config keys" $section) -}}
+{{- end -}}
+{{- range $key, $value := (default dict $values) -}}
+{{- if not (regexMatch "^[A-Za-z][A-Za-z0-9-]*$" $key) -}}
+{{- fail (printf "plugins.lfs.%s key %q is not supported: it must be a git config variable name, a letter followed by letters, digits and '-'" $section $key) -}}
+{{- end -}}
+{{- if and (eq $section "s3") (has (lower $key) (list "accesskey" "secretkey")) -}}
+{{- fail (printf "plugins.lfs.s3.%s is not supported: the chart writes it to etc/lfs.secure.config from plugins.lfs.existingSecret, and credentials never go in values" $key) -}}
+{{- end -}}
+{{- if or (kindIs "map" $value) (kindIs "slice" $value) -}}
+{{- fail (printf "plugins.lfs.%s.%s is not supported: it must be a single value" $section $key) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- if $plugin.enabled -}}
+{{- $backend := toString (dig "storage" "backend" "" $plugin) -}}
+{{- if not (has $backend (list "s3" "fs")) -}}
+{{- fail (printf "plugins.lfs.storage.backend must be s3 or fs, not %q" $backend) -}}
+{{- end -}}
+true
+{{- end -}}
+{{- end -}}
+
+{{/* "true" when plugins.lfs is enabled with the s3 backend, which
+needs the S3 keys from plugins.lfs.existingSecret, else empty */}}
+{{- define "gerrit.lfsS3" -}}
+{{- if and (include "gerrit.lfsEnabled" .) (eq (toString (dig "storage" "backend" "" .Values.plugins.lfs)) "s3") }}true{{ end -}}
+{{- end -}}
+
+{{/* Name of the Secret holding the LFS S3 keys */}}
+{{- define "gerrit.lfsSecretName" -}}
+{{- default (printf "%s-lfs" (include "gerrit.fullname" .)) .Values.plugins.lfs.existingSecret -}}
+{{- end -}}
+
+{{/* etc/lfs.config: one section per plugins.lfs section, keys left out
+when null or "" */}}
+{{- define "gerrit.lfsConfig" -}}
+{{- $plugin := .Values.plugins.lfs -}}
+{{- range $section := splitList " " (include "gerrit.lfsSections" .) }}
+{{- include "gerrit.configSection" (dict "name" $section "values" (index $plugin $section)) }}
+{{- end }}
+{{- end -}}
+
+{{/* TCP port of plugins.lfs.s3.hostname when the NetworkPolicy needs
+a rule for it: the s3 backend is enabled and the hostname names a port
+other than 443, which is always allowed; else empty */}}
+{{- define "gerrit.lfsEgressPort" -}}
+{{- if include "gerrit.lfsS3" . -}}
+{{- $host := toString (default "" (dig "s3" "hostname" "" .Values.plugins.lfs)) -}}
+{{- if regexMatch ":[0-9]+$" $host -}}
+{{- $port := regexReplaceAll "^.*:([0-9]+)$" $host "${1}" | int -}}
+{{- if and $port (ne $port 443) }}{{ $port }}{{ end -}}
+{{- end -}}
 {{- end -}}
 {{- end -}}
 

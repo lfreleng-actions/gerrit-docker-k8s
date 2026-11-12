@@ -99,4 +99,10 @@ spec:
         - protocol: TCP
           port: {{ int . }}
     {{- end }}
+    {{- with include "gerrit.lfsEgressPort" . }}
+    # The S3 endpoint of plugins.lfs.s3.hostname
+    - ports:
+        - protocol: TCP
+          port: {{ int . }}
+    {{- end }}
 {{- end }}

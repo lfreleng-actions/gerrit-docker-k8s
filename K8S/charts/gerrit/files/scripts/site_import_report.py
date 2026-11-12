@@ -8,8 +8,9 @@ the migration report reads it first: gerrit.config keys the image's
 release removed, and the H2 file an imported etc/events-log.config
 kept its store in, with the plugins.events-log.storeFile that keeps
 its history. It also names the paths an export's ``--exclude`` left
-out, which the imported site does not hold. ``site-import.py`` is the
-entry point.
+out, which the imported site does not hold, and where the chart takes
+the lfs plugin's S3 keys from, which no archive brings to the volume.
+``site-import.py`` is the entry point.
 """
 
 from __future__ import annotations
@@ -43,6 +44,7 @@ BUILTIN_EXCLUDED = (
     ".chart",
     ".ssh",
     ".config/gerrit_to_platform",
+    "etc/lfs.secure.config",
 )
 
 
@@ -58,6 +60,7 @@ def imported_config_report(site: Path, manifest: dict[str, Any]) -> list[str]:
         *removed_keys_report(config_names(site / "etc" / "gerrit.config")),
         *events_log_report(site, *roots),
         *excluded_report(manifest),
+        *lfs_report(site),
     ]
 
 
@@ -70,6 +73,34 @@ def excluded_report(manifest: dict[str, Any]) -> list[str]:
     if not extra:
         return []
     return [f"the export left out {', '.join(extra)} (--exclude); the site lacks them"]
+
+
+def lfs_report(site: Path) -> list[str]:
+    """Say where the chart takes the lfs plugin's S3 keys from.
+
+    No archive brings etc/lfs.secure.config to the volume: the export
+    tool leaves it out and unpack() skips it in an older archive. The
+    plugin reads the keys only for an S3 backend, which the imported
+    etc/lfs.config names as storage.backend or in an [s3] section, a
+    named one included; one that cannot be read may name it too.
+    """
+    path = site / "etc" / "lfs.config"
+    if not path.is_file():
+        return []
+    try:
+        s3 = config_get(path, "storage.backend").lower() == "s3" or any(
+            n.startswith("s3.") for n in config_names(path)
+        )
+    except SiteImportError:
+        s3 = True
+    if not s3:
+        return []
+    return [
+        "the imported etc/lfs.config uses the lfs plugin's S3 backend, whose keys "
+        "in etc/lfs.secure.config no archive brings in; with plugins.lfs.enabled "
+        "on the s3 backend the chart writes them from the accessKey and "
+        "secretKey of plugins.lfs.existingSecret"
+    ]
 
 
 def in_site_data(store: str, source_site: str) -> bool:

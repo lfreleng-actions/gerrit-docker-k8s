@@ -261,6 +261,38 @@ plugins:
     # Appended verbatim to etc/its/actions-its-jira.config, for rules
     # and actions the toggles above do not cover
     extraConfig: ""
+  # Git LFS through the lfs plugin. Enabling it adds lfs to the plugins
+  # site-init copies from the image catalogue, renders lfs.plugin = lfs
+  # in gerrit.config and etc/lfs.config from the sections below, and,
+  # with the s3 backend, writes the S3 keys from existingSecret to
+  # etc/lfs.secure.config. Projects opt in through [lfs "<namespace>"]
+  # in All-Projects' lfs.config. See "LFS" in the chart README.
+  lfs:
+    enabled: false
+    # Secret with keys accessKey and secretKey for the S3 backend. ""
+    # creates <fullname>-lfs with empty keys the operator fills in;
+    # under Argo CD name a pre-created Secret. Unused with backend fs.
+    existingSecret: ""
+    # etc/lfs.config; each key is the plugin's key of the same name,
+    # left out when null or "". A key that is not a git config variable
+    # name, or that holds a map or a list, fails the render, and so do
+    # s3.accessKey and s3.secretKey, in any case: the keys come from
+    # existingSecret, and credentials never go in values.
+    storage:
+      backend: s3                 # s3 or fs
+    s3:
+      hostname: null              # e.g. s3.amazonaws.com or minio:9000
+      region: null
+      bucket: null
+      storageClass: null
+      expirationSeconds: null
+      disableSslVerify: null
+    fs:
+      directory: null             # the plugin defaults to data/lfs
+    locks:
+      directory: null
+    auth:
+      sshExpirationSeconds: null
 
 # Scraping of plugins.metrics-reporter-prometheus
 metrics:

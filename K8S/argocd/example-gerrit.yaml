@@ -110,9 +110,10 @@ items:
             valueFiles:
               - $values/gerrit/values.yaml
             # Here, so the values file cannot leave them out. Add
-            # hooks.g2p.existingSecret, plugins.its-jira.existingSecret
-            # and metrics.existingSecret when the values enable the
-            # feature that reads each one.
+            # hooks.g2p.existingSecret, plugins.its-jira.existingSecret,
+            # plugins.lfs.existingSecret (on the s3 backend) and
+            # metrics.existingSecret when the values enable the feature
+            # that reads each one.
             valuesObject:
               secrets:
                 admin:

@@ -18,7 +18,8 @@ data:
 # etc/gerrit.config, jgit.config, notedb.config, log4j.properties and,
 # with replication enabled, replication.config, with its-jira enabled,
 # its/actions-its-jira.config, with healthcheck enabled,
-# healthcheck.config, and with events-log enabled, events-log.config;
+# healthcheck.config, with events-log enabled, events-log.config, and
+# with lfs enabled, lfs.config;
 # site-init copies each over the site's own at every start
 apiVersion: v1
 kind: ConfigMap
@@ -67,6 +68,14 @@ data:
   {{- if include "gerrit.eventsLogEnabled" . }}
   events-log.config: |
     {{- include "gerrit.eventsLogConfig" . | trim | nindent 4 }}
+  {{- end }}
+  {{- if include "gerrit.lfsEnabled" . }}
+  {{- with include "gerrit.lfsConfig" . | trim }}
+  lfs.config: |
+    {{- . | nindent 4 }}
+  {{- else }}
+  lfs.config: ""
+  {{- end }}
   {{- end }}
 {{- if .Values.replication.enabled }}
 ---
