@@ -23,9 +23,10 @@ values are never logged.
 
 ``site_import_common.py`` holds the settings and helpers,
 ``site_import_archive.py`` the fetch, checks and migration report,
+``site_import_report.py`` the report on the imported configuration,
 ``site_import_s3.py`` the s3 source's fetch with rclone, and
 ``site_import_unpack.py`` the unpacking and its link checks; the chart
-ships all five in its scripts ConfigMap.
+ships all six in its scripts ConfigMap.
 
 Configuration comes from the environment the chart sets:
 
@@ -82,7 +83,6 @@ from site_import_archive import (
     fetch,
     load_manifest,
     project_config_report,
-    removed_keys_report,
     repositories,
     secure_config_report,
 )
@@ -100,6 +100,7 @@ from site_import_common import (
     warn,
     write_json,
 )
+from site_import_report import imported_config_report
 from site_import_unpack import skip_regenerated, unpack
 
 NOTHING, FRESH, ADOPT, IMPORT = "nothing", "fresh", "adopt", "import"
@@ -232,7 +233,7 @@ class Imported:
     digest: str
     server_id: str
     secure_names: list[str]
-    config_names: list[str]
+    config_report: list[str]  # logged before site-init replaces the files
 
 
 def stage(settings: Settings) -> tuple[Imported, Path]:
@@ -270,7 +271,7 @@ def stage(settings: Settings) -> tuple[Imported, Path]:
         digest=digest,
         server_id=archive_id,
         secure_names=config_names(site / "etc" / "secure.config"),
-        config_names=config_names(config),
+        config_report=imported_config_report(site, manifest),
     )
     return imported, unpacked
 
@@ -324,6 +325,8 @@ def run_import(settings: Settings) -> dict[str, Any]:
     """Import the archive; return what the complete state records."""
     (settings.site / INITIALISED).unlink(missing_ok=True)
     imported, unpacked = stage(settings)
+    for line in imported.config_report:
+        warn(line)
     store = place(settings, unpacked)
     empty_dir(settings.scratch)
     prepare(settings)
@@ -354,13 +357,11 @@ def run_import(settings: Settings) -> dict[str, Any]:
         {"gerritVersion": gerrit_version(war), "initialisedAt": utc_now()},
     )
     all_projects = config_get(config, "gerrit.allProjects") or "All-Projects"
-    warnings = [
-        *project_config_report(store, all_projects),
-        *removed_keys_report(imported.config_names),
-        *secure_config_report(imported.secure_names, settings.secure_keys),
-    ]
-    for line in warnings:
+    projects = project_config_report(store, all_projects)
+    secure = secure_config_report(imported.secure_names, settings.secure_keys)
+    for line in (*projects, *secure):
         warn(line)
+    warnings = [*projects, *imported.config_report, *secure]
     return {"manifestSha256": imported.digest, "warnings": warnings}
 
 

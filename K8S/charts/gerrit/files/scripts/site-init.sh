@@ -4,11 +4,11 @@
 
 # Prepare the Gerrit site on the persistent volume. Every start
 # replaces etc/gerrit.config, jgit.config, notedb.config,
-# log4j.properties, replication.config, its/actions-its-jira.config and
-# healthcheck.config with the files the chart rendered, refreshes the
-# binaries and enabled plugins from the image, and installs the hooks
-# and gerrit-to-platform configuration. A site without
-# .chart/initialised also gets "gerrit init" on the rendered
+# log4j.properties, replication.config, its/actions-its-jira.config,
+# healthcheck.config and events-log.config with the files the chart
+# rendered, refreshes the binaries and enabled plugins from the image,
+# and installs the hooks and gerrit-to-platform configuration. A site
+# without .chart/initialised also gets "gerrit init" on the rendered
 # configuration, then that marker and .chart/backup-lock, the backup
 # CronJob's sign that the site is ready. With GERRIT_SITE_PREPARE_ONLY
 # set it stops after the binaries, jars and configuration, for
@@ -91,19 +91,27 @@ if [ -n "$want_id" ] && [ -n "$have_id" ] && [ "$want_id" != "$have_id" ]; then
   exit 1
 fi
 
+# Replace a chart-owned file without writing through what is there:
+# an imported site may hold a relative symlink in its place, such as
+# etc/events-log.config -> gerrit.config, which cp would follow
+replace_file() {
+  rm -f "$2"
+  cp "$1" "$2"
+}
+
 install_config() {
-  cp "$rendered/gerrit.config" "$config.new"
+  replace_file "$rendered/gerrit.config" "$config.new"
   if [ -z "$want_id" ] && [ -n "$have_id" ]; then
     git config -f "$config.new" gerrit.serverId "$have_id"
   fi
   mv -f "$config.new" "$config"
   for name in jgit.config notedb.config log4j.properties; do
-    cp "$rendered/$name" "$site/etc/$name"
+    replace_file "$rendered/$name" "$site/etc/$name"
   done
   # Rendered only with replication enabled; the chart owns the file,
   # so a disabled render removes the site's copy
   if [ -e "$rendered/replication.config" ]; then
-    cp "$rendered/replication.config" "$site/etc/replication.config"
+    replace_file "$rendered/replication.config" "$site/etc/replication.config"
   else
     rm -f "$site/etc/replication.config"
   fi
@@ -111,16 +119,24 @@ install_config() {
   # same way
   if [ -e "$rendered/actions-its-jira.config" ]; then
     mkdir -p "$site/etc/its"
-    cp "$rendered/actions-its-jira.config" "$site/etc/its/actions-its-jira.config"
+    replace_file "$rendered/actions-its-jira.config" "$site/etc/its/actions-its-jira.config"
   else
     rm -f "$site/etc/its/actions-its-jira.config"
   fi
   # Rendered only with healthcheck enabled, and owned by the chart in
   # the same way
   if [ -e "$rendered/healthcheck.config" ]; then
-    cp "$rendered/healthcheck.config" "$site/etc/healthcheck.config"
+    replace_file "$rendered/healthcheck.config" "$site/etc/healthcheck.config"
   else
     rm -f "$site/etc/healthcheck.config"
+  fi
+  # Rendered only with events-log enabled, and owned by the chart in
+  # the same way, so an imported copy never points the plugin at
+  # another site's store
+  if [ -e "$rendered/events-log.config" ]; then
+    replace_file "$rendered/events-log.config" "$site/etc/events-log.config"
+  else
+    rm -f "$site/etc/events-log.config"
   fi
 }
 
@@ -176,12 +192,103 @@ lock_dir="$site/.chart/backup-lock"
 (umask 077 && mkdir -p "$lock_dir" && touch "$lock_dir/lock")
 chmod 0700 "$lock_dir"
 
+# The render refuses a hooks.path in a directory Gerrit or the chart
+# keeps anything else in (gerrit.hooksPath in _helpers.tpl), but a
+# link on the site, such as an imported alias -> ., can still lead
+# there or out of the site, and the cleanup below would empty it.
+# Refuse a directory that resolves outside the site, under a hidden
+# or reserved top-level name, or under where a reserved name leads,
+# and one holding a link a reserved name resolves through, such as
+# hooks/store in data -> hooks/store -> ../store, which the cleanup
+# would remove.
+hooks_reserved="bin cache data db etc events-db git index lib logs plugins static tmp"
+
+# Succeeds when resolving the relative path $2 from the physical
+# directory $1, one component at a time, follows a link that lies
+# directly in the physical directory $3
+resolves_through() {
+  r_dir=$1
+  r_rest=$2
+  r_links=0
+  while [ -n "$r_rest" ]; do
+    r_comp=${r_rest%%/*}
+    case $r_rest in
+      */*) r_rest=${r_rest#*/} ;;
+      *) r_rest="" ;;
+    esac
+    case $r_comp in
+      "" | .) continue ;;
+      ..)
+        r_dir=${r_dir%/*}
+        r_dir=${r_dir:-/}
+        continue
+        ;;
+    esac
+    r_path=${r_dir%/}/$r_comp
+    if [ -L "$r_path" ]; then
+      if [ "$r_dir" = "$3" ]; then
+        return 0
+      fi
+      r_links=$((r_links + 1))
+      if [ "$r_links" -gt 40 ]; then
+        return 1
+      fi
+      r_target=$(readlink "$r_path")
+      case $r_target in
+        /*) r_dir=/ ;;
+      esac
+      r_rest=$r_target${r_rest:+/$r_rest}
+    elif [ -d "$r_path" ]; then
+      r_dir=$r_path
+    else
+      return 1
+    fi
+  done
+  return 1
+}
+
+check_hooks_dir() {
+  real_site=$(cd -P "$site" && pwd)
+  real=$(cd -P "$1" && pwd)
+  top=""
+  case $real in
+    "$real_site"/*)
+      top=${real#"$real_site"/}
+      top=${top%%/*}
+      ;;
+  esac
+  bad=""
+  case $top in
+    "" | .*) bad=1 ;;
+  esac
+  for name in $hooks_reserved; do
+    if [ "$top" = "$name" ]; then
+      bad=1
+    elif reserved=$(cd -P "$site/$name" 2>/dev/null && pwd); then
+      case $real/ in
+        "$reserved"/*) bad=1 ;;
+      esac
+    fi
+  done
+  if [ -n "$bad" ]; then
+    echo "ERROR: hooks.path $GERRIT_HOOKS_PATH leads to $real, not a hooks directory of the site's own" >&2
+    exit 1
+  fi
+  for name in $hooks_reserved; do
+    if resolves_through "$real_site" "$name" "$real"; then
+      echo "ERROR: hooks.path $GERRIT_HOOKS_PATH holds a link $name resolves through, which the hooks cleanup would remove" >&2
+      exit 1
+    fi
+  done
+}
+
 # The hooks directory holds exactly the hooks the values name: links
 # to the gerrit-to-platform entry points, then hooks.scripts. Hooks
 # disabled leave the directory alone, since the plugin is not loaded.
 install_hooks() {
   dir="$site/$GERRIT_HOOKS_PATH"
   mkdir -p "$dir"
+  check_hooks_dir "$dir"
   find "$dir" -mindepth 1 -maxdepth 1 ! -type d -exec rm -f {} +
   set -f
   # shellcheck disable=SC2086

@@ -60,7 +60,7 @@ so a display name header there gets its own message. */}}
 {{- $values := deepCopy (default dict (index $v .)) -}}
 {{- if has . (list "gerrit" "saml" "hooks" "its-jira" "plugin") }}{{ $values = dict }}{{ end -}}
 {{- if eq . "auth" }}{{ $values = omit $values "saml" "allowDevelopmentAccounts" }}{{ end -}}
-{{- if eq . "plugins" }}{{ $values = omit $values "its-jira" "healthcheck" "metrics-reporter-prometheus" }}{{ end -}}
+{{- if eq . "plugins" }}{{ $values = omit $values "its-jira" "healthcheck" "events-log" "metrics-reporter-prometheus" }}{{ end -}}
 {{- if eq . "gc" }}
 {{- $values = omit $values "cronJob" -}}
 {{- if dig "cronJob" "enabled" false $v.gc }}
