@@ -40,7 +40,7 @@ SCRIPT = Path(__file__).parent.parent / "scripts" / "gerrit-site-export.py"
 PROC_ENV = "GERRIT_SITE_EXPORT_PROC"
 GERRIT_VERSION = "3.10.1"
 EXCLUDED = ["cache", "index", "logs", "tmp", "bin", ".gerritcodereview/tmp", ".chart"]
-CREDENTIALS = [".ssh", ".config/gerrit_to_platform"]
+CREDENTIALS = [".ssh", ".config/gerrit_to_platform", "etc/lfs.secure.config"]
 EXCLUDED += CREDENTIALS
 ARCHIVES = ["git.tar.zst", "site.tar.zst"]
 GIT_ENV = {
@@ -421,7 +421,8 @@ def test_export_leaves_out_credentials(site: dict[str, Any], mode: str) -> None:
     """A site that is also the service account's home holds its credentials.
 
     The chart supplies them from Secrets, so no export, nor its archive,
-    carries the replication key or the gerrit-to-platform token.
+    carries the replication key, the gerrit-to-platform token or the lfs
+    plugin's S3 keys.
     """
     root = site["root"]
     (root / ".ssh").mkdir()
@@ -430,6 +431,9 @@ def test_export_leaves_out_credentials(site: dict[str, Any], mode: str) -> None:
     g2p.mkdir(parents=True)
     (g2p / "gerrit_to_platform.ini").write_text("[github.com]\ntoken = x\n")
     (root / ".config" / "other").write_text("kept\n")
+    lfs_keys = "[s3]\n\taccessKey = lfs-access-key\n\tsecretKey = lfs-secret-key\n"
+    (root / "etc" / "lfs.secure.config").write_text(lfs_keys)
+    (root / "etc" / "lfs.config").write_text("[storage]\n\tbackend = s3\n")
 
     manifest = export_ok(site, mode, "--pack")
     assert manifest["excluded"] == EXCLUDED
@@ -445,10 +449,15 @@ def test_export_leaves_out_credentials(site: dict[str, Any], mode: str) -> None:
     with tarfile.open(tar_path) as tar:
         names = tar.getnames()
     assert "site/.config/other" in names
+    assert "site/etc/lfs.config" in names
     for name in CREDENTIALS:
         assert not any(
             n == f"site/{name}" or n.startswith(f"site/{name}/") for n in names
         )
+    assert b"lfs-secret-key" not in tar_path.read_bytes()
+    assert not [
+        p for p in site["out"].rglob("*") if p.is_file() and b"lfs-" in p.read_bytes()
+    ]
 
 
 @pytest.mark.parametrize("mode", ["final", "backup"])
@@ -473,6 +482,8 @@ def test_export_leaves_out_credentials(site: dict[str, Any], mode: str) -> None:
             "../../etc/replication.config",
             "etc/replication.config",
         ),
+        ("etc/lfs.secure.config", "lfs-keys.config", "etc/lfs-keys.config"),
+        ("etc/lfs.secure.config", "../keys/lfs.config", "keys/lfs.config"),
     ],
 )
 def test_export_refuses_credentials_linked_into_the_site(
@@ -564,6 +575,19 @@ def test_export_refuses_a_hard_linked_credential(
 
     export_fails(site, "under another name", mode)
     assert not list(site["out"].rglob("id_ed25519"))
+
+
+@pytest.mark.parametrize("mode", ["final", "backup"])
+def test_export_refuses_a_hard_linked_lfs_secure_config(
+    site: dict[str, Any], mode: str
+) -> None:
+    """The lfs plugin's S3 keys would leave under the file's other name."""
+    root = site["root"]
+    (root / "etc" / "lfs-keys.config").write_text("[s3]\n\tsecretKey = credential\n")
+    os.link(root / "etc" / "lfs-keys.config", root / "etc" / "lfs.secure.config")
+
+    export_fails(site, "under another name", mode)
+    assert not list(site["out"].rglob("lfs-keys.config"))
 
 
 @pytest.mark.parametrize("mode", ["final", "backup"])

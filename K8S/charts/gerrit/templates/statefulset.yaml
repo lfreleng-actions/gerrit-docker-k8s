@@ -248,6 +248,19 @@ spec:
                   name: {{ include "gerrit.itsJiraSecretName" . }}
                   key: password
             {{- end }}
+            {{- if include "gerrit.lfsS3" . }}
+            # Written to etc/lfs.secure.config
+            - name: GERRIT_LFS_S3_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "gerrit.lfsSecretName" . }}
+                  key: accessKey
+            - name: GERRIT_LFS_S3_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "gerrit.lfsSecretName" . }}
+                  key: secretKey
+            {{- end }}
             {{- if include "gerrit.metricsEnabled" . }}
             - name: GERRIT_METRICS_BEARER_TOKEN
               valueFrom:

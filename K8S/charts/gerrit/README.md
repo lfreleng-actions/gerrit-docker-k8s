@@ -22,7 +22,7 @@ volume holds state only.
 | `Ingress` `<fullname>`            | With `ingress.enabled`; see [Exposing Gerrit](#exposing-gerrit) |
 | `IngressRoute` `<fullname>`, `Middleware`s, `Certificate` `<fullname>-tls` | Instead of the `Ingress`, with `ingress.traefik.enabled` |
 | `ConfigMap` `<fullname>-scripts`  | `files/scripts/*.sh` and the `site-import` Python modules      |
-| `ConfigMap` `<fullname>-config`   | Rendered `gerrit.config`, `jgit.config` and `notedb.config`, `replication.config` with `replication.enabled`, `healthcheck.config` with `plugins.healthcheck.enabled`, and `events-log.config` with `plugins.events-log.enabled` |
+| `ConfigMap` `<fullname>-config`   | Rendered `gerrit.config`, `jgit.config` and `notedb.config`, `replication.config` with `replication.enabled`, `healthcheck.config` with `plugins.healthcheck.enabled`, `events-log.config` with `plugins.events-log.enabled`, and `lfs.config` with `plugins.lfs.enabled` |
 | `ConfigMap` `<fullname>-hooks`    | `hooks.scripts`; with `hooks.enabled`, see [Hooks](#hooks)     |
 | `ConfigMap` `<fullname>-known-hosts` | SSH host keys of the replication remotes; with `replication.enabled`, see [Replication](#replication) |
 | `Secret` `<fullname>-admin`       | Admin credential placeholder; not consumed yet                 |
@@ -30,13 +30,14 @@ volume holds state only.
 | `Secret` `<fullname>-saml`        | SAML keystore, its passwords and the IdP metadata, created empty; with `auth.saml.enabled` and no `auth.saml.existingSecret`, see [SAML](#saml) |
 | `Secret` `<fullname>-g2p`         | `gerrit_to_platform.ini`, created empty; with `hooks.g2p.enabled` and no `hooks.g2p.existingSecret`, see [Hooks](#hooks) |
 | `Secret` `<fullname>-its-jira`    | Jira `username` and `password`, created empty; with `plugins.its-jira.enabled` and no `plugins.its-jira.existingSecret`, see [Issue tracker](#issue-tracker) |
+| `Secret` `<fullname>-lfs`         | S3 `accessKey` and `secretKey`, created empty; with `plugins.lfs.enabled` on the `s3` backend and no `plugins.lfs.existingSecret`, see [LFS](#lfs) |
 | `Secret` `<fullname>-metrics`     | Metrics bearer `token`, generated; with `plugins.metrics-reporter-prometheus.enabled` and no `metrics.existingSecret`, see [Metrics](#metrics) |
 | `ServiceMonitor` `<fullname>`     | With `metrics.serviceMonitor.enabled` where the cluster serves `monitoring.coreos.com/v1`; see [Metrics](#metrics) |
 | `CronJob` `<fullname>-git-gc`, `NetworkPolicy` `<fullname>-git-gc-deny` | With `gc.cronJob.enabled`; see [Garbage collection](#garbage-collection) |
 | `CronJob` and `NetworkPolicy` `<fullname>-backup` | With `backup.enabled`; see [Backups](#backups) |
 | `CronJob` `<fullname>-log-cleanup`, `NetworkPolicy` `<fullname>-log-cleanup-deny` | With `logs.retentionDays` above `0`; see [Logs](#logs) |
 | `Deployment`, `ConfigMap` and `NetworkPolicy` `<fullname>-toolbox` | With `toolbox.enabled`, at zero replicas; see [Admin toolbox](#admin-toolbox) |
-| `NetworkPolicy` (two)             | Default deny; allow ingress to 8080 (from `networkPolicy.ingressNamespaceSelector` when set, and then also from `networkPolicy.metricsNamespaceSelector` with the metrics plugin) and 29418, egress to DNS, HTTPS and, with mail configured, the SMTP relay's port, with replication enabled, each remote's port, with `auth.saml.metadataUrl`, its port, with `plugins.its-jira.enabled`, the Jira URL's port, and with an `https` `siteImport.source`, its URL's port and `siteImport.source.egressPorts` |
+| `NetworkPolicy` (two)             | Default deny; allow ingress to 8080 (from `networkPolicy.ingressNamespaceSelector` when set, and then also from `networkPolicy.metricsNamespaceSelector` with the metrics plugin) and 29418, egress to DNS, HTTPS and, with mail configured, the SMTP relay's port, with replication enabled, each remote's port, with `auth.saml.metadataUrl`, its port, with `plugins.its-jira.enabled`, the Jira URL's port, with `plugins.lfs.enabled` on the `s3` backend, the port of `plugins.lfs.s3.hostname`, and with an `https` `siteImport.source`, its URL's port and `siteImport.source.egressPorts` |
 
 The Secrets carry `helm.sh/resource-policy: keep` and
 `argocd.argoproj.io/sync-options: Prune=false,Delete=false`, so they
@@ -68,6 +69,7 @@ secure-config Secret.
 | `auth.saml.existingSecret`            | `idp-metadata.xml`        | With `metadataFromSecret` | Mounted read-only at `etc/saml-idp-metadata.xml` |
 | `hooks.g2p.existingSecret`            | `gerrit_to_platform.ini`  | With g2p | `$XDG_CONFIG_HOME/gerrit_to_platform/` on the site with mode `0600` |
 | `plugins.its-jira.existingSecret`     | `username`, `password`    | With its-jira | `its-jira.username` and `its-jira.password` in `secure.config` |
+| `plugins.lfs.existingSecret`          | `accessKey`, `secretKey`  | With lfs on `s3` | `s3.accessKey` and `s3.secretKey` in `etc/lfs.secure.config` |
 | `metrics.existingSecret`              | `token`                   | With the metrics plugin | `plugin.metrics-reporter-prometheus.prometheusBearerToken` in `secure.config`, and the `ServiceMonitor`'s bearer token |
 | `toolbox.existingSecret`              | `ssh-privatekey`          | No       | Mounted in the admin toolbox at `/etc/gerrit-toolbox/ssh/id` with mode `0400` |
 
@@ -93,7 +95,8 @@ empty or absent optional key leaves its entry out of `secure.config`.
    `notedb.config`, `log4j.properties` and `replication.config` over the site's own, and with
    `plugins.its-jira.enabled`, `etc/its/actions-its-jira.config`, and
    with `plugins.healthcheck.enabled`, `etc/healthcheck.config`, and
-   with `plugins.events-log.enabled`, `etc/events-log.config`. With
+   with `plugins.events-log.enabled`, `etc/events-log.config`, and
+   with `plugins.lfs.enabled`, `etc/lfs.config`. With
    replication disabled it removes the site's `etc/replication.config`. On a site
    without the `.chart/initialised` marker it then runs
    `gerrit init --batch --no-auto-start` on that configuration,
@@ -108,7 +111,9 @@ empty or absent optional key leaves its entry out of `secure.config`.
    `hooks.g2p.enabled` installs `gerrit_to_platform.ini`; see
    [Hooks](#hooks).
 4. `render-config` rewrites `etc/secure.config` from the Secrets,
-   creating it with mode `0600` before writing any value.
+   creating it with mode `0600` before writing any value, and with
+   `plugins.lfs.enabled` on the `s3` backend writes
+   `etc/lfs.secure.config` the same way; otherwise it removes that file.
 5. `gerrit` runs `bin/gerrit.sh run`. A startup probe allows ten
    minutes for `<urlPrefix>/config/server/version` to answer, since
    the daemon loads its caches and indexes before it serves. The
@@ -254,6 +259,10 @@ Argo CD; `K8S/docs/DESIGN.md` section 6 explains its settings.
 | `plugins.its-jira.association`           | `OPTIONAL`                       | `MANDATORY`, `SUGGESTED` or `OPTIONAL`                     |
 | `plugins.its-jira.commentOn*`            | `false`                          | One comment rule each; see [Issue tracker](#issue-tracker) |
 | `plugins.its-jira.extraConfig`           | `""`                             | Appended verbatim to `etc/its/actions-its-jira.config`     |
+| `plugins.lfs.enabled`                    | `false`                          | Adds `lfs`; see [LFS](#lfs)                                |
+| `plugins.lfs.existingSecret`             | `""`                             | Secret with `accessKey` and `secretKey`; `""` creates `<fullname>-lfs` |
+| `plugins.lfs.storage.backend`            | `s3`                             | `s3` or `fs`                                               |
+| `plugins.lfs.s3`, `.fs`, `.locks`, `.auth` | keys unset                     | Sections of `etc/lfs.config`; no `accessKey` or `secretKey` |
 | `plugins.healthcheck.enabled`            | `true`                           | Adds `healthcheck` and moves the readiness probe to it; see [Health checks](#health-checks) |
 | `plugins.healthcheck.config`             | `auth` and `querychanges` off    | `etc/healthcheck.config`; a map per check                  |
 | `plugins.events-log.enabled`             | `false`                          | Adds `events-log`; see [Events log](#events-log)           |
@@ -537,11 +546,13 @@ names a deleted one never starts, even after a complete import.
    plugin or library built for the source release can stop the new
    one starting. It also drops any `*.lock` file under `etc/`, a stale
    lock that would fail `site-init`'s `git config`, and logs each. It
-   leaves out `.ssh/` and `.config/gerrit_to_platform/`, logging once
-   for each: the chart supplies the replication key and the
-   gerrit-to-platform token they hold from Secrets
-   (`replication.sshKeySecret`, `hooks.g2p.existingSecret`), so an
-   imported copy is never needed. It refuses links that resolve
+   leaves out `.ssh/`, `.config/gerrit_to_platform/` and
+   `etc/lfs.secure.config`, logging once for each: the chart supplies
+   the replication key, the gerrit-to-platform token and the LFS S3
+   keys they hold from Secrets (`replication.sshKeySecret`,
+   `hooks.g2p.existingSecret`, `plugins.lfs.existingSecret`), so an
+   imported copy is never needed. It refuses any link at
+   `etc/lfs.secure.config` or on its path, and it refuses links that resolve
    outside the archive's `site/` or `git/` tree, or into `.chart/`,
    `index/`, `cache/`, `bin/`, `plugins/`, `lib/`, `.ssh/` or
    `.config/gerrit_to_platform/`, and a link at `.config` itself or
@@ -594,8 +605,11 @@ the chart does not write and so drops, a reminder that a new
 links, and the H2 file an imported `etc/events-log.config` keeps its
 events in, with the `plugins.events-log.storeFile` that keeps that
 history when its `storeUrl` names the exported site's own `data/` and
-the archive holds that database there;
-see [Events log](#events-log). Read it with `kubectl logs <fullname>-0 -c site-import`.
+the archive holds that database there,
+see [Events log](#events-log), and, when the imported
+`etc/lfs.config` uses an S3 backend, that the chart writes the lfs
+plugin's S3 keys, which no archive brings in, from
+`plugins.lfs.existingSecret`. Read it with `kubectl logs <fullname>-0 -c site-import`.
 The removed `gerrit.config` keys and the events-log store are logged
 as soon as the archive is checked, before `site-init` replaces the
 imported files, so a failed init or reindex still shows them.
@@ -1257,6 +1271,66 @@ plugins:
 
 Disabling `hooks` or `its-jira` removes the jars at the next start but
 leaves any data the plugins wrote under the site's `data/`.
+
+## LFS
+
+`plugins.lfs.enabled` adds `lfs` to the jars `site-init` copies, so
+the image must hold `lfs.jar` under `<pluginCatalogue.path>/plugins/`;
+the published image's catalogue holds it. The chart renders
+`[lfs] plugin = lfs` in `gerrit.config`, which hands Git LFS requests
+to the plugin, and `etc/lfs.config` from the `storage`, `s3`, `fs`,
+`locks` and `auth` sections of `plugins.lfs`, each key under the
+plugin's own name, leaving out a key set to `null` or `""`; see the
+plugin's configuration. `site-init` replaces the file at each start
+and removes it when the plugin is disabled.
+
+With `storage.backend: s3`, `render-config` writes the `accessKey` and
+`secretKey` of `plugins.lfs.existingSecret` to `s3.accessKey` and
+`s3.secretKey` in `etc/lfs.secure.config`, mode `0600`, at each start,
+leaving out an empty key. It stages the file under `.chart/`, which
+exports and imports leave out, and replaces a link at the path rather
+than writing through it. The generated `<fullname>-lfs` Secret has
+both keys empty; fill them in the cluster, or under Argo CD name a
+pre-created Secret. With `backend: fs` the plugin keeps objects on the
+site volume, under `data/lfs` unless `fs.directory` names another
+place, needs no Secret, and `render-config` removes any
+`etc/lfs.secure.config`, as it does with the plugin disabled.
+
+`s3.accessKey` or `s3.secretKey` in values, in any letter case, fails
+the render whether or not the plugin is enabled: credentials never go
+in values. So does a backend other than `s3` or `fs` with the plugin
+enabled, a key that is not a git config variable name, and a key
+holding a map or a list. With an `s3.hostname` that names a port other
+than 443, such as a MinIO endpoint at `minio.example.org:9000`, the
+`NetworkPolicy` adds an egress rule for it.
+
+The plugin serves only the projects whose namespace enables it, in the
+`lfs.config` file on `All-Projects`' `refs/meta/config` branch, which
+the chart leaves to the site's administrators:
+
+```ini
+[lfs "team/*"]
+  enabled = true
+  maxObjectSize = 500m
+```
+
+```yaml
+plugins:
+  lfs:
+    enabled: true
+    existingSecret: gerrit-lfs
+    storage:
+      backend: s3
+    s3:
+      region: eu-west-1
+      bucket: gerrit-lfs
+```
+
+The export tool leaves out `etc/lfs.secure.config`, and `site-import`
+skips it in an older archive. When the imported `etc/lfs.config` uses
+an S3 backend, in `storage.backend` or an `[s3]` section, the
+migration report names `plugins.lfs.existingSecret` as the keys'
+source. See [Site import](#site-import).
 
 ## Observability
 

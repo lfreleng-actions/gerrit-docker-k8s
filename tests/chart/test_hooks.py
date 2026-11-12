@@ -12,7 +12,7 @@ gerrit-to-platform Secret and mounts, and the render failures for bad
 values. Then runs ``site-init.sh`` against a scratch site, with stand-ins
 for the image's files, to check the hooks directory and the INI it
 installs, and that it installs ``etc/log4j.properties``, installs
-and removes ``etc/events-log.config``, replaces an imported symlink
+and removes ``etc/events-log.config`` and ``etc/lfs.config``, replaces an imported symlink
 in place of a chart-owned file rather than write through it, and
 refuses a hooks directory that a link on the site leads into a
 reserved directory or out of the site, or that holds a link a
@@ -405,7 +405,24 @@ def test_site_init_owns_events_log_config(image: dict[str, str]) -> None:
     assert not installed.exists()
 
 
-@pytest.mark.parametrize("name", ["events-log.config", "healthcheck.config"])
+def test_site_init_owns_lfs_config(image: dict[str, str]) -> None:
+    site = Path(image["GERRIT_SITE"])
+    installed = site / "etc" / "lfs.config"
+    installed.write_text("[storage]\n\tbackend = fs\n", encoding="utf-8")
+    rendered = Path(image["GERRIT_RENDERED_CONFIG"]) / "lfs.config"
+    rendered.write_text("[storage]\n\tbackend = s3\n", encoding="utf-8")
+    proc = run_site_init(image)
+    assert proc.returncode == 0, proc.stderr
+    assert installed.read_text(encoding="utf-8") == rendered.read_text(encoding="utf-8")
+    rendered.unlink()
+    proc = run_site_init(image)
+    assert proc.returncode == 0, proc.stderr
+    assert not installed.exists()
+
+
+@pytest.mark.parametrize(
+    "name", ["events-log.config", "healthcheck.config", "lfs.config"]
+)
 def test_site_init_replaces_an_imported_symlink(
     image: dict[str, str], name: str
 ) -> None:

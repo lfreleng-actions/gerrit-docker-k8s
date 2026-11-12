@@ -56,11 +56,16 @@ so a display name header there gets its own message. */}}
 {{- $_ := set $derived "plugin" (dict "its-jira" (dict "association" $association)) -}}
 {{- $sections = concat $sections (list "its-jira" "plugin") -}}
 {{- end }}
+{{- if include "gerrit.lfsEnabled" . }}
+{{- /* Gerrit serves the LFS protocol through the plugin [lfs] names */}}
+{{- $_ := set $derived "lfs" (dict "plugin" "lfs") -}}
+{{- $sections = append $sections "lfs" -}}
+{{- end }}
 {{- range $sections }}
 {{- $values := deepCopy (default dict (index $v .)) -}}
-{{- if has . (list "gerrit" "saml" "hooks" "its-jira" "plugin") }}{{ $values = dict }}{{ end -}}
+{{- if has . (list "gerrit" "saml" "hooks" "its-jira" "plugin" "lfs") }}{{ $values = dict }}{{ end -}}
 {{- if eq . "auth" }}{{ $values = omit $values "saml" "allowDevelopmentAccounts" }}{{ end -}}
-{{- if eq . "plugins" }}{{ $values = omit $values "its-jira" "healthcheck" "events-log" "metrics-reporter-prometheus" }}{{ end -}}
+{{- if eq . "plugins" }}{{ $values = omit $values "its-jira" "healthcheck" "events-log" "metrics-reporter-prometheus" "lfs" }}{{ end -}}
 {{- if eq . "gc" }}
 {{- $values = omit $values "cronJob" -}}
 {{- if dig "cronJob" "enabled" false $v.gc }}

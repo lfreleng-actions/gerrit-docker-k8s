@@ -20,10 +20,10 @@ Copy a Gerrit site to <out>/site and <out>/git with manifest.json; stdlib, Pytho
   --dry-run           Print the commands without writing anything.
 
 Left out of <out>/site, any type: cache, index, logs, tmp, bin, .chart, *.lock files,
-.gerritcodereview/tmp, credentials (.ssh, .config/gerrit_to_platform) and repositories
-as resolved. Refused: store and output symlinks, and a store, hard link or link that may
-leave (absolute, '..') copying credentials. Old manifest (uploaded too), archives first,
-manifest last: manifest.json marks a complete export; errors exit non-zero. -h, --help.
+.gerritcodereview/tmp, repos as resolved, credentials (.ssh, etc/lfs.secure.config,
+.config/gerrit_to_platform). Refused: store, output symlinks; a store, hard link or link
+that may leave (absolute, '..') copying credentials. Old manifest (uploaded too), then
+archives, manifest last: it marks a complete export; errors exit non-zero. -h, --help.
 """
 
 from __future__ import annotations
@@ -45,13 +45,13 @@ from subprocess import PIPE
 from types import SimpleNamespace
 from typing import Any, Iterator, NoReturn
 
-PROG, CREDENTIALS = "gerrit-site-export.py", [".ssh", ".config/gerrit_to_platform"]
+CREDENTIALS = [".ssh", ".config/gerrit_to_platform", "etc/lfs.secure.config"]
 EXCLUDED = ["cache", "index", "logs", "tmp", "bin", ".gerritcodereview/tmp", ".chart"]
 EXCLUDED += CREDENTIALS  # Last; the chart supplies them from Secrets.
 G2P = (f"{CREDENTIALS[1]}/replication.config", "/var/gerrit/etc/replication.config")
 VALUES = ("--site", "--git", "--out", "--encrypt", "--upload", "--exclude")
 FLAGS = ("--i-stopped-writes", "--pack", "--include-cache", "--dry-run")
-HINT = "stop writes and pass --i-stopped-writes"
+PROG, HINT = "gerrit-site-export.py", "stop writes and pass --i-stopped-writes"
 ELSEWHERE = "another filesystem namespace, so its site cannot be compared"
 NEW_FILE = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
 ZSTD, S3_COPY = ["zstd", "-q", "-T0", "-c"], ["aws", "s3", "cp", "--sse", "aws:kms"]
@@ -250,7 +250,7 @@ def refuse_running(site: str) -> None:
 def copy(opts: Any, site: str, git_dir: str, git_given: str, out: Path) -> None:
     for cred, top in ((c, os.path.join(site, c)) for c in CREDENTIALS):  # As import
         bad = [str(p) for p in (Path(top), *Path(top).parents) if p.is_symlink()]
-        for f in tree_paths(top) if not bad and os.path.isdir(top) else ():
+        for f in () if bad else tree_paths(top) if os.path.isdir(top) else [top]:
             to = os.readlink(f) if os.path.islink(f) else ""
             safe = cred == ".ssh" and to[:1] != "/" and ".." not in to.split("/")
             safe = not to or safe or (f[len(site) + 1 :], to) == G2P

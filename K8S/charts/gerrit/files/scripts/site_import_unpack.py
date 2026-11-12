@@ -16,9 +16,11 @@ from pathlib import Path
 from site_import_common import SiteImportError, config_get, say
 
 # Outbound credentials a site that is also the service account's home
-# holds; the chart supplies them from Secrets (replication.sshKeySecret,
-# hooks.g2p.existingSecret), so an imported copy is never needed
-CREDENTIALS = ("site/.ssh", "site/.config/gerrit_to_platform")
+# holds, and the lfs plugin's S3 keys; the chart supplies them from
+# Secrets (replication.sshKeySecret, hooks.g2p.existingSecret,
+# plugins.lfs.existingSecret), so an imported copy is never needed
+LFS_SECURE = "site/etc/lfs.secure.config"
+CREDENTIALS = ("site/.ssh", "site/.config/gerrit_to_platform", LFS_SECURE)
 # Never taken from an archive: the state belongs to this run, the
 # import rebuilds the index and caches, the chart's image supplies
 # the binaries, plugins and libraries, as ones built for the source
@@ -57,7 +59,13 @@ def note_credentials(name: str, left: set[str]) -> None:
     for path in CREDENTIALS:
         if skipped_by(name, path) and path not in left:
             left.add(path)
-            say(f"skipping {path}/, credentials the chart supplies")
+            if path == LFS_SECURE:
+                say(
+                    f"skipping {path}, LFS S3 keys the chart supplies from "
+                    "plugins.lfs.existingSecret"
+                )
+            else:
+                say(f"skipping {path}/, credentials the chart supplies")
 
 
 def on_skipped_path(rel: str) -> bool:
@@ -78,15 +86,18 @@ def credential_link(member: tarfile.TarInfo, name: str) -> str:
     G2P_REPLICATION_LINK alone: any other link there could reach it. In
     .ssh/, which a projected Secret fills with relative links, it is a
     symlink below its top whose target is relative and holds no "..",
-    and a hard link to a member of .ssh/ named without "..". Any other
-    link is refused.
+    and a hard link to a member of .ssh/ named without "..". The file
+    LFS_SECURE holds no link the chart writes, so any link there is
+    refused, as is any other link.
     """
     root = next((c for c in CREDENTIALS if skipped_by(name, c)), None)
     if root is None or not (member.issym() or member.islnk()):
         return ""
     target = member.linkname
     plain = bool(target) and ".." not in target.split("/")
-    if root == CREDENTIALS[1]:
+    if root == LFS_SECURE:
+        safe = False
+    elif root == CREDENTIALS[1]:
         safe = member.issym() and (name, target) == G2P_REPLICATION_LINK
     elif member.islnk():
         safe = plain and skipped_by(os.path.normpath(target), root)

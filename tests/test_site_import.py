@@ -984,6 +984,51 @@ def test_unpack_refuses_a_credential_link_to_the_rest_of_the_archive(
 
 
 @needs_tools
+@pytest.mark.parametrize("link_first", [True, False])
+@pytest.mark.parametrize(
+    ("member", "secret"),
+    [
+        (
+            link("site/etc/lfs.secure.config", "lfs-keys.config"),
+            "site/etc/lfs-keys.config",
+        ),
+        (link("site/etc/lfs.secure.config", "../keys/lfs"), "site/keys/lfs"),
+        (link("site/etc/lfs.secure.config", "/var/gerrit/keys/lfs"), "site/keys/lfs"),
+        (
+            link("site/etc/lfs.secure.config", "site/etc/lfs-keys.config", True),
+            "site/etc/lfs-keys.config",
+        ),
+    ],
+)
+def test_unpack_refuses_a_link_at_lfs_secure_config(
+    tmp_path: Path, link_first: bool, member: tarfile.TarInfo, secret: str
+) -> None:
+    """The keys would come in under the name the link points at."""
+    module = load()
+    members = [directory("site/etc"), (member, b""), regular(secret, b"credential")]
+    if not link_first:
+        members[1:] = members[:0:-1]
+    archive = tar_zst_members(tmp_path / "site.tar.zst", members)
+    with pytest.raises(module.SiteImportError, match="could carry credentials in"):
+        module.unpack(archive, tmp_path / "out")
+
+
+@needs_tools
+@pytest.mark.parametrize("link_first", [True, False])
+def test_unpack_refuses_a_link_on_the_lfs_secure_config_path(
+    tmp_path: Path, link_first: bool
+) -> None:
+    """site/etc -> conf would carry conf/lfs.secure.config in as conf/."""
+    module = load()
+    members = [directory("site/conf"), regular("site/conf/lfs.secure.config")]
+    alias = (link("site/etc", "conf"), b"")
+    members = [alias, *members] if link_first else [*members, alias]
+    archive = tar_zst_members(tmp_path / "site.tar.zst", members)
+    with pytest.raises(module.SiteImportError, match="on the path of a skipped one"):
+        module.unpack(archive, tmp_path / "out")
+
+
+@needs_tools
 def test_unpack_refuses_a_credential_hard_link_to_the_rest_of_the_archive(
     tmp_path: Path,
 ) -> None:
@@ -1371,6 +1416,72 @@ def test_imported_config_report_names_operator_exclusions(tmp_path: Path) -> Non
     ]
 
 
+LFS_KEYS_NOTE = (
+    "the chart writes them from the accessKey and secretKey of "
+    "plugins.lfs.existingSecret"
+)
+LFS_S3_CONFIG = b"[storage]\n\tbackend = s3\n[s3]\n\tbucket = gerrit-lfs\n"
+
+
+@pytest.mark.parametrize(
+    ("lfs_config", "advised"),
+    [
+        ("[storage]\n\tbackend = s3\n", True),
+        ("[storage]\n\tbackend = S3\n", True),
+        # A named S3 backend, which a project's lfs.config selects
+        ('[storage]\n\tbackend = fs\n[s3 "team"]\n\tbucket = b\n', True),
+        ("[s3]\n\tregion = eu-west-1\n", True),
+        ("[storage]\n\tbackend = fs\n", False),
+        ("[auth]\n\tsshExpirationSeconds = 10\n", False),
+        # Unreadable: it may name one
+        ("[storage\n", True),
+        (None, False),
+    ],
+)
+def test_imported_config_report_names_the_lfs_secret(
+    tmp_path: Path, lfs_config: str | None, advised: bool
+) -> None:
+    """The report says where the S3 keys come from, never what they are."""
+    load()
+    module = sys.modules["site_import_report"]
+    (tmp_path / "etc").mkdir()
+    (tmp_path / "etc" / "gerrit.config").write_text("[lfs]\n\tplugin = lfs\n")
+    if lfs_config is not None:
+        (tmp_path / "etc" / "lfs.config").write_text(lfs_config)
+    warnings = module.imported_config_report(tmp_path, {})
+    assert any(LFS_KEYS_NOTE in w for w in warnings) is advised
+    assert len(warnings) == int(advised)
+
+
+@needs_tools
+def test_import_of_a_current_export_names_the_lfs_secret(
+    pod: dict[str, Any],
+    source: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A current export leaves the keys out; the saved report names their Secret."""
+    (source / "etc" / "lfs.config").write_bytes(LFS_S3_CONFIG)
+    (source / "etc" / "lfs.secure.config").write_text(
+        "[s3]\n\tsecretKey = lfs secret key\n"
+    )
+    export = export_site(source, tmp_path / "export")
+    manifest = json.loads((export / "manifest.json").read_text())
+    assert "etc/lfs.secure.config" in manifest["excluded"]
+
+    site: Path = pod["site"]
+    _, code = run_main(import_env(pod, export), monkeypatch)
+    logged = capsys.readouterr()
+    assert code == 0, logged.err
+    recorded = state(site)
+    assert recorded["state"] == "complete"
+    assert sum(LFS_KEYS_NOTE in w for w in recorded["warnings"]) == 1
+    assert LFS_KEYS_NOTE in logged.out + logged.err
+    assert "lfs secret key" not in logged.out + logged.err
+    assert "lfs secret key" not in json.dumps(recorded)
+
+
 def test_gerrit_version_reads_the_release_war(tmp_path: Path) -> None:
     module = load()
     nested = io.BytesIO()
@@ -1584,6 +1695,7 @@ CREDENTIAL_FILES = {
     "site/.ssh/id_ed25519": b"replication key",
     "site/.ssh/known_hosts": b"github.com ssh-ed25519 AAAA",
     "site/.config/gerrit_to_platform/gerrit_to_platform.ini": b"[github.com]\n",
+    "site/etc/lfs.secure.config": b"[s3]\n\tsecretKey = lfs secret key\n",
 }
 
 
@@ -1597,7 +1709,8 @@ def test_import_leaves_out_credentials(
     """An archive from an older export may hold the source's credentials.
 
     The chart supplies them from Secrets, so the import writes neither
-    directory to the volume and says once for each that it left it out.
+    directory nor the lfs plugin's S3 keys to the volume and says once
+    for each that it left it out.
     """
     site_tar = export / "site.tar"
     subprocess.run(
@@ -1605,7 +1718,9 @@ def test_import_leaves_out_credentials(
         check=True,
     )
     with tarfile.open(site_tar, "a") as tar:
-        for name, data in CREDENTIAL_FILES.items():
+        # An S3 backend's config, which an archive carries with its keys
+        lfs = {"site/etc/lfs.config": LFS_S3_CONFIG}
+        for name, data in {**CREDENTIAL_FILES, **lfs}.items():
             info = tarfile.TarInfo(name)
             info.size = len(data)
             tar.addfile(info, io.BytesIO(data))
@@ -1625,7 +1740,19 @@ def test_import_leaves_out_credentials(
     assert not (site / ".config" / "gerrit_to_platform").exists()
     for path in ("site/.ssh", "site/.config/gerrit_to_platform"):
         assert logged.out.count(f"skipping {path}/, credentials") == 1
+    assert not os.path.lexists(site / "etc" / "lfs.secure.config")
+    assert (site / "etc" / "gerrit.config").is_file()
+    lfs_note = (
+        "skipping site/etc/lfs.secure.config, LFS S3 keys the chart supplies "
+        "from plugins.lfs.existingSecret"
+    )
+    assert logged.out.count(lfs_note) == 1
+    # The saved report says where the keys come from, as the log does
+    recorded = state(site)
+    assert sum(LFS_KEYS_NOTE in w for w in recorded["warnings"]) == 1
     assert "replication key" not in logged.out + logged.err
+    assert "lfs secret key" not in logged.out + logged.err
+    assert "lfs secret key" not in json.dumps(recorded)
 
 
 def add_g2p_links(source: Path, target_dir: str = "/opt/gerrit-tools/bin") -> None:
