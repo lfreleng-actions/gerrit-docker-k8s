@@ -12,11 +12,14 @@ imported in place of the real module.
 These tests extract the inline ``run:`` scripts from ``action.yaml``
 and run them with bash from a workspace holding such files.  Each
 planted file records its name in ``$RUNNER_TEMP/planted-ran`` and
-exits non-zero.  The steps must succeed and the marker must not exist.
+exits non-zero.  A ``python3`` and ``python`` placed first on ``PATH``
+do the same, standing in for an interpreter the caller chose.  The
+steps must succeed and the marker must not exist.
 
-``pip`` and ``nacl`` are stubbed in a throwaway user site
-(``PYTHONUSERBASE``), so nothing is downloaded and the stub stands in
-for the real packages wherever the step resolves them correctly.
+``$PYTHON``, the action's interpreter, is a throwaway virtual
+environment here.  ``pip`` and ``nacl`` are stubbed in its
+site-packages, so nothing is downloaded and the stub stands in for the
+real packages wherever the step resolves them correctly.
 """
 
 from __future__ import annotations
@@ -56,12 +59,24 @@ PLANTED_FILES = (
     "sitecustomize.py",
 )
 
+PLANTED_INTERPRETER = '#!/bin/sh\necho "$0" >> "$RUNNER_TEMP/planted-ran"\nexit 97\n'
+"""A ``python3``/``python`` on the caller's ``PATH``; never to be run."""
+
 STUB_PIP_MAIN = (
     "import os, sys\n"
     "with open(os.path.join(os.environ['RUNNER_TEMP'], 'pip-args'),"
     " 'w') as fh:\n"
     "    fh.write('\\n'.join(sys.argv[1:]))\n"
+    "with open(os.path.join(os.environ['RUNNER_TEMP'], 'pip-config-file'),"
+    " 'w') as fh:\n"
+    "    fh.write(os.environ.get('PIP_CONFIG_FILE', ''))\n"
 )
+
+PIP_INSTALL_STEPS = (
+    "Setup action Python environment",
+    "Install PyNaCl (provision mode)",
+)
+"""Steps that run ``pip install`` and so must ignore the caller's pip config."""
 
 pytestmark = pytest.mark.skipif(
     shutil.which("bash") is None, reason="action steps run under bash"
@@ -77,9 +92,12 @@ def _load_step(name: str) -> dict[str, Any]:
     raise AssertionError(f"step {name!r} not found in action.yaml")
 
 
-def _step_env(step: dict[str, Any]) -> dict[str, str]:
+def _step_env(step: dict[str, Any], python: Path) -> dict[str, str]:
     """Resolve the step's ``env:`` block for a local run."""
-    known = {"${{ github.action_path }}": str(REPO_ROOT)}
+    known = {
+        "${{ github.action_path }}": str(REPO_ROOT),
+        "${{ steps.action-python.outputs.python-path }}": str(python),
+    }
     resolved: dict[str, str] = {}
     for key, value in (step.get("env") or {}).items():
         text = str(value)
@@ -92,53 +110,56 @@ def _step_env(step: dict[str, Any]) -> dict[str, str]:
 
 @pytest.fixture()
 def sandbox(tmp_path: Path) -> dict[str, Path]:
-    """Create a planted workspace, runner temp and stub user site."""
+    """Create a planted workspace, runner temp and stub virtualenv."""
     workspace = tmp_path / "workspace"
     runner_temp = tmp_path / "runner-temp"
-    user_base = tmp_path / "userbase"
-    bin_dir = tmp_path / "bin"
-    for directory in (workspace, runner_temp, user_base, bin_dir):
+    caller_bin = tmp_path / "caller-bin"
+    for directory in (workspace, runner_temp, caller_bin):
         directory.mkdir()
+
+    for name in ("python3", "python"):
+        decoy = caller_bin / name
+        decoy.write_text(PLANTED_INTERPRETER, encoding="utf-8")
+        decoy.chmod(0o755)
 
     for rel in PLANTED_FILES:
         path = workspace / rel
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(PLANTED_BODY, encoding="utf-8")
 
-    # A venv interpreter disables the user site, so put the base
-    # interpreter on PATH as python3, as on a runner.
-    python3 = bin_dir / "python3"
-    python3.symlink_to(Path(os.path.realpath(sys.executable)))
-
-    base_env = {
-        "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
-        "HOME": str(tmp_path),
-        "PYTHONUSERBASE": str(user_base),
-    }
-    probe = subprocess.run(
-        [str(python3), "-m", "site", "--user-site"],
+    venv = tmp_path / "venv"
+    subprocess.run(
+        [sys.executable, "-I", "-m", "venv", "--without-pip", str(venv)],
         cwd=runner_temp,
-        env=base_env,
+        check=True,
+    )
+    python = venv / "bin" / "python"
+    probe = subprocess.run(
+        [
+            str(python),
+            "-I",
+            "-c",
+            "import sysconfig; print(sysconfig.get_path('purelib'))",
+        ],
+        cwd=runner_temp,
         capture_output=True,
         text=True,
-        check=False,
+        check=True,
     )
-    if probe.returncode != 0:
-        pytest.skip("interpreter has the user site disabled")
-    user_site = Path(probe.stdout.strip())
+    site_packages = Path(probe.stdout.strip())
 
-    (user_site / "pip").mkdir(parents=True)
-    (user_site / "pip" / "__init__.py").write_text("", encoding="utf-8")
-    (user_site / "pip" / "__main__.py").write_text(STUB_PIP_MAIN, encoding="utf-8")
-    (user_site / "nacl").mkdir()
-    (user_site / "nacl" / "__init__.py").write_text("", encoding="utf-8")
-    (user_site / "nacl" / "public.py").write_text("", encoding="utf-8")
+    (site_packages / "pip").mkdir(parents=True)
+    (site_packages / "pip" / "__init__.py").write_text("", encoding="utf-8")
+    (site_packages / "pip" / "__main__.py").write_text(STUB_PIP_MAIN, encoding="utf-8")
+    (site_packages / "nacl").mkdir()
+    (site_packages / "nacl" / "__init__.py").write_text("", encoding="utf-8")
+    (site_packages / "nacl" / "public.py").write_text("", encoding="utf-8")
 
     return {
         "workspace": workspace,
         "runner_temp": runner_temp,
-        "user_base": user_base,
-        "bin_dir": bin_dir,
+        "python": python,
+        "caller_bin": caller_bin,
         "tmp": tmp_path,
     }
 
@@ -154,14 +175,15 @@ def _run_step(
     script = sandbox["tmp"] / "step.sh"
     script.write_text(str(step["run"]), encoding="utf-8")
     env = {
-        "PATH": f"{sandbox['bin_dir']}{os.pathsep}{os.environ.get('PATH', '')}",
+        "PATH": f"{sandbox['caller_bin']}{os.pathsep}{os.environ.get('PATH', '')}",
         "HOME": str(sandbox["tmp"]),
-        "PYTHONUSERBASE": str(sandbox["user_base"]),
         "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+        # The caller's own pip config; a step's env: takes precedence.
+        "PIP_CONFIG_FILE": str(sandbox["tmp"] / "caller-pip.conf"),
         "RUNNER_TEMP": str(sandbox["runner_temp"]),
         "GITHUB_WORKSPACE": str(sandbox["workspace"]),
         "GITHUB_ACTION_PATH": str(REPO_ROOT),
-        **_step_env(step),
+        **_step_env(step, sandbox["python"]),
         **extra_env,
     }
     if pythonpath is not None:
@@ -199,10 +221,24 @@ def test_pynacl_step_ignores_workspace_modules(
     pip_args = (sandbox["runner_temp"] / "pip-args").read_text(encoding="utf-8")
     assert pip_args.splitlines() == [
         "install",
-        "--user",
+        "--isolated",
+        "--disable-pip-version-check",
         "--upgrade",
         "PyNaCl>=1.5,<2",
     ]
+    pip_config = (sandbox["runner_temp"] / "pip-config-file").read_text(
+        encoding="utf-8"
+    )
+    assert pip_config == os.devnull
+
+
+@pytest.mark.parametrize("name", PIP_INSTALL_STEPS)
+def test_pip_install_steps_skip_pip_config(name: str) -> None:
+    # pip --isolated still reads PIP_CONFIG_FILE; os.devnull makes pip
+    # load no config file, so a caller's install target cannot apply.
+    step = _load_step(name)
+    assert "--isolated" in str(step["run"])
+    assert (step.get("env") or {}).get("PIP_CONFIG_FILE") == os.devnull
 
 
 @pytest.mark.parametrize("pythonpath", PYTHONPATH_CASES)

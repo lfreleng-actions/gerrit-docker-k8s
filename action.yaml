@@ -747,6 +747,41 @@ runs:
           }
         fi
 
+    # Install the action's own interpreter rather than taking whatever
+    # python3 the caller's PATH holds. update-environment: false keeps
+    # PATH and pythonLocation untouched for the caller's later steps.
+    - name: 'Setup Python'
+      id: setup-python
+      uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+      with:
+        python-version: '3.13'
+        update-environment: false
+
+    # Build a virtual environment holding the scripts' hash-pinned
+    # dependencies, so nothing is installed into the shared interpreter.
+    - name: 'Setup action Python environment'
+      id: action-python
+      shell: bash
+      env:
+        SETUP_PYTHON: ${{ steps.setup-python.outputs.python-path }}
+        VENV_DIR: ${{ runner.temp }}/gerrit-action-venv
+        ACTION_PATH: ${{ github.action_path }}
+        # --isolated still reads PIP_CONFIG_FILE; /dev/null makes pip
+        # skip every config file, the caller's included.
+        PIP_CONFIG_FILE: /dev/null
+      run: |
+        # Create the action's virtual environment (Python)
+        set -euo pipefail
+        "$SETUP_PYTHON" -I -m venv --clear "$VENV_DIR"
+        venv_python="$VENV_DIR/bin/python"
+        # --isolated: the caller's PIP_* variables (PIP_USER,
+        # PIP_TARGET) must not redirect it; PIP_CONFIG_FILE in env:
+        # does the same for pip config files.
+        "$venv_python" -I -m pip install --isolated \
+          --disable-pip-version-check --require-hashes \
+          -r "$ACTION_PATH/scripts/requirements.txt"
+        echo "python-path=$venv_python" >> "$GITHUB_OUTPUT"
+
     # Detect Gerrit API paths
     - name: 'Detect Gerrit API paths'
       id: detect-api-paths
@@ -755,9 +790,10 @@ runs:
         GERRIT_SETUP: ${{ inputs.gerrit_setup }}
         DEBUG: ${{ inputs.debug }}
         ACTION_PATH: ${{ github.action_path }}
+        PYTHON: ${{ steps.action-python.outputs.python-path }}
       run: |
         # Detect Gerrit API paths via redirect detection (Python)
-        python3 "$ACTION_PATH/scripts/detect-api-paths.py"
+        "$PYTHON" "$ACTION_PATH/scripts/detect-api-paths.py"
 
     # Start Gerrit instances
     - name: 'Start Gerrit instances'
@@ -794,9 +830,10 @@ runs:
         REPLICATE_META_REFS: ${{ inputs.replicate_meta_refs }}
         REINDEX_AFTER_SYNC: ${{ inputs.reindex_after_sync }}
         ACTION_PATH: ${{ github.action_path }}
+        PYTHON: ${{ steps.action-python.outputs.python-path }}
       run: |
         # Start Gerrit instances (Python)
-        python3 "$ACTION_PATH/scripts/start-instances.py"
+        "$PYTHON" "$ACTION_PATH/scripts/start-instances.py"
 
     # Check service availability
     - name: "Check Gerrit service availability"
@@ -807,9 +844,10 @@ runs:
         USE_API_PATH: ${{ inputs.use_api_path }}
         DEBUG: ${{ inputs.debug }}
         ACTION_PATH: ${{ github.action_path }}
+        PYTHON: ${{ steps.action-python.outputs.python-path }}
       run: |
         # Check Gerrit service availability (Python)
-        python3 "$ACTION_PATH/scripts/check-services.py"
+        "$PYTHON" "$ACTION_PATH/scripts/check-services.py"
 
     # Add SSH authentication keys for user access
     - name: "Add SSH authentication keys"
@@ -821,9 +859,10 @@ runs:
         USE_API_PATH: ${{ inputs.use_api_path }}
         DEBUG: ${{ inputs.debug }}
         ACTION_PATH: ${{ github.action_path }}
+        PYTHON: ${{ steps.action-python.outputs.python-path }}
       run: |
         # Add SSH authentication keys for user access (Python)
-        python3 "$ACTION_PATH/scripts/setup-gerrit-user.py" \
+        "$PYTHON" "$ACTION_PATH/scripts/setup-gerrit-user.py" \
           --instances-file "$WORK_DIR/instances.json" \
           --loop-instances
 
@@ -841,9 +880,10 @@ runs:
         USE_API_PATH: ${{ inputs.use_api_path }}
         DEBUG: ${{ inputs.debug }}
         ACTION_PATH: ${{ github.action_path }}
+        PYTHON: ${{ steps.action-python.outputs.python-path }}
       run: |
         # Add SSH auth keys for the secondary Gerrit account (Python)
-        python3 "$ACTION_PATH/scripts/setup-gerrit-user.py" \
+        "$PYTHON" "$ACTION_PATH/scripts/setup-gerrit-user.py" \
           --instances-file "$WORK_DIR/instances.json" \
           --loop-instances
 
@@ -860,9 +900,10 @@ runs:
         FETCH_EVERY: ${{ inputs.fetch_every }}
         DEBUG: ${{ inputs.debug }}
         ACTION_PATH: ${{ github.action_path }}
+        PYTHON: ${{ steps.action-python.outputs.python-path }}
       run: |
         # Trigger initial replication (Python)
-        python3 "$ACTION_PATH/scripts/trigger-replication.py"
+        "$PYTHON" "$ACTION_PATH/scripts/trigger-replication.py"
 
     # Verify replication success
     - name: "Verify replication success"
@@ -873,9 +914,10 @@ runs:
         FETCH_EVERY: ${{ inputs.fetch_every }}
         DEBUG: ${{ inputs.debug }}
         ACTION_PATH: ${{ github.action_path }}
+        PYTHON: ${{ steps.action-python.outputs.python-path }}
       run: |
         # Verify replication success (Python)
-        python3 "$ACTION_PATH/scripts/verify-replication.py"
+        "$PYTHON" "$ACTION_PATH/scripts/verify-replication.py"
 
     # Reindex changes and flush stale caches after replication.
     # Required when replicate_meta_refs is enabled so the Gerrit UI
@@ -890,9 +932,10 @@ runs:
         USE_API_PATH: ${{ inputs.use_api_path }}
         DEBUG: ${{ inputs.debug }}
         ACTION_PATH: ${{ github.action_path }}
+        PYTHON: ${{ steps.action-python.outputs.python-path }}
       run: |
         # Reindex Gerrit changes and flush caches (Python)
-        python3 "$ACTION_PATH/scripts/reindex.py"
+        "$PYTHON" "$ACTION_PATH/scripts/reindex.py"
 
     # Set default G2P outputs when disabled
     - name: "Set G2P defaults (disabled)"
@@ -915,16 +958,17 @@ runs:
     # Install PyNaCl on the runner when we will auto-provision
     # org-level secrets.  PyNaCl is required for sealed-box
     # encryption of GitHub Actions secrets; install only when
-    # actually needed.  A plain user-level pip install keeps
-    # this step self-contained: no setup-uv dependency and no
-    # interaction with the runner's PEP 668 system Python.
+    # actually needed.  It goes into the action's own virtual
+    # environment, which the scripts run from: no setup-uv
+    # dependency and no interaction with the runner's system Python.
     - name: "Install PyNaCl (provision mode)"
       if: >-
         inputs.g2p_enable == 'true' &&
         inputs.g2p_org_setup == 'provision'
       shell: bash
       env:
-        ACTION_PATH: ${{ github.action_path }}
+        PYTHON: ${{ steps.action-python.outputs.python-path }}
+        PIP_CONFIG_FILE: /dev/null
       run: |
         # Install PyNaCl for org secret provisioning.
         #
@@ -944,16 +988,17 @@ runs:
         #   GitHub runners ship today; older releases would force
         #   a slow source build of libsodium on each run.
         #
-        # Run from the action's own directory: -m and -c put the
-        # working directory first on sys.path, and the default one
-        # is the caller's workspace, whose files would be imported
-        # in place of pip and nacl.  -I would avoid that too, but it
-        # hides the user site this step installs into and checks.
+        # -I keeps the working directory (the caller's workspace)
+        # off sys.path, so its files cannot stand in for pip and
+        # nacl; the virtual environment's site-packages stays on it.
+        # pip's --isolated likewise ignores the caller's PIP_*
+        # variables (PIP_USER, PIP_TARGET), but not PIP_CONFIG_FILE:
+        # env: sets that to /dev/null, so pip reads no config file.
         set -euo pipefail
-        cd "$ACTION_PATH"
-        echo "Installing PyNaCl (user site)…"
-        python3 -m pip install --user --upgrade 'PyNaCl>=1.5,<2'
-        python3 -c "import nacl.public; print('PyNaCl OK')"
+        echo "Installing PyNaCl (action virtual environment)…"
+        "$PYTHON" -I -m pip install --isolated \
+          --disable-pip-version-check --upgrade 'PyNaCl>=1.5,<2'
+        "$PYTHON" -I -c "import nacl.public; print('PyNaCl OK')"
 
     # Configure G2P (gerrit_to_platform)
     - name: "Configure G2P integration"
@@ -982,9 +1027,10 @@ runs:
         TUNNEL_PORTS: ${{ inputs.tunnel_ports }}
         SSH_AUTH_USERNAME: ${{ inputs.ssh_auth_username }}
         ACTION_PATH: ${{ github.action_path }}
+        PYTHON: ${{ steps.action-python.outputs.python-path }}
       run: |
         # Configure gerrit_to_platform inside containers (Python)
-        python3 "$ACTION_PATH/scripts/configure-g2p.py"
+        "$PYTHON" "$ACTION_PATH/scripts/configure-g2p.py"
 
     # Collect outputs
     - name: "Collect outputs"
@@ -993,9 +1039,10 @@ runs:
       env:
         DEBUG: ${{ inputs.debug }}
         ACTION_PATH: ${{ github.action_path }}
+        PYTHON: ${{ steps.action-python.outputs.python-path }}
       run: |
         # Collect outputs (Python)
-        python3 "$ACTION_PATH/scripts/collect-outputs.py"
+        "$PYTHON" "$ACTION_PATH/scripts/collect-outputs.py"
 
     # Terminate containers when finished
     - name: "Terminate containers when finished"
@@ -1005,20 +1052,23 @@ runs:
         ENABLE_CACHE: ${{ inputs.enable_cache }}
         DEBUG: ${{ inputs.debug }}
         ACTION_PATH: ${{ github.action_path }}
+        PYTHON: ${{ steps.action-python.outputs.python-path }}
       run: |
         # Terminate containers when finished (Python)
-        python3 "$ACTION_PATH/scripts/cleanup.py"
+        "$PYTHON" "$ACTION_PATH/scripts/cleanup.py"
 
     # Container persistence message
     - name: "Containers will continue/persist"
       if: inputs.exit != 'true'
       shell: bash
+      env:
+        PYTHON: ${{ steps.action-python.outputs.python-path }}
       run: |
         # Containers will continue/persist (Python)
         # -I keeps the working directory (the caller's workspace)
         # off sys.path, so its files cannot stand in for json or
         # pathlib; the program reads only absolute paths from env.
-        python3 -I - <<'PY'
+        "$PYTHON" -I - <<'PY'
         import json, os, pathlib, sys
 
         summary = os.environ.get('GITHUB_STEP_SUMMARY', '')
