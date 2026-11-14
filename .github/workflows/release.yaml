@@ -71,7 +71,7 @@ jobs:
       # organisation's .github repository and publish it as
       # $CONNECTION_ALLOW_LIST for the harden-runner step below.
       # yamllint disable-line rule:line-length
-      - uses: lfreleng-actions/harden-runner-block-action@bd83615a22b57835798adcb9ce753161464dfb40  # v0.16.2
+      - uses: lfreleng-actions/harden-runner-block-action@f5a475661142cd2f1611ae6fbf8af2be0f36a9a7  # v0.16.3
         with:
           config: '@6d4a65c5601afd6c2fbe52bda4b0024b132f265d'  # v0.19.0
 
@@ -112,7 +112,7 @@ jobs:
       tag: ${{ steps.validate.outputs.tag_name }}
     steps:
       # yamllint disable-line rule:line-length
-      - uses: lfreleng-actions/harden-runner-block-action@bd83615a22b57835798adcb9ce753161464dfb40  # v0.16.2
+      - uses: lfreleng-actions/harden-runner-block-action@f5a475661142cd2f1611ae6fbf8af2be0f36a9a7  # v0.16.3
         with:
           config: '@6d4a65c5601afd6c2fbe52bda4b0024b132f265d'  # v0.19.0
           allow_list_summary: 'false'
@@ -176,7 +176,7 @@ jobs:
       # repository's supplemental list adds it, read at the tagged
       # commit.
       # yamllint disable-line rule:line-length
-      - uses: lfreleng-actions/harden-runner-block-action@bd83615a22b57835798adcb9ce753161464dfb40  # v0.16.2
+      - uses: lfreleng-actions/harden-runner-block-action@f5a475661142cd2f1611ae6fbf8af2be0f36a9a7  # v0.16.3
         with:
           config: '@6d4a65c5601afd6c2fbe52bda4b0024b132f265d'  # v0.19.0
           # yamllint disable-line rule:line-length
@@ -293,7 +293,7 @@ jobs:
     timeout-minutes: 20
     steps:
       # yamllint disable-line rule:line-length
-      - uses: lfreleng-actions/harden-runner-block-action@bd83615a22b57835798adcb9ce753161464dfb40  # v0.16.2
+      - uses: lfreleng-actions/harden-runner-block-action@f5a475661142cd2f1611ae6fbf8af2be0f36a9a7  # v0.16.3
         with:
           config: '@6d4a65c5601afd6c2fbe52bda4b0024b132f265d'  # v0.19.0
           allow_list_summary: 'false'
@@ -431,7 +431,7 @@ jobs:
     timeout-minutes: 15
     steps:
       # yamllint disable-line rule:line-length
-      - uses: lfreleng-actions/harden-runner-block-action@bd83615a22b57835798adcb9ce753161464dfb40  # v0.16.2
+      - uses: lfreleng-actions/harden-runner-block-action@f5a475661142cd2f1611ae6fbf8af2be0f36a9a7  # v0.16.3
         with:
           config: '@6d4a65c5601afd6c2fbe52bda4b0024b132f265d'  # v0.19.0
           allow_list_summary: 'false'
@@ -500,7 +500,7 @@ jobs:
     timeout-minutes: 15
     steps:
       # yamllint disable-line rule:line-length
-      - uses: lfreleng-actions/harden-runner-block-action@bd83615a22b57835798adcb9ce753161464dfb40  # v0.16.2
+      - uses: lfreleng-actions/harden-runner-block-action@f5a475661142cd2f1611ae6fbf8af2be0f36a9a7  # v0.16.3
         with:
           config: '@6d4a65c5601afd6c2fbe52bda4b0024b132f265d'  # v0.19.0
           allow_list_summary: 'false'
@@ -606,7 +606,7 @@ jobs:
     timeout-minutes: 15
     steps:
       # yamllint disable-line rule:line-length
-      - uses: lfreleng-actions/harden-runner-block-action@bd83615a22b57835798adcb9ce753161464dfb40  # v0.16.2
+      - uses: lfreleng-actions/harden-runner-block-action@f5a475661142cd2f1611ae6fbf8af2be0f36a9a7  # v0.16.3
         with:
           config: '@6d4a65c5601afd6c2fbe52bda4b0024b132f265d'  # v0.19.0
           allow_list_summary: 'false'
@@ -669,7 +669,7 @@ jobs:
     timeout-minutes: 10
     steps:
       # yamllint disable-line rule:line-length
-      - uses: lfreleng-actions/harden-runner-block-action@bd83615a22b57835798adcb9ce753161464dfb40  # v0.16.2
+      - uses: lfreleng-actions/harden-runner-block-action@f5a475661142cd2f1611ae6fbf8af2be0f36a9a7  # v0.16.3
         with:
           config: '@6d4a65c5601afd6c2fbe52bda4b0024b132f265d'  # v0.19.0
           allow_list_summary: 'false'
@@ -770,7 +770,7 @@ jobs:
       digest: ${{ steps.ref.outputs.digest }}
     steps:
       # yamllint disable-line rule:line-length
-      - uses: lfreleng-actions/harden-runner-block-action@bd83615a22b57835798adcb9ce753161464dfb40  # v0.16.2
+      - uses: lfreleng-actions/harden-runner-block-action@f5a475661142cd2f1611ae6fbf8af2be0f36a9a7  # v0.16.3
         with:
           config: '@6d4a65c5601afd6c2fbe52bda4b0024b132f265d'  # v0.19.0
           allow_list_summary: 'false'
@@ -875,7 +875,7 @@ jobs:
       # Helm comes from get.helm.sh, which this repository's
       # supplemental list adds, read at the tagged commit
       # yamllint disable-line rule:line-length
-      - uses: lfreleng-actions/harden-runner-block-action@bd83615a22b57835798adcb9ce753161464dfb40  # v0.16.2
+      - uses: lfreleng-actions/harden-runner-block-action@f5a475661142cd2f1611ae6fbf8af2be0f36a9a7  # v0.16.3
         with:
           config: '@6d4a65c5601afd6c2fbe52bda4b0024b132f265d'  # v0.19.0
           allow_list_summary: 'false'
@@ -1118,7 +1118,7 @@ jobs:
         && needs.publish-chart.result == 'success' }}
     steps:
       # yamllint disable-line rule:line-length
-      - uses: lfreleng-actions/harden-runner-block-action@bd83615a22b57835798adcb9ce753161464dfb40  # v0.16.2
+      - uses: lfreleng-actions/harden-runner-block-action@f5a475661142cd2f1611ae6fbf8af2be0f36a9a7  # v0.16.3
         with:
           config: '@6d4a65c5601afd6c2fbe52bda4b0024b132f265d'  # v0.19.0
           allow_list_summary: 'false'
@@ -1292,7 +1292,7 @@ jobs:
     timeout-minutes: 5
     steps:
       # yamllint disable-line rule:line-length
-      - uses: lfreleng-actions/harden-runner-block-action@bd83615a22b57835798adcb9ce753161464dfb40  # v0.16.2
+      - uses: lfreleng-actions/harden-runner-block-action@f5a475661142cd2f1611ae6fbf8af2be0f36a9a7  # v0.16.3
         with:
           config: '@6d4a65c5601afd6c2fbe52bda4b0024b132f265d'  # v0.19.0
           allow_list_summary: 'false'
