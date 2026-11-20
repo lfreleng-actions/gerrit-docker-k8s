@@ -764,7 +764,9 @@ An export directory `<out>` holds:
   path, such as `.config`; in `.ssh/` on any link but a relative
   symlink with no `..` component, as a projected Secret's are; in
   `.config/gerrit_to_platform/` on any link but `site-init`'s
-  `replication.config` link to `/var/gerrit/etc/replication.config`;
+  `replication.config` link to `/var/gerrit/etc/replication.config`,
+  or one to the site's own `etc/replication.config`, as a site the
+  chart did not build has it;
   on a hard-linked file in either; and on a repository store that
   holds or sits in either directory, as with `gerrit.basePath = .`.
   `site-import` also skips both, so archives written before this rule
@@ -781,6 +783,19 @@ An export directory `<out>` holds:
 - `git/` holds every repository under `gerrit.basePath` at the same
   relative path. A symlink inside the repository store stops the
   export.
+- Before writing anything, the export stops on each link it would copy
+  into `site/` that `site-import` refuses (section 1.7): one to an
+  absolute path, except a hooks-directory link to
+  `/opt/gerrit-tools/bin/<name>`, or a relative one that resolves
+  outside the site or into a path the import skips, such as `plugins/`.
+  A relative link is checked as the import checks it: as unpacked,
+  through the links before it in the archive, and with every member in
+  place, without the absolute links, which the import sets aside. Links
+  inside those skipped paths pass. `--exclude` leaves one out;
+  `--drop-foreign-links` leaves out all of them and records them in the
+  manifest's `dropped_links`, along with each link that leaving them out
+  makes the import refuse. A link that overlaps a path `--exclude` may
+  not name, such as `etc/gerrit.config`, stops the export either way.
 - Each archive's members start with `site/` or `git/`, so unpacking
   both into one directory recreates the layout above.
 - `--encrypt age:<recipient>` or `--encrypt gpg:<key-id>` replaces each
@@ -867,6 +882,7 @@ the `final` one and is never an import source.
 | `git` | object | `path`: the source repository directory, resolved; `bytes`: total size of `<out>/git`; `repositories`: see below. |
 | `ssh_host_keys` | object | Each regular file in the site's `etc/` named `ssh_host_*` and not ending `.pub`, mapped to its `SHA256:` fingerprint from `ssh-keygen -l -E sha256`. |
 | `excluded` | array of strings | The site paths left out of `<out>/site`, in the order section 3.1 lists them, then the credential paths `.ssh`, `.config/gerrit_to_platform` and `etc/lfs.secure.config`, then each `--exclude` path as given; `cache` is absent with `--include-cache`. `site-import` reports the paths after the built-in ones. |
+| `dropped_links` | array of strings | Only with `--drop-foreign-links` and a link to drop: the links, relative to the site and sorted, that the export left out because `site-import` refuses them (section 3.1). |
 | `archives` | object | Each archive file name mapped to the hex SHA-256 of its contents; `{}` without `--pack`. |
 
 `git.repositories` maps the path of each directory ending `.git` under
@@ -908,6 +924,31 @@ those before opening it to users.
 | Replication resumes | `ssh -p 29418 gerrit.example.org replication list` lists the remotes, and after a push the replication log records it reaching each one. |
 | Hooks fire | A push or comment runs the configured hook, and the hook's output or log records it. |
 | Mail is delivered | A review comment on a test change sends mail through the configured relay to a test account. |
+
+### 4.1 Exporting from a host the chart did not build
+
+A site the chart did not build needs these steps on its host before
+the export; the chart README's "Exporting from a host the chart did
+not build" gives the detail.
+
+1. Copy the export tool with `gerrit_export_git.py` and
+   `gerrit_export_host.py` into one directory. Where the host's Python
+   is older than 3.8, or it has no `zstd` program, run the tool with a
+   private interpreter:
+   `uv run --no-project --python 3.14 gerrit-site-export.py backup --site <site> --out <dir> ...`.
+2. Leave out with `--exclude` shell and editor history,
+   configuration-management agent state and keys, dated copies of
+   `gerrit.config`, which can hold secrets, and hook scripts that call
+   programs only that host has.
+3. Resolve each link the export names as one `site-import` refuses:
+   leave it out with `--exclude`, or pass `--drop-foreign-links` and
+   check the manifest's `dropped_links`. Replace a link on site
+   structure, such as `etc/gerrit.config`, with what it points at.
+4. Give `--out` room for a copy of the site and the repositories plus
+   the two archives.
+5. Run the export against the site at its real path: the import
+   resolves an absolute `saml.keystorePath` against the site path the
+   manifest records.
 
 ## 5. Secret contract
 

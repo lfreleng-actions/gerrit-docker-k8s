@@ -1048,13 +1048,15 @@ that holds it, stops the run),
 `<out>/manifest.json`. It needs only Python 3.8 or newer and its
 standard library, plus `rsync` and `git`, so it runs with the `python3`
 an existing Gerrit host already has. SSH host keys need `ssh-keygen`;
-`--pack` needs `zstd`, and `age`, `gpg` or `aws` matter only when you
-ask for encryption or upload. The archives are readable by their owner
-only. The tool does not follow symlinks inside the repository store: a
-linked repository or directory of repositories stops the run before
-anything is written, naming each link, so replace it with the directory
-it points to. `gerrit.basePath` itself may be a symlink; the tool
-exports the directory it resolves to.
+`--pack` needs the `zstd` program, or Python 3.14 or newer, whose
+`compression.zstd` module packs instead (`--zstd auto`, the default;
+`--zstd tool` or `--zstd python` forces one), and `age`, `gpg` or `aws`
+matter only when you ask for encryption or upload. The archives are
+readable by their owner only. The tool does not follow symlinks inside
+the repository store: a linked repository or directory of repositories
+stops the run before anything is written, naming each link, so replace
+it with the directory it points to. `gerrit.basePath` itself may be a
+symlink; the tool exports the directory it resolves to.
 
 `final` refuses to run while a Gerrit daemon serves the site, judged
 from `logs/gerrit.pid` and `/proc`, or when it cannot tell, unless you
@@ -1149,11 +1151,22 @@ cannot read through. A repository store that is the site, or holds
 it, refuses every `--exclude`, since the store's copy would carry the
 path anyway.
 
-`seed` and `final` need only the tool itself, so a copy of
-`scripts/gerrit-site-export.py` alone runs them on an existing Gerrit
-host. `backup` and `--exclude` also load `scripts/gerrit_export_git.py`
-from beside the tool, as the chart image installs it; without it, they
-stop with an error before writing anything. Every mode leaves out
+Every mode loads `scripts/gerrit_export_git.py` and
+`scripts/gerrit_export_host.py` from beside the tool, as the chart
+image installs them, so copy the three files to an existing Gerrit host
+together; without either module, the tool stops with an error before
+writing anything.
+
+Before writing anything, the tool also stops on each link it would
+copy that `site-import` refuses, naming it: a link to an absolute
+path, other than a hook linked to `/opt/gerrit-tools/bin/<name>`, or a
+relative link that leaves the site or points into a tree the import
+skips, such as `plugins`. Leave each out with `--exclude`, or pass
+`--drop-foreign-links` to leave them all out; the manifest's
+`dropped_links` lists them. A link on a path the import needs, such as
+`etc/gerrit.config`, cannot be left out: replace it with its target.
+The chart README's "Exporting from a host the chart did not build"
+covers such a site in full. Every mode leaves out
 `*.lock` files, in the site and in the repositories, and deletes any an
 earlier run left in the export directory.
 
