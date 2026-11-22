@@ -32,6 +32,14 @@
 # - webhooks
 
 ARG GERRIT_VERSION=3.13.10-ubuntu24
+
+# The JDK that replaces the one the Gerrit base image bundles. Every
+# official Gerrit image up to 3.13.11-2-ubuntu24 ships Temurin 21.0.8,
+# which carries CVE-2026-114938; 21.0.13.1 fixes it. The full JDK is
+# kept, as the base image ships one with jmods. The digest pins the
+# multi-arch index; Dependabot's docker ecosystem proposes updates.
+FROM eclipse-temurin:21.0.13.1_2-jdk-noble@sha256:4dea56dcfa1a89832caf1ffe082c49b3878388df3ce97b7f0a49f9c4372b718c AS jdk
+
 FROM gerritcodereview/gerrit:${GERRIT_VERSION}
 
 LABEL org.opencontainers.image.title="Gerrit Extended"
@@ -42,15 +50,32 @@ LABEL org.opencontainers.image.licenses="Apache-2.0"
 # Install dependencies as root
 USER root
 
+# Replace the base image's JDK (JAVA_HOME, first on PATH) with the
+# jdk stage's. The old directory goes first, so no file from the
+# bundled 21.0.8 survives a COPY that would otherwise merge into it.
+# The check fails the build unless the JDK on PATH is 21.0.13.1, so a
+# base image bump cannot silently bring an older JDK back.
+RUN rm -rf /opt/java/openjdk
+COPY --from=jdk /opt/java/openjdk /opt/java/openjdk
+ENV JAVA_VERSION=jdk-21.0.13.1+2
+RUN set -eux; \
+    version=$(java -version 2>&1); \
+    printf '%s\n' "$version"; \
+    if ! printf '%s\n' "$version" | grep -qF 'version "21.0.13.1"'; then \
+        echo 'The JDK on PATH is not Temurin 21.0.13.1' >&2; \
+        exit 1; \
+    fi
+
 # Install Python and required packages; rsync and zstd serve the site
 # export tool below. The same layer removes
 # emSign ECC Root CA - G3 (GHSA-6q48-6c7w-9gw2, compromised
 # intermediate keys) from the JDK trust store: Temurin drops it from
-# 21.0.13+9, which no Gerrit image bundles yet. The delete is
-# conditional so a base image that already lacks the root still
-# builds; the final check is what the build guarantees. The listing
-# is captured before it is searched so a failing keytool fails the
-# build under set -e instead of reading as "root absent".
+# 21.0.13+9, so the JDK copied in above already lacks it. The
+# delete is conditional so a JDK that already lacks the root, as
+# this one does, still builds; the final check is what the build
+# guarantees. The listing is captured before it is searched so a
+# failing keytool fails the build under set -e instead of reading as
+# "root absent".
 #
 # The base image ships GerritForge.list, a plain-HTTP apt source for
 # Ubuntu 18.04 ("bionic"). Nothing below comes from it, and the
