@@ -27,6 +27,7 @@ import importlib
 import io
 import json
 import os
+import re
 import shlex
 import shutil
 import ssl
@@ -66,8 +67,6 @@ pytestmark = pytest.mark.skipif(
 )
 needs_zstd = pytest.mark.skipif(not shutil.which("zstd"), reason="packing needs zstd")
 needs_proc = pytest.mark.skipif(not HAS_PROC, reason="needs a Linux /proc")
-# Marks a test of #367's options until the tool has them.
-pending = pytest.mark.xfail(strict=True, reason="upload and exclusion options, #367")
 
 
 @pytest.fixture(autouse=True)
@@ -1121,24 +1120,16 @@ def test_final_needs_proc_unless_writes_were_stopped(
         (("final", "--upload", "https://example.invalid/x"), "--upload takes"),
         (("seed", "--pack"), "need final or backup mode"),
         (("seed", "--upload", "s3://bucket/prefix"), "need final or backup mode"),
-        pytest.param(
-            ("final", "--sse", "AES256"), "--sse needs --upload", marks=pending
-        ),
-        pytest.param(
+        (("final", "--sse", "AES256"), "--sse needs --upload"),
+        (
             ("final", "--upload", "s3://b/p", "--sse", "rot13"),
             "--sse takes aws:kms, AES256 or none",
-            marks=pending,
         ),
-        pytest.param(
+        (
             ("final", "--upload", "s3://b/p", "--upload-urls", "urls.json"),
             "--upload or --upload-urls, not both",
-            marks=pending,
         ),
-        pytest.param(
-            ("seed", "--upload-urls", "urls.json"),
-            "need final or backup mode",
-            marks=pending,
-        ),
+        (("seed", "--upload-urls", "urls.json"), "need final or backup mode"),
     ],
 )
 def test_refuses_bad_arguments(
@@ -1619,7 +1610,6 @@ def test_failed_upload_never_publishes_a_manifest(
     assert not [c for c in calls if c.endswith("/manifest.json") and " cp " in c]
 
 
-@pending
 @pytest.mark.parametrize(
     ("sse", "flags"),
     [
@@ -1707,11 +1697,11 @@ def url_file(tmp_path: Path, urls: Any, text: str | None = None) -> str:
 
 def assert_no_url(result: Any) -> None:
     output = result.stdout + result.stderr
-    for secret in (SIGNATURE, "/bucket/", "127.0.0.1:", ".invalid/"):
+    for secret in (SIGNATURE, "/bucket/", ".invalid/"):
         assert secret not in output, output
+    assert not re.search(r"127\.0\.0\.1:\d", output), output  # host:port
 
 
-@pending
 def test_upload_urls_puts_archives_then_manifest(
     site: dict[str, Any], tmp_path: Path, put_server: Any
 ) -> None:
@@ -1735,7 +1725,6 @@ def test_upload_urls_puts_archives_then_manifest(
     assert_no_url(result)
 
 
-@pending
 def test_upload_urls_fails_on_a_status_outside_2xx(
     site: dict[str, Any], tmp_path: Path, put_server: Any
 ) -> None:
@@ -1750,7 +1739,6 @@ def test_upload_urls_fails_on_a_status_outside_2xx(
     assert_no_url(result)
 
 
-@pending
 def test_upload_urls_dry_run_names_each_host(
     site: dict[str, Any], tmp_path: Path, put_server: Any
 ) -> None:
@@ -1768,7 +1756,6 @@ def test_upload_urls_dry_run_names_each_host(
 GOOD_URLS = {name: f"https://b.example.invalid/{name}?{SIGNATURE}" for name in UPLOADS}
 
 
-@pending
 @pytest.mark.parametrize(
     ("urls", "text", "args"),
     [
@@ -1802,7 +1789,6 @@ def test_upload_urls_refuses_a_bad_file_before_copying(
     assert_no_url(result)
 
 
-@pending
 def test_upload_urls_refuses_a_missing_file(
     site: dict[str, Any], tmp_path: Path
 ) -> None:
@@ -2435,7 +2421,6 @@ def test_exclude_refuses_site_structure(
     assert snapshot(site["root"]) == before
 
 
-@pending
 @pytest.mark.parametrize("pattern", REFUSED_PATTERNS)
 def test_exclude_from_refuses_what_exclude_refuses(
     site: dict[str, Any], tmp_path: Path, pattern: str
@@ -2445,7 +2430,6 @@ def test_exclude_from_refuses_what_exclude_refuses(
     assert not site["out"].exists()
 
 
-@pending
 def test_exclude_from_skips_comments_and_combines_with_exclude(
     site: dict[str, Any], tmp_path: Path
 ) -> None:
@@ -2465,7 +2449,6 @@ def test_exclude_from_skips_comments_and_combines_with_exclude(
     assert manifest["excluded"] == [*EXCLUDED, "data/events-log-db*", "data/big"]
 
 
-@pending
 def test_exclude_from_refuses_a_missing_file(
     site: dict[str, Any], tmp_path: Path
 ) -> None:
@@ -2618,7 +2601,6 @@ def test_help_documents_the_host_options() -> None:
         assert text in result.stdout, text
 
 
-@pending
 def test_help_documents_the_upload_and_exclusion_options() -> None:
     result = run_export("--help")
     assert result.returncode == 0

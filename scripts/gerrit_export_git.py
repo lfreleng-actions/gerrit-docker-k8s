@@ -48,6 +48,10 @@ are checked the same way. The tool refuses, in every mode, any link on,
 above or beneath a path the import needs, so no such link is left to
 drop.
 
+``read_urls`` checks the ``--upload-urls`` file before anything is
+written; ``upload`` streams each file to its URL by HTTPS PUT and logs
+only the name, the URL's host and the status: such a URL is a secret.
+
 The export tool loads this module, from its own directory, in every
 mode, as it does gerrit_export_host.py. Standard library only, Python
 3.8 or newer.
@@ -55,6 +59,8 @@ mode, as it does gerrit_export_host.py. Standard library only, Python
 
 from __future__ import annotations
 
+import http.client
+import json
 import os
 import shlex
 import shutil
@@ -62,8 +68,11 @@ import stat
 import subprocess
 import sys
 import tempfile
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 PROG = "gerrit-site-export.py"
 GIT = ["git", "-c", "safe.directory=*", "-c", "core.sharedRepository=umask"]
@@ -84,6 +93,7 @@ VANISHED = 24  # rsync: files vanished mid-copy, expected while Gerrit writes.
 PROTECTED = ("etc/gerrit.config", "etc/secure.config", "git", "data/replication")
 KEYSTORE = "etc/samlKeystore.jks"  # site-import's saml.keystorePath when unset.
 WILDCARDS = "?[\\"  # Refused in --exclude; '*' only as its last character.
+PUT_TIMEOUT = 300  # Seconds an upload may wait on its socket.
 
 
 class RepositoryCopyError(OSError):
@@ -96,6 +106,10 @@ class ExcludeError(OSError):
 
 class KeystoreError(OSError):
     """saml.keystorePath is not in normal form."""
+
+
+class UploadError(OSError):
+    """--upload-urls is unusable, or a file failed to upload; names no URL."""
 
 
 def overlaps(pattern: list[str], path: list[str]) -> bool:
@@ -230,6 +244,56 @@ def refuse_exclude(
                 f"{link} is a link site-import refuses, on site structure the"
                 " export must copy; replace the link with what it points at"
             )
+
+
+def read_urls(path: str, names: list[str]) -> dict[str, str]:
+    """The --upload-urls file path: a JSON object mapping exactly names,
+    the files this run uploads, each to an ASCII https:// URL with a host.
+    """
+    try:
+        urls = json.loads(Path(path).read_text(encoding="utf-8"))
+        if not isinstance(urls, dict) or sorted(urls) != sorted(names):
+            raise ValueError(f"map exactly {', '.join(names)} to URLs")
+        for name, url in sorted(urls.items()):
+            if not (isinstance(url, str) and url[:8] == "https://"):
+                raise ValueError(f"give an https:// URL for {name}")
+            try:  # urlsplit's own errors can quote the authority, signature too.
+                split = urlsplit(url)
+                host, _ = split.hostname, split.port  # .port raises on a bad port.
+            except ValueError:
+                host = None
+            if not host or " " in url or not (url.isascii() and url.isprintable()):
+                raise ValueError(f"give a valid ASCII URL with a host for {name}")
+    except (OSError, ValueError) as exc:
+        raise UploadError(f"--upload-urls {path}: {exc}") from None
+    return urls
+
+
+def upload(files: list[tuple[Path, str]], urls: dict[str, str], dry: bool) -> None:
+    """PUT each file, a (path, name), to urls[name], in order, streamed."""
+    for path, name in files:
+        host = urlsplit(urls[name]).hostname
+        if dry:
+            print(f"PUT {name} -> {host}", flush=True)
+            continue
+        try:
+            with open(path, "rb") as body:
+                size = str(os.fstat(body.fileno()).st_size)
+                headers = {"Content-Length": size}
+                headers["Content-Type"] = "application/octet-stream"
+                put = urllib.request.Request(urls[name], body, headers, method="PUT")
+                with urllib.request.urlopen(put, timeout=PUT_TIMEOUT) as reply:
+                    status = reply.status
+        except urllib.error.HTTPError as exc:  # Its body goes unread.
+            status = exc.code
+            exc.close()
+        except (OSError, ValueError, http.client.HTTPException) as exc:
+            why = getattr(exc, "reason", None) or getattr(exc, "strerror", None)
+            message = f"upload of {name} to {host} failed: {why or type(exc).__name__}"
+            raise UploadError(message) from None
+        print(f"{PROG}: PUT {name} -> {host}: HTTP {status}", file=sys.stderr)
+        if not 200 <= status < 300:
+            raise UploadError(f"upload of {name} to {host} failed: HTTP {status}")
 
 
 def repositories(root: str | Path) -> list[str]:
