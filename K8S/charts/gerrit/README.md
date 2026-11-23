@@ -11,6 +11,12 @@ from chart values: Helm renders `etc/gerrit.config`, and
 `etc/secure.config` is written at pod start from Secrets, so the site
 volume holds state only.
 
+This README is the reference for the chart's values and behaviour.
+[OPERATIONS.md](OPERATIONS.md) holds step-by-step runbooks built on
+it: adopting an existing site, restoring from a backup, resetting a
+site, upgrading Gerrit, routine maintenance, uninstalling and the
+admin toolbox.
+
 ## What it deploys
 
 | Resource                          | Purpose                                                        |
