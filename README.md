@@ -1314,12 +1314,14 @@ a local build without them.
 Before publishing, the release workflow scans the image's SBOM with
 Grype and fails on any High or Critical finding that has a fix. The
 `Dockerfile` applies Ubuntu's security updates at build time, and
-Ubuntu packages get no ignore rules.
+Ubuntu packages get no ignore rules. It also replaces the JDK the
+official Gerrit image bundles with a digest-pinned Eclipse Temurin
+JDK, and the build fails unless `java -version` reports that release,
+so a JDK fix arrives by bumping that pin, not `GERRIT_VERSION`.
 
 `.grype.yaml` accepts the findings this repository cannot fix, in
-components it does not build: the upstream `gerrit.war`, the JDK the
-official Gerrit image bundles, plugin jars pinned in
-`docker/plugins.lock`, and the rclone release binary that
+components it does not build: the upstream `gerrit.war`, plugin jars
+pinned in `docker/plugins.lock`, and the rclone release binary that
 `Dockerfile.chart` pins with `TOOL_RCLONE_VERSION`. Each rule names one
 vulnerability and the package's exact name, version and type, with a
 reason. No rule matches by package name alone, by wildcard or by fix
