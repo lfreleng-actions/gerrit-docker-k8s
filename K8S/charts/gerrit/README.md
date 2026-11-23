@@ -555,7 +555,10 @@ few more steps before its export imports cleanly:
   state and keys, such as `.ansible` or `.puppetlabs`; dated copies of
   `gerrit.config`, such as `etc/gerrit.config.*`, which can hold
   secrets that `secure.config` would normally hold; and hook scripts
-  that call programs only that host has.
+  that call programs only that host has. `--exclude-from <file>` reads
+  these patterns from a file, one a line, skipping blank lines and
+  lines starting with `#`, and refuses the same patterns `--exclude`
+  does.
 - The paths the import needs must be real files and directories in
   the site: `etc/gerrit.config`, `etc/secure.config`, `git`,
   `data/replication` and everything beneath them, and the keystore
@@ -595,6 +598,19 @@ few more steps before its export imports cleanly:
   site's own `etc/replication.config`.
 - `--out` needs room for a copy of the site and the repositories plus
   the two archives.
+- Move the result to the cluster's bucket one of three ways.
+  `--upload s3://bucket/prefix` runs `aws s3 cp` and asks for SSE-KMS;
+  where the bucket's policy wants another encryption, `--sse AES256`
+  asks for SSE-S3 and `--sse none` leaves it to the bucket's default.
+  Where the host has no `aws` CLI or credentials, someone who has them
+  can pre-sign a `PUT` URL for each output, and `--upload-urls <file>`
+  sends them with Python alone: `<file>` holds a JSON object mapping
+  `site.tar.zst`, `git.tar.zst` (with the `.age` or `.gpg` suffix
+  under `--encrypt`) and `manifest.json` each to its `https://` URL.
+  The tool checks the file before copying anything and never prints a
+  URL. It cannot delete an old manifest, so pre-sign each export under
+  a fresh prefix. Otherwise copy the `--out` directory by hand,
+  archives first and `manifest.json` last.
 - Export the site at its real path, where Gerrit runs it, not a copy
   moved elsewhere: the import resolves an absolute
   `saml.keystorePath` against the site path the manifest records, and

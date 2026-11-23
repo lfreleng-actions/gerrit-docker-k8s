@@ -1071,7 +1071,14 @@ previous manifest and archives first and writes the new manifest
 last, so a directory with a `manifest.json` holds a complete export.
 `--upload` does the same at the S3 prefix: it deletes the old
 `manifest.json` there before sending the archives, so its credentials
-need `s3:DeleteObject` as well as `s3:PutObject`.
+need `s3:DeleteObject` as well as `s3:PutObject`. It asks for SSE-KMS
+encryption; `--sse AES256` asks for SSE-S3 instead, and `--sse none`
+leaves the objects to the bucket's default encryption. Where the host
+has no `aws` CLI or credentials, `--upload-urls <file>` sends the
+same outputs by HTTPS `PUT` to pre-signed URLs: `<file>` holds a JSON
+object mapping `site.tar.zst`, `git.tar.zst` (with the `.age` or
+`.gpg` suffix under `--encrypt`) and `manifest.json` each to its URL.
+It cannot delete the old manifest, so give each export a fresh prefix.
 
 ```bash
 # Pre-copy while Gerrit runs; re-run as often as you like
@@ -1135,6 +1142,10 @@ shrinks although the plugin keeps only `maxAge` days of events:
 python3 scripts/gerrit-site-export.py final --site /var/gerrit \
   --out /backup/gerrit --pack --exclude 'data/events-log-db*'
 ```
+
+`--exclude-from <file>` passes each line of `<file>` as an `--exclude`,
+skipping blank lines and lines starting with `#`, so a host's list of
+exclusions can live in one reviewed file.
 
 That leaves out `data/events-log-db.h2.db` and its `.lock.db` and
 `.trace.db` files. The trade-off: on a restore the plugin starts an
