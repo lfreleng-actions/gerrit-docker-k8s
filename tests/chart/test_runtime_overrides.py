@@ -69,7 +69,6 @@ def test_disabled_mounts_nothing(tmp_path: Path) -> None:
     assert "GERRIT_RUNTIME_OVERRIDES" not in site_init_env(docs)
 
 
-@pytest.mark.xfail(strict=True, reason="runtime overrides not yet added")
 @needs_helm
 @pytest.mark.parametrize(
     ("name", "expected"),
@@ -155,7 +154,6 @@ def installed(env: dict[str, str], key: str) -> list[str]:
     return proc.stdout.splitlines()
 
 
-@pytest.mark.xfail(strict=True, reason="runtime overrides not yet added")
 def test_allowed_key_is_set(site: dict[str, str]) -> None:
     mount_configmap(site, {"auth.loginUrl": LOGIN + "\n", "auth.loginText": "SSO"})
     proc = run_site_init(site)
@@ -166,7 +164,6 @@ def test_allowed_key_is_set(site: dict[str, str]) -> None:
     assert f"Runtime override: set auth.loginUrl = {LOGIN}" in proc.stdout
 
 
-@pytest.mark.xfail(strict=True, reason="runtime overrides not yet added")
 @pytest.mark.parametrize("value", ["", "\n"])
 def test_empty_value_removes_the_key(site: dict[str, str], value: str) -> None:
     mount_configmap(site, {"auth.loginUrl": value, "auth.logoutUrl": ""})
@@ -177,7 +174,6 @@ def test_empty_value_removes_the_key(site: dict[str, str], value: str) -> None:
     assert "Runtime override: removed auth.loginUrl" in proc.stdout
 
 
-@pytest.mark.xfail(strict=True, reason="runtime overrides not yet added")
 @pytest.mark.parametrize(
     "key",
     [
@@ -213,7 +209,6 @@ def test_missing_configmap_changes_nothing(site: dict[str, str], state: str) -> 
     assert "Runtime override" not in proc.stdout + proc.stderr
 
 
-@pytest.mark.xfail(strict=True, reason="runtime overrides not yet added")
 def test_fresh_site_keeps_overrides_through_init(
     site: dict[str, str], tmp_path: Path
 ) -> None:
@@ -253,7 +248,6 @@ def test_fresh_site_keeps_overrides_through_init(
     assert (Path(site["GERRIT_SITE"]) / ".chart" / "initialised").is_file()
 
 
-@pytest.mark.xfail(strict=True, reason="runtime overrides not yet added")
 def test_readme_lists_the_allowed_keys() -> None:
     script = SITE_INIT.read_text(encoding="utf-8")
     match = re.search(r'^override_keys="([^"]*)"$', script, re.MULTILINE)

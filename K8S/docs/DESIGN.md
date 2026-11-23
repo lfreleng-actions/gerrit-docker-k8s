@@ -117,11 +117,18 @@ must succeed before the next starts:
    `etc/its/actions-its-jira.config`, with healthcheck enabled
    `etc/healthcheck.config`, with events-log enabled
    `etc/events-log.config`, and with lfs enabled `etc/lfs.config`
-   (section 1.4). On a site without
-   `.chart/initialised` it then runs
+   (section 1.4). With `runtimeOverrides.enabled` it then applies the
+   operator's overrides ConfigMap, which the chart mounts read-only
+   and optional but never renders, so Helm and Argo CD leave an
+   operator's edit alone: each key on the allow-list in `site-init.sh`
+   (`auth.loginUrl`, `auth.logoutUrl` and `auth.loginText`) with a
+   non-empty value is set in `etc/gerrit.config` with `git config`,
+   one with an empty value is removed, and any other key is logged by
+   name and ignored; a missing ConfigMap changes nothing. On a site
+   without `.chart/initialised` it then runs
    `gerrit init --batch --no-auto-start` on that configuration,
-   installs the rendered files again over whatever init added, and
-   only then writes that marker, with the Gerrit version and the time,
+   installs the rendered files and the overrides again over whatever
+   init added, and only then writes that marker, with the Gerrit version and the time,
    so a restart never re-initialises a site and one after an init that
    failed part way, even past creating `All-Projects`, runs it again.
    Right after the marker it creates the backup lock (section 1.8).

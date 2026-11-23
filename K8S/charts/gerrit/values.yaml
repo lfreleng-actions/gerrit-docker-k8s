@@ -72,6 +72,15 @@ auth:
   gitBasicAuthPolicy: null
   contributorAgreements: null
   editableAccountFields: []
+  # Where the sign-in and sign-out links send the browser, and the text
+  # of the sign-in link; null renders nothing. loginUrl and logoutUrl
+  # must be absolute http:// or https:// URLs. With an HTTP auth type,
+  # SAML included, Gerrit serves the root page anonymously only with
+  # loginUrl set. runtimeOverrides can set or remove all three without
+  # a values change. See "Authentication" in the chart README.
+  loginUrl: null
+  logoutUrl: null
+  loginText: null
   # SAML single sign-on through the saml library in the image
   # catalogue. Enabling it adds "saml" to the libraries site-init
   # copies, sets auth.type to HTTP and httpd.filterClass to the SAML
@@ -636,6 +645,17 @@ serviceAccount:
   annotations: {}
 
 podAnnotations: {}
+
+# Settings an operator switches without a values change. With enabled,
+# the pod mounts the ConfigMap configMapName ("" for
+# <fullname>-overrides) read-only and optional; the chart never renders
+# it, so Helm and Argo CD leave it alone. At each start site-init sets
+# each allowed key the ConfigMap carries in etc/gerrit.config, and an
+# empty value removes the key. A change takes effect at the next pod
+# start. See "Runtime overrides" in the chart README.
+runtimeOverrides:
+  enabled: false
+  configMapName: ""
 
 nodeSelector: {}
 tolerations: []

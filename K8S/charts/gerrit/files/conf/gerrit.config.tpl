@@ -19,6 +19,7 @@ ConfigMap. Keys the chart derives win over the same key in values.
 {{- /* Fails the render unless values choose authentication */}}
 {{- $_ := include "gerrit.authType" . -}}
 {{- include "gerrit.refuseCookieSecure" . -}}
+{{- include "gerrit.checkAuthUrls" . -}}
 {{- $sections := list "gerrit" "httpd" "sshd" "auth" "sendemail" "container" "cache" "change" "receive" "download" "index" "gc" "plugins" "log" "user" "trackingid" "accounts" "suggest" -}}
 {{- if include "gerrit.samlEnabled" . }}
 {{- /* The SAML filter authenticates each request and hands Gerrit the

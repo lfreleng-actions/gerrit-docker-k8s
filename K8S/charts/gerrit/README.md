@@ -97,11 +97,14 @@ empty or absent optional key leaves its entry out of `secure.config`.
    with `plugins.healthcheck.enabled`, `etc/healthcheck.config`, and
    with `plugins.events-log.enabled`, `etc/events-log.config`, and
    with `plugins.lfs.enabled`, `etc/lfs.config`. With
-   replication disabled it removes the site's `etc/replication.config`. On a site
+   replication disabled it removes the site's `etc/replication.config`.
+   With `runtimeOverrides.enabled` it then sets or removes, in
+   `etc/gerrit.config`, the allowed keys the operator's overrides
+   ConfigMap carries; see [Runtime overrides](#runtime-overrides). On a site
    without the `.chart/initialised` marker it then runs
    `gerrit init --batch --no-auto-start` on that configuration,
-   installs the rendered files again over whatever init added, and
-   only then writes the marker, recording the Gerrit version and the
+   installs the rendered files again over whatever init added, then
+   the runtime overrides, and only then writes the marker, recording the Gerrit version and the
    time; a start that failed part way leaves no marker, so the next
    runs init again. A site from an earlier chart version has no
    marker, so its first start under this one runs init once more,
@@ -223,6 +226,8 @@ Argo CD; `K8S/docs/DESIGN.md` section 6 explains its settings.
 | `networkPolicy.enabled`                  | `true`                           |                                                            |
 | `auth.type`                              | `""`                             | Required unless SAML is on; see [Authentication](#authentication) |
 | `auth.allowDevelopmentAccounts`          | `false`                          | Opt-in for `DEVELOPMENT_BECOME_ANY_ACCOUNT`; see [Authentication](#authentication) |
+| `auth.loginUrl`, `.logoutUrl`           | `null`                           | Absolute `http(s)://` URLs; see [Sign-in and sign-out links](#sign-in-and-sign-out-links) |
+| `auth.loginText`                         | `null`                           | Text of the sign-in link                                   |
 | `auth.saml.enabled`                      | `false`                          | See [SAML](#saml)                                          |
 | `auth.saml.existingSecret`               | `""`                             | Pre-created Secret with the SAML keys; `""` creates `<fullname>-saml` |
 | `auth.saml.metadataUrl`                  | `""`                             | IdP metadata URL; set this or `metadataFromSecret`         |
@@ -231,6 +236,8 @@ Argo CD; `K8S/docs/DESIGN.md` section 6 explains its settings.
 | `auth.saml.*Attr`, `.computedDisplayName`, `.maxAuthLifetime` | See `values.yaml` | The `[saml]` keys of the same name             |
 | `auth.saml.useNameQualifier`             | `null`                           | `false` ignores the IdP's NameQualifier; see [SAML](#saml) |
 | `auth.saml.memberOfAttr`                 | `null`                           | Group membership sync, off when unset; see [Group membership sync](#group-membership-sync) |
+| `runtimeOverrides.enabled`               | `false`                          | Mounts the operator-owned overrides ConfigMap; see [Runtime overrides](#runtime-overrides) |
+| `runtimeOverrides.configMapName`         | `""`                             | `""` for `<fullname>-overrides`                            |
 | `replication.enabled`                    | `false`                          | See [Replication](#replication)                            |
 | `replication.autoReload`                 | `true`                           | `gerrit.autoReload` in `replication.config`                |
 | `replication.lockErrorMaxRetries`, `.maxRetries` | `5`, `5`                 | `[replication]` globals                                    |
@@ -1055,7 +1062,16 @@ The render fails with an error naming the fix when values:
   itself whenever a request arrives over HTTPS
   ([3.13 release notes](https://www.gerritcodereview.com/3.13.html)),
   so the key would be silently ignored. `null`, `""` or an empty list
-  renders no key and passes.
+  renders no key and passes;
+- set `auth.loginUrl` or `auth.logoutUrl`, in any case, to anything
+  but an absolute `http://` or `https://` URL in RFC 3986 form, with a
+  host name or a bracketed IPv6 address and only the characters RFC
+  3986 allows in each part, every `%` starting a two-digit hex escape,
+  such as `/login`, `https://?next=/login`, `https://[deadbeef]/`,
+  `https://sso.example.org|/login`, `https://sso.example.org/a%zz` or
+  a list:
+  `auth.loginUrl must be an absolute http:// or https:// URL`.
+  `null` or `""` renders no key and passes.
 
 `gerrit.extraConfig` cannot carry an `[auth]` section. Every `[auth]`
 setting is set through `auth` values, which render every key they
@@ -1089,6 +1105,34 @@ client requests and sets them itself; the chart's own Ingress does
 not, so behind it any client can claim any account. SAML is safe here
 because its filter discards client-supplied `X-SAML-*` headers before
 it sets them from the verified assertion.
+
+### Sign-in and sign-out links
+
+`auth.loginUrl`, `auth.logoutUrl` and `auth.loginText` render into
+`[auth]` when set, with or without SAML, and nothing while `null`, the
+default
+([config-gerrit: auth.loginUrl](https://gerrit-review.googlesource.com/Documentation/config-gerrit.html#auth.loginUrl)).
+With SAML they sit beside the keys SAML sets and never replace `type`
+or the `http*Header` keys.
+
+With an `HTTP` auth type, which SAML selects, Gerrit treats the root
+page as sign-in only unless `auth.loginUrl` is set: an anonymous
+request for `<urlPrefix>/` gets a short page whose script sends the
+browser to `login/`, which with SAML starts the round trip to the
+identity provider. Deep links such as `<urlPrefix>/q/status:open`
+still serve the web app anonymously. With `auth.loginUrl` set, the
+root page serves the web app to anonymous users too, and they sign in
+only when they follow the sign-in link. A site imported from a server
+that sets `auth.loginUrl` keeps that behaviour only with the same
+value here.
+
+```yaml
+auth:
+  loginUrl: https://gerrit.example.org/login/
+```
+
+[Runtime overrides](#runtime-overrides) can set or remove these keys
+without a values change.
 
 ## SAML
 
@@ -1248,6 +1292,55 @@ absolute within the exported site directory or `/var/gerrit`. It
 refuses a path outside the site, and a path other than
 `etc/samlKeystore.jks` that names no file in the export, since it
 cannot then tell whether the Secret keeps the site's identity.
+
+## Runtime overrides
+
+Every other chart setting comes from values, so under Argo CD each
+change is a commit. `runtimeOverrides` lets an operator switch a few
+`gerrit.config` keys without one, during a rehearsal or an incident
+for example, from a ConfigMap the operator owns:
+
+```yaml
+runtimeOverrides:
+  enabled: true
+  configMapName: ""   # "" for <fullname>-overrides
+```
+
+With `enabled`, the pod mounts that ConfigMap read-only into
+`site-init`, with `optional: true`. The chart never renders it, so
+neither Helm nor Argo CD manages it, and a sync never reverts an
+operator's `kubectl` edit. A missing ConfigMap changes nothing.
+
+At every start, right after it installs the rendered `gerrit.config`,
+`site-init` reads each key of the ConfigMap as a `gerrit.config` name,
+`<section>.<key>` or `<section>.<subsection>.<key>`, spelt exactly as
+listed below. A non-empty value sets that key, replacing what values
+render; an empty value removes the key, which turns off a setting the
+values make. Only these keys are accepted:
+
+- `auth.loginUrl`
+- `auth.logoutUrl`
+- `auth.loginText`
+
+`site-init` logs each key it sets or removes, with its value. It
+ignores any other key, logging only its name. The chart's derived
+keys, such as `auth.type`, the `http*Header` keys, `[saml]`,
+`httpd.filterClass` and `gerrit.serverId`, are never on the list. The
+values are not checked the way the render checks `auth` values, so
+give `auth.loginUrl` and `auth.logoutUrl` absolute `http://` or
+`https://` URLs here too.
+
+```sh
+kubectl -n gerrit create configmap gerrit-overrides \
+  --from-literal=auth.loginUrl=https://gerrit.example.org/login/
+kubectl -n gerrit rollout restart statefulset/gerrit
+```
+
+A change takes effect at the next start of the pod, so restart it with
+`kubectl rollout restart` after an edit. Where the cluster runs a
+reloader controller, `podAnnotations` can carry the annotation it
+watches for, so it restarts the pod on a change to the ConfigMap; the
+chart adds no reloader of its own.
 
 ## Hooks
 

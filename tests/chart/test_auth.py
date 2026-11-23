@@ -337,7 +337,6 @@ def auth_key(config: str, tmp_path: Path, key: str) -> list[str]:
     return proc.stdout.splitlines()
 
 
-@pytest.mark.xfail(strict=True, reason="auth login keys not yet added")
 def test_login_keys_default_to_unset() -> None:
     values = yaml.safe_load((CHART / "values.yaml").read_text(encoding="utf-8"))
     for key in LOGIN_KEYS:
@@ -368,7 +367,6 @@ def test_unset_login_keys_render_nothing(tmp_path: Path, key: str, value: Any) -
     assert auth_key(config, tmp_path, key) == []
 
 
-@pytest.mark.xfail(strict=True, reason="auth login keys not yet added")
 @pytest.mark.parametrize(
     "value",
     [
@@ -420,6 +418,15 @@ def test_bad_login_url_fails(
         "https://sso.example.org?next=/",
         "https://user@sso.example.org/login",
         "https://[2001:db8::1]:8443/login",
+        "https://[::1]/",
+        "https://[1:2:3:4:5:6:7:8]/login",
+        "https://[::ffff:192.0.2.1]:8443/login",
+        "https://[1:2:3:4:5:6:192.0.2.1]/login",
+        "https://sso-1.example.org/saml/login",
+        "https://us%2Der@sso.example.org/login",
+        "https://sso.example.org/a%2Fb/login?next=%2F&x=1#top",
+        "https://sso.example.org/login?return=/q/status:open",
+        "https://sso.example.org/~gerrit/login;jsessionid=1",
     ],
 )
 def test_login_url_accepts_http_and_https(tmp_path: Path, value: str) -> None:
