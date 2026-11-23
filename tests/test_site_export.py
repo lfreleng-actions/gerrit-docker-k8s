@@ -22,6 +22,7 @@ the real ``/proc`` point the variable back at it.
 from __future__ import annotations
 
 import hashlib
+import importlib
 import io
 import json
 import os
@@ -2327,3 +2328,643 @@ def test_exclude_refuses_a_store_given_inside_the_site(
         "--exclude",
         "srv/repos",
     )
+
+
+def has_python_zstd() -> bool:
+    try:
+        importlib.import_module("compression.zstd")
+    except ImportError:
+        return False
+    return True
+
+
+needs_python_zstd = pytest.mark.skipif(
+    not has_python_zstd(), reason="Python packing needs compression.zstd, 3.14+"
+)
+HOST_LINKS = [
+    ("hooks/change-merged", "/usr/local/bin/change-merged"),
+    ("hooks/patchset-created", "../../outside/patchset-created"),
+]
+# Runs the tool with compression.zstd unimportable, as on Python 3.13 or older.
+WITHOUT_PYTHON_ZSTD = (
+    "import os, runpy, sys; tool = sys.argv.pop(1); sys.argv[0] = tool;"
+    " sys.path[0] = os.path.dirname(tool); sys.modules['compression.zstd'] = None;"
+    " runpy.run_path(tool, run_name='__main__')"
+)
+
+
+def add_link(site: dict[str, Any], name: str, target: str) -> None:
+    (site["root"] / name).parent.mkdir(parents=True, exist_ok=True)
+    (site["root"] / name).symlink_to(target)
+
+
+def chart_links(site: dict[str, Any]) -> None:
+    """The links a chart site holds: site-init's g2p link and hook links."""
+    root = site["root"]
+    (root / "etc" / "replication.config").write_text("[remote]\n")
+    add_link(
+        site,
+        ".config/gerrit_to_platform/replication.config",
+        "/var/gerrit/etc/replication.config",
+    )
+    for hook in ("change-merged", "patchset-created"):
+        add_link(site, f"hooks/{hook}", f"/opt/gerrit-tools/bin/{hook}")
+
+
+def unzstd(archive: Path) -> bytes:
+    """Decompress archive with the zstd program, or compression.zstd."""
+    if shutil.which("zstd"):
+        command = ["zstd", "-q", "-d", "-c", str(archive)]
+        return subprocess.run(command, capture_output=True, check=True).stdout
+    data: bytes = importlib.import_module("compression.zstd").decompress(
+        archive.read_bytes()
+    )
+    return data
+
+
+@pytest.mark.xfail(strict=True, reason="needs the host-site options")
+def test_help_documents_the_host_options() -> None:
+    result = run_export("--help")
+    assert result.returncode == 0
+    for text in ("--zstd", "--drop-foreign-links", "gerrit_export_host.py"):
+        assert text in result.stdout, text
+
+
+@pytest.mark.xfail(strict=True, reason="needs the site's own g2p link")
+@pytest.mark.parametrize("mode", ["seed", "final"])
+def test_export_accepts_the_sites_own_g2p_link(site: dict[str, Any], mode: str) -> None:
+    root = Path(os.path.realpath(site["root"]))
+    (root / "etc" / "replication.config").write_text("[remote]\n")
+    add_link(
+        site,
+        ".config/gerrit_to_platform/replication.config",
+        str(root / "etc" / "replication.config"),
+    )
+    export_ok(site, mode)
+    assert not os.path.lexists(site["out"] / "site" / ".config" / "gerrit_to_platform")
+
+
+@pytest.mark.parametrize("target", ["etc/other.config", "etc"])
+def test_export_refuses_another_g2p_link_into_the_site(
+    site: dict[str, Any], target: str
+) -> None:
+    root = Path(os.path.realpath(site["root"]))
+    (root / "etc" / "other.config").write_text("token = x\n")
+    add_link(site, ".config/gerrit_to_platform/replication.config", str(root / target))
+    export_fails(site, "under another name", "final")
+
+
+@pytest.mark.xfail(strict=True, reason="needs the foreign link check")
+@pytest.mark.parametrize("mode", ["seed", "final", "backup"])
+def test_export_refuses_links_the_import_refuses(
+    site: dict[str, Any], mode: str
+) -> None:
+    for name, target in HOST_LINKS:
+        add_link(site, name, target)
+    result = export_fails(site, "--drop-foreign-links", mode)
+    for name, target in HOST_LINKS:
+        assert f"{name} -> {target}" in result.stderr
+    assert "--exclude" in result.stderr
+    assert not site["out"].exists()
+
+
+@pytest.mark.xfail(strict=True, reason="needs --drop-foreign-links")
+@pytest.mark.parametrize("mode", ["final", "backup"])
+def test_drop_foreign_links_leaves_them_out(site: dict[str, Any], mode: str) -> None:
+    if mode == "backup" and not shutil.which("zstd") and not has_python_zstd():
+        pytest.skip("backup packs, which needs zstd or compression.zstd")
+    for name, target in HOST_LINKS:
+        add_link(site, name, target)
+    add_link(site, "hooks/ref-updated", "/opt/gerrit-tools/bin/ref-updated")
+    result = run_on(site, mode, "--drop-foreign-links")
+    assert result.returncode == 0, result.stderr
+    manifest = json.loads((site["out"] / "manifest.json").read_text())
+    assert manifest["dropped_links"] == sorted(n for n, _ in HOST_LINKS)
+    for name, _ in HOST_LINKS:
+        assert result.stderr.count(name) == 1, result.stderr
+        assert not os.path.lexists(site["out"] / "site" / name)
+    kept = site["out"] / "site" / "hooks" / "ref-updated"
+    assert os.readlink(kept) == "/opt/gerrit-tools/bin/ref-updated"
+
+
+@pytest.mark.parametrize("hooks_path", ["", "/var/gerrit/hooks"])
+def test_export_passes_links_the_import_accepts(
+    site: dict[str, Any], hooks_path: str
+) -> None:
+    if hooks_path:
+        config = site["root"] / "etc" / "gerrit.config"
+        config.write_text(config.read_text() + f"[hooks]\n\tpath = {hooks_path}\n")
+    add_link(site, "hooks/change-merged", "/opt/gerrit-tools/bin/change-merged")
+    add_link(site, "hooks/comment-added", "../etc/comment-added")
+    manifest = export_ok(site, "final")
+    out = site["out"] / "site" / "hooks"
+    assert os.readlink(out / "change-merged") == "/opt/gerrit-tools/bin/change-merged"
+    assert os.readlink(out / "comment-added") == "../etc/comment-added"
+    assert "dropped_links" not in manifest
+
+
+@pytest.mark.parametrize("exclude", ["hooks", "hooks/change-*"])
+def test_exclude_covering_a_foreign_link_lets_the_export_run(
+    site: dict[str, Any], exclude: str
+) -> None:
+    add_link(site, "hooks/change-merged", "/usr/local/bin/change-merged")
+    manifest = export_ok(site, "final", "--exclude", exclude)
+    assert not os.path.lexists(site["out"] / "site" / "hooks" / "change-merged")
+    assert "dropped_links" not in manifest
+
+
+@pytest.mark.parametrize(
+    "name", ["etc/gerrit.config", "etc/secure.config", "data/replication/ref-updates"]
+)
+@pytest.mark.xfail(strict=True, reason="needs the site-structure link check")
+def test_drop_foreign_links_refuses_links_on_site_structure(
+    site: dict[str, Any], tmp_path: Path, name: str
+) -> None:
+    held = tmp_path / "held"
+    held.write_bytes((site["root"] / "etc" / "gerrit.config").read_bytes())
+    (site["root"] / name).unlink(missing_ok=True)
+    add_link(site, name, str(held))
+    export_fails(site, "replace the link", "final", "--drop-foreign-links")
+    assert not site["out"].exists()
+
+
+LINKED_STRUCTURE = [
+    # A linked keystore, even to a file within the site.
+    ([("etc/host-saml.jks", "real.jks")], "etc/host-saml.jks, which is a link"),
+    # A link under data/replication, and a directory link that leads into it.
+    (
+        [("data/replication/ref-updates", "../../queue")],
+        "data/replication/ref-updates, a link under data/replication",
+    ),
+    (
+        [("data/replication", "../queue")],
+        "data/replication, which is a link",
+    ),
+    # A path the import needs beneath a link.
+    ([("etc", "conf")], "etc/gerrit.config, which lies beneath etc, a link"),
+    (
+        [("etc/gerrit.config", "../conf/gerrit.config")],
+        "etc/gerrit.config, which is a link",
+    ),
+    # Configuration leading into a repository store linked out of the site.
+    (
+        [("srv", "STORE"), ("etc/gerrit.config", "../srv/host.config")],
+        "etc/gerrit.config, which is a link",
+    ),
+]
+
+
+@pytest.mark.xfail(strict=True, reason="needs links on site structure refused")
+@pytest.mark.parametrize(("links", "error"), LINKED_STRUCTURE)
+def test_links_on_what_the_import_needs_are_refused(
+    site: dict[str, Any], tmp_path: Path, links: list[tuple[str, str]], error: str
+) -> None:
+    root = site["root"]
+    config = ["git", "config", "-f", str(root / "etc" / "gerrit.config")]
+    subprocess.run([*config, "saml.keystorePath", "etc/host-saml.jks"], check=True)
+    (root / "etc" / "real.jks").write_bytes(b"keystore")
+    (root / "queue").mkdir()
+    (root / "conf").mkdir()
+    shutil.copy(root / "etc" / "gerrit.config", root / "conf" / "gerrit.config")
+    store = tmp_path / "external" / "repos"
+    if ("srv", "STORE") in links:
+        subprocess.run([*config, "gerrit.basePath", "srv"], check=True)
+        store.parent.mkdir()
+        os.replace(root / "git", store)
+        shutil.copy(root / "etc" / "gerrit.config", store / "host.config")
+    for name, target in links:
+        path = root / name
+        if path.is_dir() and not path.is_symlink():
+            if name == "etc":
+                shutil.copytree(path, root / target, dirs_exist_ok=True)
+            shutil.rmtree(path)
+        path.unlink(missing_ok=True)
+        add_link(site, name, str(store) if target == "STORE" else target)
+    for mode, args in [
+        ("seed", []),
+        ("final", ["--drop-foreign-links"]),
+        ("backup", ["--drop-foreign-links", "--exclude", "queue"]),
+    ]:
+        result = export_fails(site, error, mode, *args)
+        assert "replace the link with the file or directory" in result.stderr
+        assert not site["out"].exists()
+
+
+@pytest.mark.parametrize(
+    "configured",
+    ["etc/host-saml.jks", "SITE/etc/host-saml.jks", "/var/gerrit/etc/host-saml.jks"],
+)
+@pytest.mark.parametrize(
+    ("args", "error"),
+    [
+        (["--drop-foreign-links"], "etc/host-saml.jks, which is a link"),
+        (["--exclude", "etc/host-*"], "--exclude etc/host-* overlaps site structure"),
+    ],
+)
+@pytest.mark.xfail(strict=True, reason="needs the SAML keystore kept")
+def test_configured_saml_keystore_is_kept(
+    site: dict[str, Any], tmp_path: Path, configured: str, args: list[str], error: str
+) -> None:
+    root = site["root"]
+    held = tmp_path / "host-saml.jks"
+    held.write_bytes(b"keystore")
+    path = configured.replace("SITE", str(root.resolve()))
+    config = ["git", "config", "-f", str(root / "etc" / "gerrit.config")]
+    subprocess.run([*config, "saml.keystorePath", path], check=True)
+    add_link(site, "etc/host-saml.jks", str(held))
+    export_fails(site, error, "final", *args)
+    assert not site["out"].exists()
+
+
+@pytest.mark.xfail(strict=True, reason="needs the keystore in normal form")
+@pytest.mark.parametrize(
+    "configured",
+    [
+        "./etc/host.jks",
+        "etc/./host.jks",
+        "etc//host.jks",
+        "etc/host.jks/",
+        "tmp/../etc/host.jks",
+        "../site/etc/host.jks",
+        "SITE/etc/../etc/host.jks",
+        "SITE/./etc/host.jks",
+        "/var/gerrit/tmp/../etc/host.jks",
+        "SITE",
+    ],
+)
+def test_unnormalized_saml_keystore_is_refused(
+    site: dict[str, Any], configured: str
+) -> None:
+    root = site["root"]
+    path = configured.replace("SITE", str(root.resolve()))
+    config = ["git", "config", "-f", str(root / "etc" / "gerrit.config")]
+    subprocess.run([*config, "saml.keystorePath", path], check=True)
+    (root / "tmp").mkdir(exist_ok=True)
+    (root / "etc" / "host.jks").write_bytes(b"keystore")
+    for mode, args in [
+        ("backup", []),
+        ("seed", ["--exclude", "etc/host*"]),
+        ("final", ["--drop-foreign-links"]),
+    ]:
+        result = export_fails(site, f"saml.keystorePath {path} ", mode, *args)
+        assert "the site" in result.stderr
+        assert not site["out"].exists()
+
+
+@pytest.mark.xfail(strict=True, reason="needs the keystore inside the site")
+@pytest.mark.parametrize(
+    "configured",
+    ["/opt/keys/host.jks", "/var/gerrit-old/etc/host.jks", "SITE-old/etc/host.jks"],
+)
+def test_saml_keystore_outside_the_site_is_refused(
+    site: dict[str, Any], configured: str
+) -> None:
+    root = site["root"]
+    path = configured.replace("SITE", str(root.resolve()))
+    config = ["git", "config", "-f", str(root / "etc" / "gerrit.config")]
+    subprocess.run([*config, "saml.keystorePath", path], check=True)
+    for mode, args in [
+        ("backup", []),
+        ("seed", ["--exclude", "etc/host*"]),
+        ("final", ["--drop-foreign-links"]),
+    ]:
+        result = export_fails(
+            site, f"saml.keystorePath {path} lies outside", mode, *args
+        )
+        assert "move the keystore into the site" in result.stderr
+        assert not site["out"].exists()
+
+
+@pytest.mark.xfail(strict=True, reason="needs a missing keystore refused")
+@pytest.mark.parametrize("kind", ["missing", "directory"])
+@pytest.mark.parametrize(
+    "configured", ["etc/host.jks", "SITE/etc/host.jks", "/var/gerrit/etc/host.jks"]
+)
+def test_configured_saml_keystore_must_be_a_file(
+    site: dict[str, Any], configured: str, kind: str
+) -> None:
+    root = site["root"]
+    path = configured.replace("SITE", str(root.resolve()))
+    config = ["git", "config", "-f", str(root / "etc" / "gerrit.config")]
+    subprocess.run([*config, "saml.keystorePath", path], check=True)
+    if kind == "directory":
+        (root / "etc" / "host.jks").mkdir()
+    for mode, args in [
+        ("backup", []),
+        ("seed", ["--drop-foreign-links"]),
+        ("final", ["--exclude", "scratch"]),
+    ]:
+        result = export_fails(site, "SAML keystore etc/host.jks, which is", mode, *args)
+        assert "not a regular file" in result.stderr
+        assert not site["out"].exists()
+
+
+@pytest.mark.parametrize(
+    "configured", ["etc/samlKeystore.jks", "/var/gerrit/etc/samlKeystore.jks"]
+)
+def test_missing_default_saml_keystore_passes(
+    site: dict[str, Any], configured: str
+) -> None:
+    config = ["git", "config", "-f", str(site["root"] / "etc" / "gerrit.config")]
+    subprocess.run([*config, "saml.keystorePath", configured], check=True)
+    export_ok(site, "backup")
+
+
+@pytest.mark.xfail(strict=True, reason="needs links on site structure refused")
+@pytest.mark.parametrize(
+    "configured",
+    [
+        "etc/bridge/host.jks",
+        "SITE/etc/bridge/host.jks",
+        "/var/gerrit/etc/bridge/host.jks",
+    ],
+)
+def test_keystore_beneath_a_linked_ancestor_is_refused(
+    site: dict[str, Any], configured: str
+) -> None:
+    root = site["root"]
+    path = configured.replace("SITE", str(root.resolve()))
+    config = ["git", "config", "-f", str(root / "etc" / "gerrit.config")]
+    subprocess.run([*config, "saml.keystorePath", path], check=True)
+    (root / "data" / "deep").mkdir(parents=True, exist_ok=True)
+    (root / "data" / "deep" / "host.jks").write_bytes(b"keystore")
+    add_link(site, "etc/bridge", "../data/deep")
+    error = "etc/bridge/host.jks, which lies beneath etc/bridge, a link"
+    for mode, args in [("seed", []), ("final", ["--exclude", "data/deep*"])]:
+        export_fails(site, error, mode, *args)
+        assert not site["out"].exists()
+
+
+@pytest.mark.xfail(strict=True, reason="needs left-out site structure refused")
+@pytest.mark.parametrize(
+    ("base", "keystore"),
+    [
+        ("git", "logs/host.jks"),
+        ("git", "x.lock/host.jks"),
+        ("git", "tmp/host.jks"),
+        ("srv/repos", "srv/repos/host.jks"),
+        ("git", "git/host.jks"),
+        ("git", "plugins/host.jks"),
+        ("git", "lib/host.jks"),
+    ],
+)
+def test_what_the_import_needs_in_a_path_left_out_is_refused(
+    site: dict[str, Any], base: str, keystore: str
+) -> None:
+    root = site["root"]
+    config = ["git", "config", "-f", str(root / "etc" / "gerrit.config")]
+    subprocess.run([*config, "gerrit.basePath", base], check=True)
+    subprocess.run([*config, "saml.keystorePath", keystore], check=True)
+    (root / base).parent.mkdir(parents=True, exist_ok=True)
+    os.replace(root / "git", root / base)
+    (root / keystore).parent.mkdir(parents=True, exist_ok=True)
+    (root / keystore).write_bytes(b"keystore")
+    for mode in ("backup", "seed", "final"):
+        result = export_fails(site, f"{keystore}, which lies in a path", mode)
+        assert "move it to a path both keep" in result.stderr
+        assert not site["out"].exists()
+
+
+@pytest.mark.parametrize(
+    "links",
+    [
+        [("hooks/custom", "../plugins/custom.jar")],
+        [("hooks/key", "../.ssh/id_rsa")],
+        [("extra", "lib"), ("hooks/custom", "../extra/custom.jar")],
+    ],
+)
+@pytest.mark.xfail(strict=True, reason="needs links into skipped trees refused")
+def test_links_into_trees_the_import_skips_are_refused(
+    site: dict[str, Any], links: list[tuple[str, str]]
+) -> None:
+    for name, target in links:
+        add_link(site, name, target)
+    result = export_fails(site, "--drop-foreign-links", "final")
+    for name, target in links:
+        assert f"{name} -> {target}" in result.stderr
+    manifest = export_ok(site, "final", "--drop-foreign-links")
+    assert manifest["dropped_links"] == sorted(n for n, _ in links)
+
+
+@pytest.mark.parametrize("skipped", ["plugins", "lib"])
+@pytest.mark.xfail(strict=True, reason="needs links through skipped trees refused")
+def test_links_through_a_link_the_import_skips_are_refused(
+    site: dict[str, Any], skipped: str
+) -> None:
+    shutil.rmtree(site["root"] / skipped, ignore_errors=True)
+    (site["root"] / "data" / "custom").mkdir(parents=True)
+    add_link(site, skipped, "data")
+    add_link(site, "hooks/custom", f"../{skipped}/custom")
+    result = export_fails(site, "--drop-foreign-links", "final")
+    assert f"hooks/custom -> ../{skipped}/custom" in result.stderr
+    manifest = export_ok(site, "final", "--drop-foreign-links")
+    assert manifest["dropped_links"] == ["hooks/custom"]
+
+
+def import_unpacks(site: dict[str, Any], tmp_path: Path) -> None:
+    """Unpack the export's site.tar.zst as site-import does, setting its
+    absolute links aside for skip_regenerated; raise if refused.
+    """
+    if sys.version_info < (3, 11):
+        pytest.skip("site-import's code needs Python 3.11 or newer")
+    script = (
+        "import sys; from pathlib import Path; sys.path.insert(0, sys.argv[1]);"
+        " import site_import_unpack as u; out = Path(sys.argv[3]); links = [];"
+        " u.unpack(Path(sys.argv[2]), out, links); u.skip_regenerated(links,"
+        " out / 'site' / 'etc' / 'gerrit.config', Path('/opt/gerrit-tools/bin'))"
+    )
+    scripts = SCRIPT.parent.parent / "K8S" / "charts" / "gerrit" / "files" / "scripts"
+    archive, out = site["out"] / "site.tar.zst", tmp_path / "imported"
+    command = [sys.executable, "-c", script, str(scripts), str(archive), str(out)]
+    result = subprocess.run(command, capture_output=True, text=True, check=False)
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.xfail(strict=True, reason="needs archive order and drops rechecked")
+@needs_zstd
+@pytest.mark.parametrize(
+    ("links", "dropped"),
+    [
+        # Unpacked before z, the hook resolves into plugins/.
+        (
+            [("z", "data/sub"), ("hooks/custom", "../z/../plugins/custom")],
+            ["hooks/custom"],
+        ),
+        # Once a is dropped, the hook leaves the site.
+        (
+            [("a", "plugins/deep"), ("hooks/custom", "../a/../../data")],
+            ["a", "hooks/custom"],
+        ),
+    ],
+)
+def test_links_are_checked_as_the_import_unpacks_them(
+    site: dict[str, Any],
+    tmp_path: Path,
+    links: list[tuple[str, str]],
+    dropped: list[str],
+) -> None:
+    (site["root"] / "data" / "sub").mkdir(parents=True, exist_ok=True)
+    for name, target in links:
+        add_link(site, name, target)
+    result = export_fails(site, "--drop-foreign-links", "final")
+    for name, target in links:
+        assert (f"{name} -> {target}" in result.stderr) == (name in dropped)
+    manifest = export_ok(site, "final", "--pack", "--drop-foreign-links")
+    assert manifest["dropped_links"] == dropped
+    import_unpacks(site, tmp_path)
+
+
+@needs_zstd
+@pytest.mark.parametrize(
+    ("target", "dropped"),
+    [
+        ("/opt/gerrit-tools/bin/change-merged", []),
+        ("/usr/local/bin/change-merged", ["hooks/change-merged"]),
+    ],
+)
+@pytest.mark.xfail(strict=True, reason="needs absolute links left out of resolving")
+def test_links_through_an_absolute_link_resolve_without_it(
+    site: dict[str, Any], tmp_path: Path, target: str, dropped: list[str]
+) -> None:
+    # The import sets absolute links aside, so the alias resolves to nothing.
+    add_link(site, "hooks/change-merged", target)
+    add_link(site, "hooks/custom", "change-merged")
+    manifest = export_ok(site, "final", "--pack", "--drop-foreign-links")
+    assert manifest.get("dropped_links", []) == dropped
+    assert os.readlink(site["out"] / "site" / "hooks" / "custom") == "change-merged"
+    import_unpacks(site, tmp_path)
+
+
+@needs_zstd
+@pytest.mark.xfail(strict=True, reason="needs links under .lock directories ignored")
+def test_links_through_a_lock_directory_resolve_without_it(
+    site: dict[str, Any], tmp_path: Path
+) -> None:
+    # rsync leaves a.lock/ out whole, so the import resolves the hook lexically.
+    (site["root"] / "data" / "sub" / "deep").mkdir(parents=True)
+    add_link(site, "a.lock/bridge", "../data/sub/deep")
+    add_link(site, "hooks/custom", "../a.lock/bridge/../../plugins/custom")
+    result = export_fails(site, "--drop-foreign-links", "final")
+    assert "hooks/custom -> ../a.lock/bridge/../../plugins/custom" in result.stderr
+    manifest = export_ok(site, "final", "--pack", "--drop-foreign-links")
+    assert manifest["dropped_links"] == ["hooks/custom"]
+    import_unpacks(site, tmp_path)
+
+
+@pytest.mark.xfail(strict=True, reason="needs links leaving the site refused")
+@pytest.mark.parametrize("target", ["../../site/data", "../x/../../site/data"])
+def test_links_leaving_the_site_and_coming_back_are_refused(
+    site: dict[str, Any], target: str
+) -> None:
+    # Placed at /var/gerrit, ../../site/data would lead to /var/site/data.
+    (site["root"] / "x").mkdir()
+    add_link(site, "hooks/custom", target)
+    result = export_fails(site, "--drop-foreign-links", "final")
+    assert f"hooks/custom -> {target}" in result.stderr
+    manifest = export_ok(site, "final", "--drop-foreign-links")
+    assert manifest["dropped_links"] == ["hooks/custom"]
+
+
+def test_links_within_trees_the_import_skips_pass(site: dict[str, Any]) -> None:
+    for name in ("plugins/custom.jar", "lib/custom.jar", "lost+found/x", "cache/x"):
+        add_link(site, name, f"/opt/{name}")
+    manifest = export_ok(site, "final", "--include-cache")
+    assert "dropped_links" not in manifest
+    out = site["out"] / "site"
+    assert os.readlink(out / "plugins" / "custom.jar") == "/opt/plugins/custom.jar"
+    assert os.readlink(out / "cache" / "x") == "/opt/cache/x"
+
+
+@pytest.mark.xfail(strict=True, reason="needs --zstd")
+@needs_zstd
+@needs_python_zstd
+def test_python_packs_archives_the_zstd_program_reads(
+    site: dict[str, Any], tmp_path: Path
+) -> None:
+    path = tool_path(tmp_path, hide=("zstd",))
+    manifest = export_ok(site, "final", "--zstd", "python", env={"PATH": path})
+    assert sorted(manifest["archives"]) == ARCHIVES
+    for name, digest in manifest["archives"].items():
+        archive = site["out"] / name
+        assert archive.stat().st_mode & 0o777 == 0o600
+        assert hashlib.sha256(archive.read_bytes()).hexdigest() == digest
+        with tarfile.open(fileobj=io.BytesIO(unzstd(archive))) as tar:
+            names = tar.getnames()
+        assert name.split(".")[0] in names
+
+
+@pytest.mark.xfail(strict=True, reason="needs --zstd auto")
+@needs_python_zstd
+@pytest.mark.parametrize("mode", ["final", "backup"])
+def test_auto_packs_with_python_without_the_zstd_program(
+    site: dict[str, Any], tmp_path: Path, mode: str
+) -> None:
+    path = tool_path(tmp_path, hide=("zstd",))
+    manifest = export_ok(site, mode, "--pack", env={"PATH": path})
+    with tarfile.open(fileobj=io.BytesIO(unzstd(site["out"] / "site.tar.zst"))) as tar:
+        assert "site/etc/gerrit.config" in tar.getnames()
+    assert sorted(manifest["archives"]) == ARCHIVES
+
+
+@pytest.mark.xfail(strict=True, reason="needs --zstd")
+@pytest.mark.parametrize("choice", [(), ("--zstd", "auto"), ("--zstd", "python")])
+def test_packing_without_zstd_names_both_remedies(
+    site: dict[str, Any], tmp_path: Path, choice: tuple[str, ...]
+) -> None:
+    paths = ["--site", str(site["root"]), "--out", str(site["out"])]
+    result = subprocess.run(
+        [sys.executable, "-c", WITHOUT_PYTHON_ZSTD, str(SCRIPT), "final", "--pack"]
+        + [*choice, *paths],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "PATH": tool_path(tmp_path, hide=("zstd",))},
+        check=False,
+    )
+    assert result.returncode != 0
+    assert "zstd" in result.stderr
+    assert "--python 3.14" in result.stderr
+    assert not site["out"].exists()
+
+
+@pytest.mark.xfail(strict=True, reason="needs gerrit_export_host.py")
+@pytest.mark.parametrize("mode", ["seed", "final", "backup"])
+@pytest.mark.parametrize(
+    "modules", [(), ("gerrit_export_git",), ("gerrit_export_host",)]
+)
+def test_every_mode_names_a_missing_module(
+    site: dict[str, Any], tmp_path: Path, mode: str, modules: tuple[str, ...]
+) -> None:
+    (tmp_path / "lone").mkdir()
+    for module in modules:
+        shutil.copy(SCRIPT.parent / f"{module}.py", tmp_path / "lone")
+    result = run_lone_copy(site, tmp_path, mode)
+    assert result.returncode != 0
+    errors = result.stderr.splitlines()
+    assert len(errors) == 1, result.stderr
+    assert errors[0].startswith("gerrit-site-export.py: error: ")
+    for module in {"gerrit_export_git", "gerrit_export_host"} - set(modules):
+        assert f"{module}.py" in errors[0]
+    assert "every mode" in errors[0]
+    assert not site["out"].exists()
+
+
+@needs_zstd
+def test_default_backup_of_a_chart_site_adds_no_manifest_keys(
+    site: dict[str, Any],
+) -> None:
+    chart_links(site)
+    manifest = export_ok(site, "backup")
+    assert list(manifest) == [
+        "schema",
+        "created",
+        "mode",
+        "consistency",
+        "gerrit_version",
+        "site",
+        "git",
+        "ssh_host_keys",
+        "excluded",
+        "archives",
+    ]
+    hooks = site["out"] / "site" / "hooks"
+    assert os.readlink(hooks / "change-merged") == "/opt/gerrit-tools/bin/change-merged"
