@@ -22,18 +22,23 @@ the real ``/proc`` point the variable back at it.
 from __future__ import annotations
 
 import hashlib
+import http.server
 import importlib
 import io
 import json
 import os
+import re
 import shlex
 import shutil
+import ssl
 import subprocess
 import sys
 import tarfile
+import threading
 import zipfile
 from pathlib import Path
-from typing import Any
+from types import SimpleNamespace
+from typing import Any, Iterator
 
 import pytest
 
@@ -1115,6 +1120,16 @@ def test_final_needs_proc_unless_writes_were_stopped(
         (("final", "--upload", "https://example.invalid/x"), "--upload takes"),
         (("seed", "--pack"), "need final or backup mode"),
         (("seed", "--upload", "s3://bucket/prefix"), "need final or backup mode"),
+        (("final", "--sse", "AES256"), "--sse needs --upload"),
+        (
+            ("final", "--upload", "s3://b/p", "--sse", "rot13"),
+            "--sse takes aws:kms, AES256 or none",
+        ),
+        (
+            ("final", "--upload", "s3://b/p", "--upload-urls", "urls.json"),
+            "--upload or --upload-urls, not both",
+        ),
+        (("seed", "--upload-urls", "urls.json"), "need final or backup mode"),
     ],
 )
 def test_refuses_bad_arguments(
@@ -1593,6 +1608,194 @@ def test_failed_upload_never_publishes_a_manifest(
     calls = log.read_text().splitlines()
     assert calls[0] == "s3 rm s3://b/p/manifest.json"
     assert not [c for c in calls if c.endswith("/manifest.json") and " cp " in c]
+
+
+@pytest.mark.parametrize(
+    ("sse", "flags"),
+    [
+        ("aws:kms", "--sse aws:kms "),
+        ("AES256", "--sse AES256 "),
+        ("none", ""),
+    ],
+)
+def test_sse_reaches_the_s3_copy(
+    site: dict[str, Any], tmp_path: Path, sse: str, flags: str
+) -> None:
+    log = tmp_path / "aws.log"
+    fakes = {"zstd": FAKE_ZSTD, "aws": 'echo "$@" >> "$LOG"'}
+    env = {"PATH": tool_path(tmp_path, fakes=fakes), "LOG": str(log)}
+    export_ok(site, "final", "--upload", "s3://b/p", "--sse", sse, env=env)
+    out = site["out"]
+    assert log.read_text().splitlines() == [
+        "s3 rm s3://b/p/manifest.json",
+        f"s3 cp {flags}{out}/site.tar.zst s3://b/p/site.tar.zst",
+        f"s3 cp {flags}{out}/git.tar.zst s3://b/p/git.tar.zst",
+        f"s3 cp {flags}{out}/manifest.json.tmp s3://b/p/manifest.json",
+    ]
+
+
+# Stands for the signature in a pre-signed URL: no output may show it.
+SIGNATURE = "X-Amz-Signature=c0ffee5ecret"
+UPLOADS = ["site.tar.zst", "git.tar.zst", "manifest.json"]
+
+
+@pytest.fixture()
+def put_server(tmp_path: Path) -> Iterator[Any]:
+    """An HTTPS server on 127.0.0.1 recording each PUT, as a bucket's
+    pre-signed URLs take them; statuses sets a file name's reply status.
+    Its env hides aws and fakes zstd, so the tests need neither installed.
+    """
+    if not shutil.which("openssl"):
+        pytest.skip("needs openssl to make the server's certificate")
+    cert, key = tmp_path / "cert.pem", tmp_path / "key.pem"
+    subprocess.run(
+        ["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1"]
+        + ["-subj", "/CN=127.0.0.1", "-addext", "subjectAltName=IP:127.0.0.1"]
+        + ["-keyout", str(key), "-out", str(cert)],
+        capture_output=True,
+        check=True,
+    )
+    state = SimpleNamespace(received=[], statuses={})
+
+    class Bucket(http.server.BaseHTTPRequestHandler):
+        def do_PUT(self) -> None:
+            length = self.headers["Content-Length"]
+            body = self.rfile.read(int(length or 0))
+            name = self.path.partition("?")[0].rsplit("/", 1)[-1]
+            chunked = self.headers["Transfer-Encoding"]
+            state.received.append((name, length, chunked, self.path, body))
+            reply = f"denied: {self.path}".encode()
+            self.send_response(state.statuses.get(name, 200))
+            self.send_header("Content-Length", str(len(reply)))
+            self.end_headers()
+            self.wfile.write(reply)
+
+        def log_message(self, format: str, *args: Any) -> None:
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Bucket)
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(str(cert), str(key))
+    server.socket = context.wrap_socket(server.socket, server_side=True)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"https://127.0.0.1:{server.server_address[1]}/bucket/export"
+    state.urls = {name: f"{base}/{name}?{SIGNATURE}" for name in UPLOADS}
+    path = tool_path(tmp_path, hide=("aws",), fakes={"zstd": FAKE_ZSTD})
+    state.env = {"SSL_CERT_FILE": str(cert), "PATH": path}
+    yield state
+    server.shutdown()
+    server.server_close()
+    thread.join()
+
+
+def url_file(tmp_path: Path, urls: Any, text: str | None = None) -> str:
+    path = tmp_path / "urls.json"
+    path.write_text(json.dumps(urls) if text is None else text)
+    return str(path)
+
+
+def assert_no_url(result: Any) -> None:
+    output = result.stdout + result.stderr
+    for secret in (SIGNATURE, "/bucket/", ".invalid/"):
+        assert secret not in output, output
+    assert not re.search(r"127\.0\.0\.1:\d", output), output  # host:port
+
+
+def test_upload_urls_puts_archives_then_manifest(
+    site: dict[str, Any], tmp_path: Path, put_server: Any
+) -> None:
+    urls = url_file(tmp_path, put_server.urls)
+    result = run_on(site, "final", "--upload-urls", urls, env=put_server.env)
+    assert result.returncode == 0, result.stderr
+    out = site["out"]
+    local = {
+        "site.tar.zst": (out / "site.tar.zst").read_bytes(),
+        "git.tar.zst": (out / "git.tar.zst").read_bytes(),
+        "manifest.json": (out / "manifest.json").read_bytes(),
+    }
+    assert [r[0] for r in put_server.received] == UPLOADS
+    for name, length, chunked, path, body in put_server.received:
+        assert body == local[name], name
+        assert length == str(len(local[name])), name
+        assert chunked is None, name
+        assert path.endswith(f"/{name}?{SIGNATURE}"), name
+    for name in UPLOADS:
+        assert f"PUT {name} -> 127.0.0.1: HTTP 200" in result.stderr
+    assert_no_url(result)
+
+
+def test_upload_urls_fails_on_a_status_outside_2xx(
+    site: dict[str, Any], tmp_path: Path, put_server: Any
+) -> None:
+    put_server.statuses["git.tar.zst"] = 403
+    env = put_server.env
+    urls = url_file(tmp_path, put_server.urls)
+    result = export_fails(
+        site, "upload of git.tar.zst", "final", "--upload-urls", urls, env=env
+    )
+    assert "HTTP 403" in result.stderr
+    assert [r[0] for r in put_server.received] == UPLOADS[:2]
+    assert_no_url(result)
+
+
+def test_upload_urls_dry_run_names_each_host(
+    site: dict[str, Any], tmp_path: Path, put_server: Any
+) -> None:
+    urls = url_file(tmp_path, put_server.urls)
+    dry = ("--upload-urls", urls, "--dry-run")
+    result = run_on(site, "final", *dry, env=put_server.env)
+    assert result.returncode == 0, result.stderr
+    puts = [line for line in result.stdout.splitlines() if line.startswith("PUT ")]
+    assert puts == [f"PUT {name} -> 127.0.0.1" for name in UPLOADS]
+    assert not put_server.received
+    assert not site["out"].exists()
+    assert_no_url(result)
+
+
+GOOD_URLS = {name: f"https://b.example.invalid/{name}?{SIGNATURE}" for name in UPLOADS}
+
+
+@pytest.mark.parametrize(
+    ("urls", "text", "args"),
+    [
+        (None, "{not json", ()),
+        (list(GOOD_URLS.values()), None, ()),
+        ({k: v for k, v in GOOD_URLS.items() if k != "manifest.json"}, None, ()),
+        ({**GOOD_URLS, "extra.tar.zst": GOOD_URLS["git.tar.zst"]}, None, ()),
+        ({**GOOD_URLS, "git.tar.zst": 7}, None, ()),
+        ({**GOOD_URLS, "git.tar.zst": "http://b.example.invalid/g"}, None, ()),
+        ({**GOOD_URLS, "git.tar.zst": "https:///g"}, None, ()),
+        ({**GOOD_URLS, "git.tar.zst": f"https://b\uff0fg\uff1f{SIGNATURE}"}, None, ()),
+        ({**GOOD_URLS, "git.tar.zst": f"https://b:x/g?{SIGNATURE}"}, None, ()),
+        ({**GOOD_URLS, "git.tar.zst": f"https://b:99999/g?{SIGNATURE}"}, None, ()),
+        ({**GOOD_URLS, "git.tar.zst": f"https://bad host/g?{SIGNATURE}"}, None, ()),
+        ({**GOOD_URLS, "git.tar.zst": f"https://b\x07/g?{SIGNATURE}"}, None, ()),
+        ({**GOOD_URLS, "git.tar.zst": f"https://b/g h?{SIGNATURE}"}, None, ()),
+        (GOOD_URLS, None, ("--encrypt", "age:recipient")),
+    ],
+)
+def test_upload_urls_refuses_a_bad_file_before_copying(
+    site: dict[str, Any],
+    tmp_path: Path,
+    urls: Any,
+    text: str | None,
+    args: tuple[str, ...],
+) -> None:
+    path = url_file(tmp_path, urls, text)
+    message = f"--upload-urls {path}: "
+    result = export_fails(site, message, "final", "--upload-urls", path, *args)
+    assert not site["out"].exists()
+    assert_no_url(result)
+
+
+def test_upload_urls_refuses_a_missing_file(
+    site: dict[str, Any], tmp_path: Path
+) -> None:
+    missing = str(tmp_path / "absent.json")
+    message = f"--upload-urls {missing}: "
+    export_fails(site, message, "final", "--upload-urls", missing)
+    assert not site["out"].exists()
 
 
 @needs_zstd
@@ -2174,37 +2377,38 @@ def test_exclude_reaches_rsync_unescaped(site: dict[str, Any]) -> None:
     assert "--exclude=/data/events-log-db*" in result.stdout
 
 
-@pytest.mark.parametrize(
-    "pattern",
-    [
-        "/data/events",
-        "../data",
-        "data/../etc",
-        "./data",
-        "data//x",
-        "data/*/x",
-        "data/x?",
-        "data/[ab]",
-        "git",
-        "git/plain.git",
-        "etc",
-        "etc/gerrit.config",
-        "etc/secure.config",
-        "data",
-        "data/replication",
-        "data/replication/ref-updates",
-        "cache",
-        "logs/*",
-        ".ssh",
-        ".chart/backup-lock",
-        "All-Users.git",
-        "data/All-Users-cache",
-        "data/All-User*",
-        "A*",
-        "data/events-log-db*/",
-        "data/big/",
-    ],
-)
+# Each pattern --exclude refuses, and --exclude-from with it.
+REFUSED_PATTERNS = [
+    "/data/events",
+    "../data",
+    "data/../etc",
+    "./data",
+    "data//x",
+    "data/*/x",
+    "data/x?",
+    "data/[ab]",
+    "git",
+    "git/plain.git",
+    "etc",
+    "etc/gerrit.config",
+    "etc/secure.config",
+    "data",
+    "data/replication",
+    "data/replication/ref-updates",
+    "cache",
+    "logs/*",
+    ".ssh",
+    ".chart/backup-lock",
+    "All-Users.git",
+    "data/All-Users-cache",
+    "data/All-User*",
+    "A*",
+    "data/events-log-db*/",
+    "data/big/",
+]
+
+
+@pytest.mark.parametrize("pattern", REFUSED_PATTERNS)
 @pytest.mark.parametrize("mode", ["seed", "backup"])
 def test_exclude_refuses_site_structure(
     site: dict[str, Any], pattern: str, mode: str
@@ -2215,6 +2419,43 @@ def test_exclude_refuses_site_structure(
     )
     assert not site["out"].exists()
     assert snapshot(site["root"]) == before
+
+
+@pytest.mark.parametrize("pattern", REFUSED_PATTERNS)
+def test_exclude_from_refuses_what_exclude_refuses(
+    site: dict[str, Any], tmp_path: Path, pattern: str
+) -> None:
+    (patterns := tmp_path / "exclusions").write_text(f"tmpdata\n{pattern}\n")
+    export_fails(site, f"--exclude {pattern}", "seed", "--exclude-from", str(patterns))
+    assert not site["out"].exists()
+
+
+def test_exclude_from_skips_comments_and_combines_with_exclude(
+    site: dict[str, Any], tmp_path: Path
+) -> None:
+    data = site["root"] / "data"
+    (data / "big").mkdir(parents=True)
+    (data / "big" / "blob").write_text("disposable\n")
+    for name in [*H2_TRIO, "kept.db"]:
+        (data / name).write_text(f"{name}\n")
+    patterns = tmp_path / "exclusions"
+    patterns.write_text("# Host state\n\n   \ndata/big\n#data/kept.db\n")
+    args = ("--exclude", "data/events-log-db*", "--exclude-from", str(patterns))
+    manifest = export_ok(site, "final", *args)
+    copy = site["out"] / "site" / "data"
+    for name in [*H2_TRIO, "big"]:
+        assert not (copy / name).exists(), name
+    assert (copy / "kept.db").is_file()
+    assert manifest["excluded"] == [*EXCLUDED, "data/events-log-db*", "data/big"]
+
+
+def test_exclude_from_refuses_a_missing_file(
+    site: dict[str, Any], tmp_path: Path
+) -> None:
+    missing = str(tmp_path / "absent")
+    message = f"--exclude-from {missing}: "
+    export_fails(site, message, "seed", "--exclude-from", missing)
+    assert not site["out"].exists()
 
 
 def test_exclude_refuses_a_wildcard_matching_all_users_state(
@@ -2357,6 +2598,13 @@ def test_help_documents_the_host_options() -> None:
     result = run_export("--help")
     assert result.returncode == 0
     for text in ("--zstd", "--drop-foreign-links", "gerrit_export_host.py"):
+        assert text in result.stdout, text
+
+
+def test_help_documents_the_upload_and_exclusion_options() -> None:
+    result = run_export("--help")
+    assert result.returncode == 0
+    for text in ("--sse", "--upload-urls", "--exclude-from", "fresh prefix"):
         assert text in result.stdout, text
 
 

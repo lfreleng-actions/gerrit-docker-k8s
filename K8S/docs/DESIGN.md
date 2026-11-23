@@ -958,7 +958,8 @@ not build" gives the detail.
 2. Leave out with `--exclude` shell and editor history,
    configuration-management agent state and keys, dated copies of
    `gerrit.config`, which can hold secrets, and hook scripts that call
-   programs only that host has.
+   programs only that host has; `--exclude-from <file>` reads these
+   patterns from a file.
 3. Resolve each link the export names as one `site-import` refuses:
    leave it out with `--exclude`, or pass `--drop-foreign-links` and
    check the manifest's `dropped_links`. Replace any link on, above or
@@ -971,7 +972,11 @@ not build" gives the detail.
    empty component and no trailing `/`, naming a regular file unless
    it is the default `etc/samlKeystore.jks` of a site without SAML.
 4. Give `--out` room for a copy of the site and the repositories plus
-   the two archives.
+   the two archives, and choose how the result reaches the bucket:
+   `--upload` through the `aws` CLI, with `--sse` where the bucket
+   wants SSE-S3 or its own default encryption; `--upload-urls` with
+   pre-signed `PUT` URLs under a fresh prefix, where the host has no
+   `aws` CLI or credentials; or a copy by hand, manifest last.
 5. Run the export against the site at its real path: the import
    resolves an absolute `saml.keystorePath` against the site path the
    manifest records.

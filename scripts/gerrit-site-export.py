@@ -16,9 +16,15 @@ Every mode needs gerrit_export_git.py and gerrit_export_host.py beside the tool.
   --pack              final, backup: pack site.tar.zst, git.tar.zst.
   --zstd <how>        Packer: auto (default; zstd, else Python 3.14+), tool or python.
   --encrypt <spec>    Implies --pack: age:<recipient> or gpg:<key-id>; drops plaintext.
-  --upload <url>      Implies --pack: SSE-KMS copy of the outputs to s3://bucket/prefix.
+  --upload <url>      Implies --pack: aws s3 cp of the outputs to s3://bucket/prefix.
+  --sse <how>         --upload's encryption: aws:kms (default), AES256, or none, which
+                      leaves it to the bucket's default encryption.
+  --upload-urls <file>  Implies --pack, not with --upload: HTTPS PUT of each output to
+                      the pre-signed URL a JSON object in <file> maps its name to; no
+                      aws needed, no old manifest removed: use a fresh prefix each time.
   --include-cache     Copy <site>/cache too; the import rebuilds caches.
   --exclude <path>    Leave out <path> under the site; repeatable; may end in *.
+  --exclude-from <file>  --exclude each line of <file>; skips blank and # lines.
   --drop-foreign-links  Leave out links site-import refuses (absolute, or leaving the
                       site), listed in the manifest; without it, they stop the run.
   --dry-run           Print the commands without writing anything.
@@ -53,19 +59,20 @@ CREDENTIALS = [".ssh", ".config/gerrit_to_platform", "etc/lfs.secure.config"]
 EXCLUDED = ["cache", "index", "logs", "tmp", "bin", ".gerritcodereview/tmp", ".chart"]
 EXCLUDED += CREDENTIALS  # Last; the chart supplies them from Secrets.
 G2P = f"{CREDENTIALS[1]}/replication.config"  # May link to etc/replication.config.
-VALUES = ("--site", "--git", "--out", "--encrypt", "--upload", "--exclude", "--zstd")
+VALUES: tuple[str, ...] = ("--site", "--git", "--out", "--encrypt", "--upload")
+VALUES += ("--exclude", "--zstd", "--sse", "--upload-urls", "--exclude-from")
 FLAGS: tuple[str, ...] = ("--i-stopped-writes", "--pack", "--include-cache")
 FLAGS += ("--dry-run", "--drop-foreign-links")
 PROG = "gerrit-site-export.py"
 NEW_FILE = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
-S3_COPY = ["aws", "s3", "cp", "--sse", "aws:kms"]
+S3_COPY, SSE = ["aws", "s3", "cp"], ("aws:kms", "AES256", "none")
 ENCRYPT = {"age": ["-r"], "gpg": ["--batch", "--yes", "--encrypt", "--recipient"]}
 PARTS, ESCAPE = ("site", "git"), "".maketrans({c: "\\" + c for c in "*?[\\"})
 ARCHIVES = [f"{p}.tar.zst{s}" for p in PARTS for s in ("", ".age", ".gpg")]
 VERSION_JAR = "WEB-INF/lib/com_google_gerrit_common_libversion.jar"
 VERSION_FILE = "com/google/gerrit/common/Version"  # In VERSION_JAR.
 HEAD_PROBES = (["symbolic-ref", "-q", "HEAD"], ["rev-parse", "--verify", "HEAD^0"])
-# Each .py beside this tool: repositories and --exclude; links and packing.
+# Each .py beside this tool: repositories, --exclude, --upload-urls; links, packing.
 COMPANION, HOST = COMPANIONS = ("gerrit_export_git", "gerrit_export_host")
 FOR_EACH_REF = ["for-each-ref", "--format=%(refname) %(objectname) %(*objectname)"]
 
@@ -99,10 +106,10 @@ def step(opts: Any, command: list[str], what: str, tolerate: int = 0) -> int:
 
 
 def parse_args(argv: list[str]) -> Any:
-    opts = SimpleNamespace(mode="", **{o[2:]: "" for o in VALUES})
+    opts = SimpleNamespace(mode="", **{o[2:].replace("-", "_"): "" for o in VALUES})
     (fields := vars(opts)).update({o[2:].replace("-", "_"): False for o in FLAGS})
     opts.site, opts.exclude, args = os.environ.get("GERRIT_SITE", ""), [], list(argv)
-    opts.zstd = "auto"
+    opts.zstd, opts.urls = "auto", {}
     while args:
         arg = args.pop(0)
         name, equals, value = arg.partition("=")
@@ -120,13 +127,17 @@ def parse_args(argv: list[str]) -> Any:
                 value = args.pop(0)
             if not value:
                 die(f"{name} needs a value")
-            fields[name[2:]] = [*opts.exclude, value] if name == "--exclude" else value
+            if name in ("--exclude", "--exclude-from"):
+                opts.exclude += [value] if name == "--exclude" else exclude_lines(value)
+            else:
+                fields[name[2:].replace("-", "_")] = value
         else:
             die(f"unknown argument: {arg} (see --help)")
     kind, _, who = opts.encrypt.partition(":")
     bad_key = opts.encrypt and (kind not in ENCRYPT or not who)
     bad_s3 = opts.upload and (opts.upload[:5] != "s3://" or opts.upload == "s3://")
-    opts.pack = opts.pack or bool(opts.encrypt or opts.upload) or opts.mode == "backup"
+    sending = bool(opts.upload or opts.upload_urls)
+    opts.pack = opts.pack or bool(opts.encrypt) or sending or opts.mode == "backup"
     seed_pack = opts.pack and opts.mode == "seed"
     for failed, message in (
         (not opts.mode, "give a mode, seed, final or backup (see --help)"),
@@ -134,7 +145,10 @@ def parse_args(argv: list[str]) -> Any:
         (not opts.out, "no export directory: pass --out"),
         (bad_key, "--encrypt takes age:<recipient> or gpg:<key-id>"),
         (bad_s3, "--upload takes s3://bucket/prefix"),
-        (seed_pack, "--pack, --encrypt and --upload need final or backup mode"),
+        (opts.sse not in ("", *SSE), "--sse takes aws:kms, AES256 or none"),
+        (opts.sse and not opts.upload, "--sse needs --upload"),
+        (opts.upload and opts.upload_urls, "pass --upload or --upload-urls, not both"),
+        (seed_pack, "--pack, --encrypt and uploads need final or backup mode"),
     ):
         if failed:
             die(message)
@@ -144,7 +158,22 @@ def parse_args(argv: list[str]) -> Any:
             " tool with its modules, as the chart image holds them"
         )
     opts.excluded = [*EXCLUDED[opts.include_cache :], *opts.exclude]  # cache is first
+    if opts.upload_urls:  # Before anything is written; raises an OSError to refuse.
+        suffix = f".{kind}" if opts.encrypt else ""
+        names = [*(f"{p}.tar.zst{suffix}" for p in PARTS), "manifest.json"]
+        opts.urls = importlib.import_module(COMPANION).read_urls(
+            opts.upload_urls, names
+        )
     return opts
+
+
+def exclude_lines(path: str) -> list[str]:
+    """The --exclude patterns in path, one a line; blank and # lines skip."""
+    try:
+        lines = Path(path).read_text(encoding="utf-8").split("\n")
+    except (OSError, UnicodeError) as exc:
+        die(f"--exclude-from {path}: {exc}")
+    return [line for line in lines if line.strip() and line[:1] != "#"]
 
 
 def readable_dir(path: str, what: str) -> str:
@@ -311,6 +340,20 @@ def sha256_of(path: Path) -> str:
     return digest.hexdigest()
 
 
+def upload(opts: Any, files: list[tuple[Path, str]]) -> None:
+    """Upload each (path, name) in files, in order: the manifest goes last."""
+    if opts.upload_urls:
+        importlib.import_module(COMPANION).upload(files, opts.urls, opts.dry_run)
+        return
+    prefix = opts.upload.rstrip("/")
+    # Old manifest first: it names archives about to change.
+    remove = ["aws", "s3", "rm", f"{prefix}/manifest.json"]
+    step(opts, remove, "removal of the uploaded manifest.json")
+    sse = [] if opts.sse == "none" else ["--sse", opts.sse or SSE[0]]
+    for path, name in files:
+        step(opts, [*S3_COPY, *sse, str(path), f"{prefix}/{name}"], f"upload of {name}")
+
+
 def main(argv: list[str]) -> None:
     os.umask(0o077)  # Before anything is written: every output is owner-only.
     opts = parse_args(argv)
@@ -372,13 +415,8 @@ def main(argv: list[str]) -> None:
             data["archives"] = {a.name: sha256_of(a) for a in archives}
             with os.fdopen(os.open(temp, NEW_FILE, 0o600), "w") as handle:
                 handle.write(json.dumps(data, indent=2) + "\n")
-        prefix = opts.upload.rstrip("/")
-        if opts.upload:  # Old manifest first: it names archives about to change.
-            remove = ["aws", "s3", "rm", f"{prefix}/manifest.json"]
-            step(opts, remove, "removal of the uploaded manifest.json")
-        uploads = [(a, a.name) for a in archives] + [(temp, "manifest.json")]
-        for path, name in uploads if opts.upload else []:
-            step(opts, [*S3_COPY, str(path), f"{prefix}/{name}"], f"upload of {name}")
+        if opts.upload or opts.upload_urls:
+            upload(opts, [(a, a.name) for a in archives] + [(temp, "manifest.json")])
         if not opts.dry_run:
             os.replace(temp, manifest)
     except BaseException:  # Archives without a manifest would look usable.
