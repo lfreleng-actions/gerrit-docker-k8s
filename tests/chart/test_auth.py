@@ -314,3 +314,114 @@ def test_cookie_secure_is_refused(tmp_path: Path, key: str, value: Any) -> None:
 def test_unset_cookie_secure_renders(tmp_path: Path, value: Any) -> None:
     config = gerrit_config(tmp_path, {"type": "HTTP", "cookieSecure": value})
     assert "cookiesecure" not in config.lower()
+
+
+LOGIN_KEYS = {
+    "loginUrl": "https://sso.example.org/login",
+    "logoutUrl": "https://sso.example.org/logout",
+    "loginText": "Sign in with SSO",
+}
+BAD_URL = "must be an absolute http:// or https:// URL"
+
+
+def auth_key(config: str, tmp_path: Path, key: str) -> list[str]:
+    """Return every value of ``auth.<key>`` in a rendered *config*."""
+    path = tmp_path / "gerrit.config"
+    path.write_text(config, encoding="utf-8")
+    proc = subprocess.run(
+        ["git", "config", "-f", str(path), "--get-all", f"auth.{key}"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return proc.stdout.splitlines()
+
+
+@pytest.mark.xfail(strict=True, reason="auth login keys not yet added")
+def test_login_keys_default_to_unset() -> None:
+    values = yaml.safe_load((CHART / "values.yaml").read_text(encoding="utf-8"))
+    for key in LOGIN_KEYS:
+        assert values["auth"][key] is None
+
+
+@pytest.mark.parametrize("key", list(LOGIN_KEYS))
+@pytest.mark.parametrize("choice", [{"type": "HTTP"}, {"saml": SAML}])
+def test_login_keys_render(tmp_path: Path, key: str, choice: dict[str, Any]) -> None:
+    config = gerrit_config(tmp_path, {**choice, key: LOGIN_KEYS[key]})
+    assert auth_key(config, tmp_path, key) == [LOGIN_KEYS[key]]
+    assert auth_key(config, tmp_path, "type") == ["HTTP"]
+
+
+def test_login_keys_keep_the_saml_keys(tmp_path: Path) -> None:
+    config = gerrit_config(tmp_path, {"saml": SAML, **LOGIN_KEYS})
+    for key, value in LOGIN_KEYS.items():
+        assert auth_key(config, tmp_path, key) == [value]
+    assert auth_key(config, tmp_path, "httpHeader") == ["X-SAML-UserName"]
+    assert auth_key(config, tmp_path, "httpEmailHeader") == ["X-SAML-EmailHeader"]
+    assert auth_key(config, tmp_path, "httpExternalIdHeader") == ["X-SAML-ExternalId"]
+
+
+@pytest.mark.parametrize("value", [None, ""])
+@pytest.mark.parametrize("key", list(LOGIN_KEYS))
+def test_unset_login_keys_render_nothing(tmp_path: Path, key: str, value: Any) -> None:
+    config = gerrit_config(tmp_path, {"type": "HTTP", key: value})
+    assert auth_key(config, tmp_path, key) == []
+
+
+@pytest.mark.xfail(strict=True, reason="auth login keys not yet added")
+@pytest.mark.parametrize(
+    "value",
+    [
+        "/login",
+        "login/",
+        "ftp://sso.example.org/login",
+        "https://",
+        "https:///login",
+        "https://?next=/login",
+        "https://#login",
+        "https:// /login",
+        "https://sso.example.org /login",
+        "https://@/login",
+        "https://:8443/login",
+        "https://[deadbeef]:8443/login",
+        "https://[:::]:8443/login",
+        "https://[1::2::3]/login",
+        "https://[1:2:3:4:5:6:7:8:9]/login",
+        "https://[::ffff:256.0.0.1]/login",
+        "https://sso.example.org%/login",
+        "https://sso.example.org|/login",
+        "https://sso%2.example.org/login",
+        "https://us%er@sso.example.org/login",
+        "https://sso.example.org/log%zzin",
+        "https://sso.example.org/a|b",
+        "https://sso.example.org/login?next=%",
+        "https://sso.example.org/login#a^b",
+        ["https://sso.example.org/login"],
+        True,
+    ],
+)
+@pytest.mark.parametrize("key", ["loginUrl", "logoutUrl", "loginurl", "LOGOUTURL"])
+@pytest.mark.parametrize("choice", [{"type": "HTTP"}, {"saml": SAML}])
+def test_bad_login_url_fails(
+    tmp_path: Path, key: str, value: Any, choice: dict[str, Any]
+) -> None:
+    proc = template(tmp_path, {**choice, key: value})
+    assert proc.returncode != 0
+    assert BAD_URL in proc.stderr
+    assert f"auth.{key.lower().replace('url', 'Url')}" in proc.stderr
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "http://sso.example.org/",
+        "HTTPS://sso:8443/x",
+        "https://sso.example.org",
+        "https://sso.example.org?next=/",
+        "https://user@sso.example.org/login",
+        "https://[2001:db8::1]:8443/login",
+    ],
+)
+def test_login_url_accepts_http_and_https(tmp_path: Path, value: str) -> None:
+    config = gerrit_config(tmp_path, {"type": "HTTP", "loginUrl": value})
+    assert auth_key(config, tmp_path, "loginUrl") == [value]
