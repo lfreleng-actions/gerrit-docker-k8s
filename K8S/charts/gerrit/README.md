@@ -527,6 +527,79 @@ The pod mounts a configured source volume or Secret before
 `site-import` can decide there is nothing to do, so a pod that still
 names a deleted one never starts, even after a complete import.
 
+### Exporting from a host the chart did not build
+
+The root `README.md`, "Exporting a Gerrit Site", describes the export
+tool. A site the chart did not build, on a host of its own, needs a
+few more steps before its export imports cleanly:
+
+- Copy `scripts/gerrit-site-export.py` with its modules,
+  `gerrit_export_git.py` and `gerrit_export_host.py`, into one
+  directory on the host: every mode loads both from beside the tool,
+  and stops before writing anything when one is missing. Where the
+  host's Python is older than 3.8, or the host has no `zstd` program,
+  run the tool with a private interpreter, which `uv` fetches without
+  touching the system's:
+
+  ```sh
+  uv run --no-project --python 3.14 gerrit-site-export.py backup --site <site> --out <dir> ...
+  ```
+
+  Without the `zstd` program, Python 3.14 or newer packs the archives
+  through its `compression.zstd` module; `--zstd tool` or
+  `--zstd python` forces one packer.
+- Leave out with `--exclude` what belongs to the host rather than to
+  Gerrit, since the archive carries everything else in the site to
+  the cluster: shell and editor history in the site user's home, such
+  as `.bash_history` or `.viminfo`; configuration-management agent
+  state and keys, such as `.ansible` or `.puppetlabs`; dated copies of
+  `gerrit.config`, such as `etc/gerrit.config.*`, which can hold
+  secrets that `secure.config` would normally hold; and hook scripts
+  that call programs only that host has.
+- The paths the import needs must be real files and directories in
+  the site: `etc/gerrit.config`, `etc/secure.config`, `git`,
+  `data/replication` and everything beneath them, and the keystore
+  `saml.keystorePath` names. Every export stops, before writing
+  anything and whatever its options, when one of them is a link, lies
+  beneath one or holds one, naming it: replace the link with the file
+  or directory it points to. It stops the same way when one of them
+  lies in a path the export leaves out, such as `logs/`, `tmp/`, a
+  `*.lock` directory or a repository store under the site, or in a
+  tree the import skips, such as `plugins/` or `lib/`: move it to a
+  path both keep. It stops too when `saml.keystorePath`, relative to
+  the site, has an empty, `.` or `..` component or ends in `/`, such
+  as `./etc/host.jks` or `tmp/../etc/host.jks`: set it to the
+  normalised path inside the site. It stops as well when
+  `saml.keystorePath` is an absolute path under neither the site's
+  real path nor `/var/gerrit`, such as `/opt/keys/host.jks`, which the
+  import refuses: move the keystore into the site and set the path to
+  it there. Unless it is the chart's `etc/samlKeystore.jks`, which a
+  site without SAML may lack, the keystore must also be a regular
+  file: the export stops when it is missing or a directory, as the
+  import would.
+- The export also stops, before writing anything, on each other link
+  that `site-import` refuses, naming it: a link to an absolute path,
+  such as a hook linked into `/usr/local/bin`, or a relative link that
+  climbs above the site, even to come back, or points into a tree the
+  import skips, such as `plugins`, whether once unpacked or, through
+  the links before it in the archive, as the import unpacks it. The
+  import sets absolute links aside before it checks the others, so a
+  link through one, such as `hooks/custom -> change-merged` beside a
+  chart hook link, passes. Leave each out with `--exclude`, or pass
+  `--drop-foreign-links`, which leaves them all out, with any link that
+  resolves through one of them only to be refused, and lists them in
+  the manifest's `dropped_links`. Links within the trees the import
+  skips, such as `plugins` and `lib`, pass. A hook linked to
+  `/opt/gerrit-tools/bin/<name>`, as the chart sets them, passes, as
+  does a `.config/gerrit_to_platform/replication.config` link to the
+  site's own `etc/replication.config`.
+- `--out` needs room for a copy of the site and the repositories plus
+  the two archives.
+- Export the site at its real path, where Gerrit runs it, not a copy
+  moved elsewhere: the import resolves an absolute
+  `saml.keystorePath` against the site path the manifest records, and
+  fails when the path lies outside it.
+
 ### What an import runs
 
 1. Reads `manifest.json` and refuses an export of a Gerrit release
