@@ -4,6 +4,7 @@
 Usage: python3 scripts/gerrit-site-export.py <seed|final|backup> --out <dir> [options]
 
 Copy a Gerrit site to <out>/site and <out>/git with manifest.json; stdlib, Python 3.8+.
+Every mode needs gerrit_export_git.py and gerrit_export_host.py beside the tool.
   seed                Incremental rsync; safe while Gerrit runs, and to re-run.
   final               Last rsync, --checksum; refused while Gerrit may serve the site.
   backup              Packed live final: git checks repositories; db/, data/ (H2 flags,
@@ -12,18 +13,23 @@ Copy a Gerrit site to <out>/site and <out>/git with manifest.json; stdlib, Pytho
   --git <dir>         Repositories (default: gerrit.basePath of the site).
   --out <dir>         Owner-only export dir; may not overlap the site or repositories.
   --i-stopped-writes  final: writes are stopped another way; skip the check.
-  --pack              final, backup: pack site.tar.zst, git.tar.zst; needs zstd.
+  --pack              final, backup: pack site.tar.zst, git.tar.zst.
+  --zstd <how>        Packer: auto (default; zstd, else Python 3.14+), tool or python.
   --encrypt <spec>    Implies --pack: age:<recipient> or gpg:<key-id>; drops plaintext.
   --upload <url>      Implies --pack: SSE-KMS copy of the outputs to s3://bucket/prefix.
   --include-cache     Copy <site>/cache too; the import rebuilds caches.
   --exclude <path>    Leave out <path> under the site; repeatable; may end in *.
+  --drop-foreign-links  Leave out links site-import refuses (absolute, or leaving the
+                      site), listed in the manifest; without it, they stop the run.
   --dry-run           Print the commands without writing anything.
 
 Left out of <out>/site, any type: cache, index, logs, tmp, bin, .chart, *.lock files,
 .gerritcodereview/tmp, repos as resolved, credentials (.ssh, etc/lfs.secure.config,
 .config/gerrit_to_platform). Refused: store, output symlinks; a store, hard link or link
-that may leave (absolute, '..') copying credentials. Old manifest (uploaded too), then
-archives, manifest last: it marks a complete export; errors exit non-zero. -h, --help.
+that may leave (absolute, '..') copying credentials; a link on, above or under a path
+site-import needs (etc/gerrit.config, data/replication, SAML keystore...), or one left
+out. Old manifest (uploaded too), then archives, manifest last: it marks a complete
+export; errors exit non-zero. -h, --help.
 """
 
 from __future__ import annotations
@@ -37,31 +43,30 @@ import shutil
 import stat
 import subprocess
 import sys
-import tarfile
 import time
 import zipfile
 from pathlib import Path
-from subprocess import PIPE
 from types import SimpleNamespace
 from typing import Any, Iterator, NoReturn
 
 CREDENTIALS = [".ssh", ".config/gerrit_to_platform", "etc/lfs.secure.config"]
 EXCLUDED = ["cache", "index", "logs", "tmp", "bin", ".gerritcodereview/tmp", ".chart"]
 EXCLUDED += CREDENTIALS  # Last; the chart supplies them from Secrets.
-G2P = (f"{CREDENTIALS[1]}/replication.config", "/var/gerrit/etc/replication.config")
-VALUES = ("--site", "--git", "--out", "--encrypt", "--upload", "--exclude")
-FLAGS = ("--i-stopped-writes", "--pack", "--include-cache", "--dry-run")
-PROG, HINT = "gerrit-site-export.py", "stop writes and pass --i-stopped-writes"
-ELSEWHERE = "another filesystem namespace, so its site cannot be compared"
+G2P = f"{CREDENTIALS[1]}/replication.config"  # May link to etc/replication.config.
+VALUES = ("--site", "--git", "--out", "--encrypt", "--upload", "--exclude", "--zstd")
+FLAGS: tuple[str, ...] = ("--i-stopped-writes", "--pack", "--include-cache")
+FLAGS += ("--dry-run", "--drop-foreign-links")
+PROG = "gerrit-site-export.py"
 NEW_FILE = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
-ZSTD, S3_COPY = ["zstd", "-q", "-T0", "-c"], ["aws", "s3", "cp", "--sse", "aws:kms"]
+S3_COPY = ["aws", "s3", "cp", "--sse", "aws:kms"]
 ENCRYPT = {"age": ["-r"], "gpg": ["--batch", "--yes", "--encrypt", "--recipient"]}
 PARTS, ESCAPE = ("site", "git"), "".maketrans({c: "\\" + c for c in "*?[\\"})
 ARCHIVES = [f"{p}.tar.zst{s}" for p in PARTS for s in ("", ".age", ".gpg")]
 VERSION_JAR = "WEB-INF/lib/com_google_gerrit_common_libversion.jar"
 VERSION_FILE = "com/google/gerrit/common/Version"  # In VERSION_JAR.
 HEAD_PROBES = (["symbolic-ref", "-q", "HEAD"], ["rev-parse", "--verify", "HEAD^0"])
-COMPANION = "gerrit_export_git"  # Its .py, beside this tool, copies repositories.
+# Each .py beside this tool: repositories and --exclude; links and packing.
+COMPANION, HOST = COMPANIONS = ("gerrit_export_git", "gerrit_export_host")
 FOR_EACH_REF = ["for-each-ref", "--format=%(refname) %(objectname) %(*objectname)"]
 
 
@@ -97,6 +102,7 @@ def parse_args(argv: list[str]) -> Any:
     opts = SimpleNamespace(mode="", **{o[2:]: "" for o in VALUES})
     (fields := vars(opts)).update({o[2:].replace("-", "_"): False for o in FLAGS})
     opts.site, opts.exclude, args = os.environ.get("GERRIT_SITE", ""), [], list(argv)
+    opts.zstd = "auto"
     while args:
         arg = args.pop(0)
         name, equals, value = arg.partition("=")
@@ -132,9 +138,11 @@ def parse_args(argv: list[str]) -> Any:
     ):
         if failed:
             die(message)
-    need = "backup" if opts.mode == "backup" else "--exclude" * bool(opts.exclude)
-    if need and not importlib.util.find_spec(COMPANION):
-        die(f"{need} needs {COMPANION}.py beside the script, as in the chart image")
+    if missing := [f"{m}.py" for m in COMPANIONS if not importlib.util.find_spec(m)]:
+        die(
+            f"every mode needs {' and '.join(missing)} beside the script: copy the"
+            " tool with its modules, as the chart image holds them"
+        )
     opts.excluded = [*EXCLUDED[opts.include_cache :], *opts.exclude]  # cache is first
     return opts
 
@@ -153,7 +161,7 @@ def host_keys(etc: Path) -> list[Path]:
 
 
 def require_tools(opts: Any, site: str) -> None:
-    optional = {"ssh-keygen": host_keys(Path(site, "etc")), "zstd": opts.pack}
+    optional = {"ssh-keygen": host_keys(Path(site, "etc")), "zstd": opts.zstd == "tool"}
     optional.update({opts.encrypt.partition(":")[0]: opts.encrypt, "aws": opts.upload})
     needed = ["rsync", "git", *(tool for tool, use in optional.items() if use)]
     if missing := [tool for tool in needed if not shutil.which(tool)]:
@@ -180,85 +188,8 @@ def refuse_unsafe(path: Path, regular: bool) -> None:
         die(f"not a regular file: {path}")
 
 
-def served_site(argv: list[str]) -> str | None:
-    """The -d/--site-path of a '*.war ... daemon' command line, "." if none."""
-    wars = [i for i, arg in enumerate(argv) if arg.endswith(".war")]
-    if not wars or "daemon" not in argv[wars[0] + 1 :]:
-        return None
-    site, args = ".", iter(argv[argv.index("daemon", wars[0] + 1) + 1 :])
-    for arg in args:
-        if arg in ("-d", "--site-path"):
-            site = next(args, "")
-        elif arg.startswith("--site-path="):
-            site = arg.partition("=")[2]
-        elif arg.startswith("-d") and not arg.startswith("--"):
-            site = arg[2:]
-    return site
-
-
-def fs_view(proc: str, pid: str) -> tuple[int, int, str] | None:
-    try:  # The root and mount namespace that pid resolves paths, such as -d, in.
-        root = os.stat(f"{proc}/{pid}/root")
-        return root.st_dev, root.st_ino, os.readlink(f"{proc}/{pid}/ns/mnt")
-    except OSError:
-        return None
-
-
-def refuse_running(site: str) -> None:
-    """Die while a Gerrit serves site; reads /proc, as ps output truncates."""
-    proc = os.environ.get("GERRIT_SITE_EXPORT_PROC") or "/proc"  # Set by tests.
-    running = f"Gerrit is running on {site} (pid %s); stop it, or {HINT}"
-    try:
-        pids = sorted((e for e in os.listdir(proc) if e.isdigit()), key=int)
-    except OSError:
-        die(f"cannot list processes in {proc} to check for Gerrit; {HINT}")
-    if os.path.lexists(pidfile := Path(site, "logs", "gerrit.pid")):
-        pid = "".join(c for c in pidfile.read_text() if c.isdigit())
-        if pid and os.path.isdir(os.path.join(proc, pid)):
-            die(running % pid)
-    if "1" not in pids:
-        die(f"{proc} hides pid 1 (hidepid?), so it may hide Gerrit too; {HINT}")
-    doubt, site_stat, own = "", os.stat(site), fs_view(proc, "self")
-    for pid in (p for p in pids if p != str(os.getpid())):
-        base = os.path.join(proc, pid)
-        vague = f"cannot tell which site Gerrit (pid {pid}) serves"
-        try:
-            with open(os.path.join(base, "cmdline"), "rb") as handle:
-                raw = handle.read().rstrip(b"\0")
-            served = served_site([os.fsdecode(a) for a in raw.split(b"\0")])
-            if served is not None and (own is None or fs_view(proc, pid) != own):
-                vague, served = f"Gerrit (pid {pid}) runs in {ELSEWHERE}", ""
-            if served and not os.path.isabs(served):
-                cwd = os.readlink(os.path.join(base, "cwd"))
-                served = os.path.join(base, cwd, served)
-        except OSError:  # Gone since the listing, or there but not inspectable.
-            doubt = doubt or (vague if os.path.isdir(base) else "")
-            continue
-        try:  # stat, unlike realpath, fails where it cannot resolve a path.
-            if served and os.path.samestat(os.stat(served), site_stat):
-                die(running % pid)
-        except (FileNotFoundError, NotADirectoryError):
-            pass  # Nothing there, so not this site.
-        except OSError:
-            served = ""
-        if served == "":
-            doubt = doubt or vague
-    if doubt:
-        die(f"{doubt}; stop it, or {HINT}")
-
-
-def copy(opts: Any, site: str, git_dir: str, git_given: str, out: Path) -> None:
-    for cred, top in ((c, os.path.join(site, c)) for c in CREDENTIALS):  # As import
-        bad = [str(p) for p in (Path(top), *Path(top).parents) if p.is_symlink()]
-        for f in () if bad else tree_paths(top) if os.path.isdir(top) else [top]:
-            to = os.readlink(f) if os.path.islink(f) else ""
-            safe = cred == ".ssh" and to[:1] != "/" and ".." not in to.split("/")
-            safe = not to or safe or (f[len(site) + 1 :], to) == G2P
-            bad += [f] * (not safe or os.path.isfile(f) and os.stat(f).st_nlink > 1)
-        if os.path.exists(top) and os.path.commonpath([top, git_dir]) in (top, git_dir):
-            bad.append(git_dir)
-        if bad:
-            die(f"{bad[0]} could copy credential {top} under another name")
+def left_out(opts: Any, site: str, git_dir: str, git_given: str) -> list[str]:
+    """The site paths the copy leaves out, by name; --exclude adds patterns."""
     # Any type matches; a linked basePath goes as both, or as its first linked ancestor.
     names, given = list(opts.excluded), os.path.abspath(opts.site)
     for path, base in ((git_given, site), (git_given, given), (git_dir, site)):
@@ -266,6 +197,24 @@ def copy(opts: Any, site: str, git_dir: str, git_given: str, out: Path) -> None:
             p = Path(path[len(base.rstrip("/")) + 1 :]).parts
             up = [i for i in range(1, len(p)) if Path(base, *p[:i]).is_symlink()]
             names.append("/".join(p[: (up or [len(p)])[0]]))
+    return names
+
+
+def copy(opts: Any, site: str, git_dir: str, names: list[str], out: Path) -> None:
+    sites = ("/var/gerrit", site, os.path.abspath(opts.site))
+    g2p = [f"{root}/etc/replication.config" for root in sites]
+    for cred, top in ((c, os.path.join(site, c)) for c in CREDENTIALS):  # As import
+        bad = [str(p) for p in (Path(top), *Path(top).parents) if p.is_symlink()]
+        for f in () if bad else tree_paths(top) if os.path.isdir(top) else [top]:
+            to = os.readlink(f) if os.path.islink(f) else ""
+            safe = cred == ".ssh" and to[:1] != "/" and ".." not in to.split("/")
+            safe = not to or safe or f[len(site) + 1 :] == G2P and to in g2p
+            bad += [f] * (not safe or os.path.isfile(f) and os.stat(f).st_nlink > 1)
+        if os.path.exists(top) and os.path.commonpath([top, git_dir]) in (top, git_dir):
+            bad.append(git_dir)
+        if bad:
+            die(f"{bad[0]} could copy credential {top} under another name")
+    names = [*names, *opts.dropped]
     globs = {**{n: n.translate(ESCAPE) for n in names}, **{n: n for n in opts.exclude}}
     filters = [f"--exclude=/{glob}" for glob in globs.values()]
     rsync = ["rsync", "-a", "--chmod=go-rwx", "--delete"]
@@ -281,25 +230,10 @@ def copy(opts: Any, site: str, git_dir: str, git_given: str, out: Path) -> None:
 
 
 def pack(opts: Any, out: Path) -> list[Path]:
-    archives, failure = [], ""
+    archives = []
     for part in PARTS:
         archive = out / f"{part}.tar.zst"
-        if opts.dry_run:
-            show(["tar", f"{part}/", "|", *ZSTD, ">", str(archive)])
-        else:
-            with os.fdopen(os.open(archive, NEW_FILE, 0o600), "wb") as dest:
-                zstd = subprocess.Popen(ZSTD, stdin=PIPE, stdout=dest, bufsize=0)
-                try:
-                    with tarfile.open(fileobj=zstd.stdin, mode="w|") as tar:
-                        tar.add(str(out / part), arcname=part)
-                except (OSError, tarfile.TarError) as exc:
-                    failure = str(exc)
-                zstd.communicate()
-            if status := zstd.returncode:  # First, as zstd failing breaks the pipe.
-                die(f"zstd failed with exit status {status} packing {archive.name}")
-            if failure:
-                die(f"cannot pack {part}/: {failure}")
-        step(opts, ["zstd", "-tq", str(archive)], f"integrity check of {archive.name}")
+        importlib.import_module(HOST).pack(out / part, archive, opts.zstd, opts.dry_run)
         if opts.encrypt:
             kind, _, who = opts.encrypt.partition(":")
             sealed = archive.with_name(f"{archive.name}.{kind}")
@@ -362,6 +296,7 @@ def build_manifest(opts: Any, site: str, git_dir: str, out: Path) -> dict[str, A
         "git": {**git, "repositories": dict(sorted(repos.items()))},
         "ssh_host_keys": keys,
         "excluded": opts.excluded,
+        **({"dropped_links": opts.dropped} if opts.dropped else {}),
     }
 
 
@@ -379,6 +314,8 @@ def sha256_of(path: Path) -> str:
 def main(argv: list[str]) -> None:
     os.umask(0o077)  # Before anything is written: every output is owner-only.
     opts = parse_args(argv)
+    host = importlib.import_module(HOST)
+    opts.zstd = host.zstd_method(opts.zstd, opts.pack)
     site = readable_dir(opts.site, "site")
     require_tools(opts, site)
     git_raw = opts.git or os.path.join(site, base_path(site))
@@ -397,7 +334,27 @@ def main(argv: list[str]) -> None:
     for path in (out / "site", out / "git", *outputs):
         refuse_unsafe(path, regular=path in outputs)
     if opts.mode == "final" and not opts.i_stopped_writes:
-        refuse_running(site)
+        host.refuse_running(site)
+    names = left_out(opts, site, git_dir, git_given)
+    store = names[len(opts.excluded) :]  # The repository store, packed as git/.
+    needed = importlib.import_module(COMPANION).protected(site)
+    host.refuse_structure(site, needed, names, store, opts.exclude)
+    found = host.foreign_links(site, names, opts.exclude)
+    foreign = [  # copy() checks the credential paths and their parents.
+        k for k in found if not any(f"{c}/".startswith(f"{k[0]}/") for c in CREDENTIALS)
+    ]
+    opts.dropped = [name for name, _ in foreign]
+    if foreign:  # As --exclude patterns: none may be site structure.
+        importlib.import_module(COMPANION).refuse_exclude(
+            SimpleNamespace(site=opts.site, exclude=[]), EXCLUDED, git_raw, opts.dropped
+        )
+    if foreign and not opts.drop_foreign_links:
+        die(
+            f"links site-import refuses: {', '.join(' -> '.join(k) for k in foreign)};"
+            " leave each out with --exclude <path>, or pass --drop-foreign-links"
+        )
+    for name, target in foreign:
+        say(f"leaving out {name} -> {target}, a link site-import refuses")
     dry = "dry run, nothing is written: " if opts.dry_run else ""
     say(f"{dry}{opts.mode} export of {site} into {out}")
     # Old manifest first, then archives: a failed run must not look complete.
@@ -406,7 +363,7 @@ def main(argv: list[str]) -> None:
     for command in [*removal, ["mkdir", "-p", f"{out}/site", f"{out}/git"]]:
         step(opts, command, command[0])
     try:
-        copy(opts, site, git_dir, git_given, out)
+        copy(opts, site, git_dir, names, out)
         data = {} if opts.dry_run else build_manifest(opts, site, git_dir, out)
         archives = pack(opts, out) if opts.pack else []
         if opts.dry_run:

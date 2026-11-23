@@ -583,6 +583,37 @@ jobs:
           uv run --no-project --python 3.8 --with pytest==8.3.5 \
             pytest tests/test_site_export.py
 
+  ### Site Export Tool on Python 3.14 ###
+  # On a host without the zstd program, the tool packs through Python
+  # 3.14's compression.zstd. Those tests skip on older Pythons, so this
+  # leg runs them; each hides zstd from the tool's PATH itself, while
+  # the tests that read the archives back still use the program.
+  site-export-py314:
+    name: 'Site export tool (Python 3.14)'
+    runs-on: 'ubuntu-latest'
+    permissions:
+      contents: read
+    timeout-minutes: 10
+    steps:
+      - name: 'Checkout repository'
+        # yamllint disable-line rule:line-length
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: 'Install uv'
+        # yamllint disable-line rule:line-length
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
+        with:
+          enable-cache: true
+
+      - name: 'Run the site export tests under Python 3.14'
+        shell: bash
+        run: |
+          # Run the site export tests under Python 3.14
+          uv run --no-project --python 3.14 --with pytest==8.3.5 \
+            pytest tests/test_site_export.py
+
   ### Helm Chart Smoke Test ###
   # Lints and renders K8S/charts/gerrit, then installs it on a kind
   # cluster with the chart image built from this checkout (Dockerfile,
@@ -1774,6 +1805,7 @@ jobs:
       - test-no-cache
       - unit-tests
       - site-export-py38
+      - site-export-py314
       - chart-smoke
       - release-build-changes
       - release-build
@@ -1800,6 +1832,7 @@ jobs:
             echo "| No Cache | ${NEEDS_TEST_NO_CACHE_RESULT} |"
             echo "| Unit Tests | ${NEEDS_UNIT_TESTS_RESULT} |"
             echo "| Site Export (Python 3.8) | ${NEEDS_SITE_EXPORT_PY38_RESULT} |"
+            echo "| Site Export (Python 3.14) | ${NEEDS_SITE_EXPORT_PY314_RESULT} |"
             echo "| Helm Chart Smoke | ${NEEDS_CHART_SMOKE_RESULT} |"
             echo "| Release Image Build | ${NEEDS_RELEASE_BUILD_RESULT} |"
           } >> "$GITHUB_STEP_SUMMARY"
@@ -1811,6 +1844,7 @@ jobs:
           NEEDS_TEST_NO_CACHE_RESULT: ${{ needs.test-no-cache.result }}
           NEEDS_UNIT_TESTS_RESULT: ${{ needs.unit-tests.result }}
           NEEDS_SITE_EXPORT_PY38_RESULT: ${{ needs.site-export-py38.result }}
+          NEEDS_SITE_EXPORT_PY314_RESULT: ${{ needs.site-export-py314.result }}
           NEEDS_CHART_SMOKE_RESULT: ${{ needs.chart-smoke.result }}
           NEEDS_RELEASE_BUILD_RESULT: ${{ needs.release-build.result }}
 
@@ -1825,6 +1859,7 @@ jobs:
              [ "${NEEDS_TEST_NO_CACHE_RESULT}" != "success" ] || \
              [ "${NEEDS_UNIT_TESTS_RESULT}" != "success" ] || \
              [ "${NEEDS_SITE_EXPORT_PY38_RESULT}" != "success" ] || \
+             [ "${NEEDS_SITE_EXPORT_PY314_RESULT}" != "success" ] || \
              [ "${NEEDS_CHART_SMOKE_RESULT}" != "success" ]; then
             echo "::error::Some tests failed ❌"
             exit 1
@@ -1850,6 +1885,7 @@ jobs:
           NEEDS_TEST_NO_CACHE_RESULT: ${{ needs.test-no-cache.result }}
           NEEDS_UNIT_TESTS_RESULT: ${{ needs.unit-tests.result }}
           NEEDS_SITE_EXPORT_PY38_RESULT: ${{ needs.site-export-py38.result }}
+          NEEDS_SITE_EXPORT_PY314_RESULT: ${{ needs.site-export-py314.result }}
           NEEDS_CHART_SMOKE_RESULT: ${{ needs.chart-smoke.result }}
           NEEDS_RELEASE_BUILD_CHANGES_RESULT: ${{ needs.release-build-changes.result }}
           NEEDS_RELEASE_BUILD_RESULT: ${{ needs.release-build.result }}

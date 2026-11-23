@@ -37,15 +37,19 @@ ending in ``*`` to match a name prefix within one directory, with no
 trailing ``/``; it may not overlap, as an ancestor, a match or a
 descendant, a path the tool already leaves out, the repository store,
 ``etc/gerrit.config``, ``etc/secure.config``, ``git``,
-``data/replication``, or name or match All-Users: exclusions are for
-disposable data, not for site structure. A pattern whose matches hold
+``data/replication``, the SAML keystore site-import compares, or name
+or match All-Users: exclusions are for disposable data, not for site
+structure. A pattern whose matches hold
 an All-Users entry at any depth is refused too, and so is one whose
 matches cannot be read through. A store that is the site, or holds
-it, puts every site path in the store and refuses any pattern.
+it, puts every site path in the store and refuses any pattern. The
+links site-import refuses, which ``--drop-foreign-links`` leaves out,
+are checked the same way. The tool refuses, in every mode, any link on,
+above or beneath a path the import needs, so no such link is left to
+drop.
 
-The export tool loads this module only in backup mode and for
-``--exclude``, from its own directory; seed and final without
-``--exclude`` need only the tool itself. Standard library only, Python
+The export tool loads this module, from its own directory, in every
+mode, as it does gerrit_export_host.py. Standard library only, Python
 3.8 or newer.
 """
 
@@ -78,6 +82,7 @@ RSYNC = [
 ]
 VANISHED = 24  # rsync: files vanished mid-copy, expected while Gerrit writes.
 PROTECTED = ("etc/gerrit.config", "etc/secure.config", "git", "data/replication")
+KEYSTORE = "etc/samlKeystore.jks"  # site-import's saml.keystorePath when unset.
 WILDCARDS = "?[\\"  # Refused in --exclude; '*' only as its last character.
 
 
@@ -87,6 +92,10 @@ class RepositoryCopyError(OSError):
 
 class ExcludeError(OSError):
     """An --exclude pattern names something the export must copy."""
+
+
+class KeystoreError(OSError):
+    """saml.keystorePath is not in normal form."""
 
 
 def overlaps(pattern: list[str], path: list[str]) -> bool:
@@ -141,13 +150,59 @@ def unreadable(error: OSError) -> None:
         )
 
 
-def refuse_exclude(opts: Any, builtins: list[str], store: str) -> None:
-    """Raise ExcludeError unless the export takes every opts.exclude pattern.
+def protected(site: str) -> list[str]:
+    """PROTECTED and the SAML keystore site-import compares: the site's
+    saml.keystorePath, or KEYSTORE, an absolute one mapped from the real
+    site path or /var/gerrit, as the import maps it.
+
+    Raise KeystoreError when saml.keystorePath has an empty, "." or ".."
+    component, or ends in "/": the export checks one canonical path; or
+    when it is absolute under neither root, which the import refuses.
+    """
+    config = os.path.join(site, "etc", "gerrit.config")
+    get = [*GIT, "config", "-f", config, "--get", "saml.keystorePath"]
+    result = subprocess.run(get, capture_output=True, text=True, check=False)
+    path = result.stdout.strip() or KEYSTORE
+    name = path.split("/")[os.path.isabs(path) :]
+    if not name or {"", ".", ".."} & set(name):
+        raise KeystoreError(
+            f"saml.keystorePath {path} is not in normal form; set it to the"
+            " normalised path inside the site"
+        )
+    if os.path.isabs(path):
+        roots = (r.split("/")[1:] for r in (os.path.realpath(site), "/var/gerrit"))
+        root = next((r for r in roots if name[: len(r)] == r), None)
+        if root is None:
+            raise KeystoreError(
+                f"saml.keystorePath {path} lies outside the site; move the"
+                " keystore into the site and set the path to it there"
+            )
+        name = name[len(root) :]
+        if not name:
+            raise KeystoreError(f"saml.keystorePath {path} names the site itself")
+    return [*PROTECTED, "/".join(name)]
+
+
+def structural(site: str, kept: list[list[str]], parts: list[str]) -> bool:
+    """Whether leaving out parts touches a kept path or All-Users."""
+    return (
+        any("All-Users" in p for p in parts)
+        or any(overlaps(parts, k) for k in kept)
+        or bool(users(site, parts))
+    )
+
+
+def refuse_exclude(
+    opts: Any, builtins: list[str], store: str, links: list[str] | None = None
+) -> None:
+    """Raise ExcludeError unless the export takes every opts.exclude pattern
+    and may leave out each of links, site paths of links site-import refuses.
 
     builtins are the paths the tool leaves out; opts.site and store, the
-    site and the repository store, count both as given and resolved.
+    site and the repository store, count both as given and resolved. A
+    link is checked as a pattern would be.
     """
-    kept = [p.split("/") for p in [*builtins, *PROTECTED]]
+    kept = [p.split("/") for p in [*builtins, *protected(opts.site)]]
     roots, stores = (
         [os.path.abspath(p), os.path.realpath(p)] for p in (opts.site, store)
     )
@@ -164,14 +219,16 @@ def refuse_exclude(opts: Any, builtins: list[str], store: str) -> None:
             raise ExcludeError(
                 f"--exclude {pattern}: give a path under the site, a final * at most"
             )
-        if (
-            any("All-Users" in p for p in parts)
-            or any(overlaps(parts, k) for k in kept)
-            or users(opts.site, parts)
-        ):
+        if structural(opts.site, kept, parts):
             raise ExcludeError(
                 f"--exclude {pattern} overlaps site structure or a path the export"
                 " already leaves out; exclusions are for disposable data"
+            )
+    for link in links or []:
+        if structural(opts.site, kept, link.split("/")):
+            raise ExcludeError(
+                f"{link} is a link site-import refuses, on site structure the"
+                " export must copy; replace the link with what it points at"
             )
 
 

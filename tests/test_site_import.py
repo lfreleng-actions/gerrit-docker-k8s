@@ -1798,8 +1798,27 @@ def test_import_refuses_the_same_names_linking_elsewhere(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    add_g2p_links(source, "/usr/local/bin")
+    # The export refuses these links itself, so re-point the chart's ones
+    # in its archive, as an older tool or another one could write them.
+    add_g2p_links(source)
     out = export_site(source, tmp_path / "export")
+    archive = out / "site.tar.zst"
+    unpacked = subprocess.run(
+        ["zstd", "-dcq", str(archive)], capture_output=True, check=True
+    ).stdout
+    members = []
+    with tarfile.open(fileobj=io.BytesIO(unpacked)) as tar:
+        for info in tar.getmembers():
+            if info.issym() and info.linkname.startswith("/opt/gerrit-tools/bin/"):
+                info.linkname = info.linkname.replace("/opt/gerrit-tools", "/usr/local")
+            data = tar.extractfile(info) if info.isfile() else None
+            members.append((info, data.read() if data else b""))
+    archive.unlink()
+    tar_zst_members(archive, members)
+    manifest = json.loads((out / "manifest.json").read_text())
+    digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+    manifest["archives"]["site.tar.zst"] = digest
+    (out / "manifest.json").write_text(json.dumps(manifest))
     _, code = run_main(import_env(pod, out), monkeypatch)
     assert code != 0
     assert "symlinks to absolute paths" in capsys.readouterr().err
