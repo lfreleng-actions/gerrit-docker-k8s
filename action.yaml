@@ -223,6 +223,14 @@ inputs:
     description: "Verify service availability after startup"
     required: false
     default: 'true'
+  check_service_timeout:
+    description: |
+      Maximum time (in seconds) the service availability check may
+      run before it is stopped and the step fails with diagnostics.
+      Must be a positive whole number. Only used when check_service
+      is true.
+    required: false
+    default: '600'
   enable_cache:
     description: "Enable Docker layer and dependency caching"
     required: false
@@ -556,6 +564,7 @@ runs:
         INPUT_ENABLE_CACHE: ${{ inputs.enable_cache }}
         INPUT_SSH_AUTH_KEYS_SECONDARY: ${{ inputs.ssh_auth_keys_secondary }}
         INPUT_SSH_AUTH_USERNAME_SECONDARY: ${{ inputs.ssh_auth_username_secondary }}
+        INPUT_CHECK_SERVICE_TIMEOUT: ${{ inputs.check_service_timeout }}
       # The only $GITHUB_ENV writes below are WORK_DIR and
       # INSTANCE_COUNT. WORK_DIR is a PID-based /tmp path (consumed by
       # later steps) and is not user-controllable. INSTANCE_COUNT is
@@ -617,6 +626,13 @@ runs:
         fi
         if ! [[ "$INPUT_BASE_SSH_PORT" =~ ^[0-9]+$ ]]; then
           echo "::error::base_ssh_port must be a valid number ❌"
+          exit 1
+        fi
+
+        # Validated here so a bad value fails before images are built.
+        # coreutils timeout treats 0 as "no limit", so reject it too.
+        if ! [[ "$INPUT_CHECK_SERVICE_TIMEOUT" =~ ^[1-9][0-9]*$ ]]; then
+          echo "::error::check_service_timeout must be a positive whole number of seconds ❌"
           exit 1
         fi
 
@@ -835,7 +851,8 @@ runs:
         # Start Gerrit instances (Python)
         "$PYTHON" "$ACTION_PATH/scripts/start-instances.py"
 
-    # Check service availability
+    # Check service availability. Composite steps cannot set
+    # timeout-minutes, so coreutils timeout bounds the check instead.
     - name: "Check Gerrit service availability"
       if: inputs.check_service == 'true'
       shell: bash
@@ -843,11 +860,32 @@ runs:
         SKIP_PLUGIN_INSTALL: ${{ inputs.skip_plugin_install }}
         USE_API_PATH: ${{ inputs.use_api_path }}
         DEBUG: ${{ inputs.debug }}
+        CHECK_TIMEOUT: ${{ inputs.check_service_timeout }}
         ACTION_PATH: ${{ github.action_path }}
         PYTHON: ${{ steps.action-python.outputs.python-path }}
       run: |
         # Check Gerrit service availability (Python)
-        "$PYTHON" "$ACTION_PATH/scripts/check-services.py"
+        status=0
+        timeout --kill-after=30 "$CHECK_TIMEOUT" \
+          "$PYTHON" "$ACTION_PATH/scripts/check-services.py" || status=$?
+        # 124: stopped by SIGTERM; 137: killed after the grace period
+        if [ "$status" -eq 124 ] || [ "$status" -eq 137 ]; then
+          echo "::error::Check Gerrit service availability did not finish within ${CHECK_TIMEOUT}s; raise the check_service_timeout input to allow longer ⏱️"
+          echo "Docker containers:"
+          timeout --kill-after=5 30 docker ps -a || true
+          names=$(timeout --kill-after=5 30 docker ps -a --filter name=gerrit- \
+            --format '{{.Names}}' || true)
+          while IFS= read -r name; do
+            case "$name" in
+              gerrit-*) ;;
+              *) continue ;;
+            esac
+            echo "::group::Last 200 log lines of $name"
+            timeout --kill-after=5 30 docker logs --tail 200 "$name" 2>&1 || true
+            echo "::endgroup::"
+          done <<< "$names"
+        fi
+        exit "$status"
 
     # Add SSH authentication keys for user access
     - name: "Add SSH authentication keys"

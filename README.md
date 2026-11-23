@@ -151,12 +151,13 @@ Use this action in CI/CD pipelines that need to:
 
 <!-- markdownlint-disable MD013 -->
 
-| Name             | Required | Default | Description                                       |
-| ---------------- | -------- | ------- | ------------------------------------------------- |
-| exit             | False    | `true`  | Stop containers when job completes                |
-| check_service    | False    | `true`  | Verify service availability after startup         |
-| enable_cache     | False    | `true`  | Enable Docker layer and dependency caching        |
-| cache_key_suffix | False    |         | Extra suffix for cache keys (for cache isolation) |
+| Name                  | Required | Default | Description                                                         |
+| --------------------- | -------- | ------- | ------------------------------------------------------------------- |
+| exit                  | False    | `true`  | Stop containers when job completes                                  |
+| check_service         | False    | `true`  | Verify service availability after startup                           |
+| check_service_timeout | False    | `600`   | Max time for the service availability check (seconds, positive int) |
+| enable_cache          | False    | `true`  | Enable Docker layer and dependency caching                          |
+| cache_key_suffix      | False    |         | Extra suffix for cache keys (for cache isolation)                   |
 
 <!-- markdownlint-enable MD013 -->
 
