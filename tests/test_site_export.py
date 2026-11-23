@@ -746,43 +746,12 @@ def run_lone_copy(site: dict[str, Any], tmp_path: Path, *args: str) -> Any:
     )
 
 
-def test_seed_and_final_run_from_a_lone_copy_of_the_tool(
+def test_help_runs_from_a_lone_copy_of_the_tool(
     site: dict[str, Any], tmp_path: Path
 ) -> None:
     result = run_lone_copy(site, tmp_path, "--help")
     assert result.returncode == 0, result.stderr
     assert "backup" in result.stdout
-    result = run_lone_copy(site, tmp_path, "seed")
-    assert result.returncode == 0, result.stderr
-    manifest = json.loads((site["out"] / "manifest.json").read_text())
-    assert manifest["git"]["repositories"] == repositories_of(site)
-    result = run_lone_copy(site, tmp_path, "final", "--dry-run")
-    assert result.returncode == 0, result.stderr
-    assert "--checksum" in result.stdout
-
-
-def test_backup_from_a_lone_copy_names_the_missing_module(
-    site: dict[str, Any], tmp_path: Path
-) -> None:
-    result = run_lone_copy(site, tmp_path, "backup")
-    assert result.returncode != 0
-    assert result.stderr.splitlines() == [
-        "gerrit-site-export.py: error: backup needs gerrit_export_git.py beside"
-        " the script, as in the chart image"
-    ]
-    assert not site["out"].exists()
-
-
-def test_exclude_from_a_lone_copy_names_the_missing_module(
-    site: dict[str, Any], tmp_path: Path
-) -> None:
-    result = run_lone_copy(site, tmp_path, "seed", "--exclude", "data/x")
-    assert result.returncode != 0
-    assert result.stderr.splitlines() == [
-        "gerrit-site-export.py: error: --exclude needs gerrit_export_git.py beside"
-        " the script, as in the chart image"
-    ]
-    assert not site["out"].exists()
 
 
 @needs_zstd
@@ -1391,7 +1360,9 @@ def test_refuses_non_canonical_repository_path(
     assert f"pass {(storage / 'repos').resolve()}" in result.stderr
     assert not site["out"].exists()
 
-    manifest = export_ok(site, "seed", "--git", str(storage / "repos"))
+    manifest = export_ok(
+        site, "seed", "--git", str(storage / "repos"), "--exclude", "link"
+    )
     assert sorted(manifest["git"]["repositories"]) == sorted(site["refs"])
 
 
@@ -1535,7 +1506,7 @@ def test_failing_step_aborts_without_manifest(
 @pytest.mark.parametrize(
     ("hide", "args", "missing"),
     [
-        (("zstd",), ("final", "--pack"), "zstd"),
+        (("zstd",), ("final", "--pack", "--zstd", "tool"), "zstd"),
         (("age",), ("final", "--encrypt", "age:r"), "age"),
         (("gpg",), ("final", "--encrypt", "gpg:KEY"), "gpg"),
         (("aws",), ("final", "--upload", "s3://bucket/x"), "aws"),
@@ -2279,7 +2250,7 @@ def test_exclude_does_not_follow_links_out_of_the_excluded_path(
     (plugin / "link").symlink_to(outside)
     (site["root"] / "data" / "pl-link").symlink_to(outside)
     for pattern in ["data/plugin", "data/pl-link", "data/pl*"]:
-        export_ok(site, "seed", "--exclude", pattern)
+        export_ok(site, "seed", "--exclude", pattern, "--drop-foreign-links")
 
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="root reads any directory")
@@ -2382,7 +2353,6 @@ def unzstd(archive: Path) -> bytes:
     return data
 
 
-@pytest.mark.xfail(strict=True, reason="needs the host-site options")
 def test_help_documents_the_host_options() -> None:
     result = run_export("--help")
     assert result.returncode == 0
@@ -2390,7 +2360,6 @@ def test_help_documents_the_host_options() -> None:
         assert text in result.stdout, text
 
 
-@pytest.mark.xfail(strict=True, reason="needs the site's own g2p link")
 @pytest.mark.parametrize("mode", ["seed", "final"])
 def test_export_accepts_the_sites_own_g2p_link(site: dict[str, Any], mode: str) -> None:
     root = Path(os.path.realpath(site["root"]))
@@ -2414,7 +2383,6 @@ def test_export_refuses_another_g2p_link_into_the_site(
     export_fails(site, "under another name", "final")
 
 
-@pytest.mark.xfail(strict=True, reason="needs the foreign link check")
 @pytest.mark.parametrize("mode", ["seed", "final", "backup"])
 def test_export_refuses_links_the_import_refuses(
     site: dict[str, Any], mode: str
@@ -2428,7 +2396,6 @@ def test_export_refuses_links_the_import_refuses(
     assert not site["out"].exists()
 
 
-@pytest.mark.xfail(strict=True, reason="needs --drop-foreign-links")
 @pytest.mark.parametrize("mode", ["final", "backup"])
 def test_drop_foreign_links_leaves_them_out(site: dict[str, Any], mode: str) -> None:
     if mode == "backup" and not shutil.which("zstd") and not has_python_zstd():
@@ -2476,7 +2443,6 @@ def test_exclude_covering_a_foreign_link_lets_the_export_run(
 @pytest.mark.parametrize(
     "name", ["etc/gerrit.config", "etc/secure.config", "data/replication/ref-updates"]
 )
-@pytest.mark.xfail(strict=True, reason="needs the site-structure link check")
 def test_drop_foreign_links_refuses_links_on_site_structure(
     site: dict[str, Any], tmp_path: Path, name: str
 ) -> None:
@@ -2514,7 +2480,6 @@ LINKED_STRUCTURE = [
 ]
 
 
-@pytest.mark.xfail(strict=True, reason="needs links on site structure refused")
 @pytest.mark.parametrize(("links", "error"), LINKED_STRUCTURE)
 def test_links_on_what_the_import_needs_are_refused(
     site: dict[str, Any], tmp_path: Path, links: list[tuple[str, str]], error: str
@@ -2561,7 +2526,6 @@ def test_links_on_what_the_import_needs_are_refused(
         (["--exclude", "etc/host-*"], "--exclude etc/host-* overlaps site structure"),
     ],
 )
-@pytest.mark.xfail(strict=True, reason="needs the SAML keystore kept")
 def test_configured_saml_keystore_is_kept(
     site: dict[str, Any], tmp_path: Path, configured: str, args: list[str], error: str
 ) -> None:
@@ -2576,7 +2540,6 @@ def test_configured_saml_keystore_is_kept(
     assert not site["out"].exists()
 
 
-@pytest.mark.xfail(strict=True, reason="needs the keystore in normal form")
 @pytest.mark.parametrize(
     "configured",
     [
@@ -2611,7 +2574,6 @@ def test_unnormalized_saml_keystore_is_refused(
         assert not site["out"].exists()
 
 
-@pytest.mark.xfail(strict=True, reason="needs the keystore inside the site")
 @pytest.mark.parametrize(
     "configured",
     ["/opt/keys/host.jks", "/var/gerrit-old/etc/host.jks", "SITE-old/etc/host.jks"],
@@ -2635,7 +2597,6 @@ def test_saml_keystore_outside_the_site_is_refused(
         assert not site["out"].exists()
 
 
-@pytest.mark.xfail(strict=True, reason="needs a missing keystore refused")
 @pytest.mark.parametrize("kind", ["missing", "directory"])
 @pytest.mark.parametrize(
     "configured", ["etc/host.jks", "SITE/etc/host.jks", "/var/gerrit/etc/host.jks"]
@@ -2670,7 +2631,6 @@ def test_missing_default_saml_keystore_passes(
     export_ok(site, "backup")
 
 
-@pytest.mark.xfail(strict=True, reason="needs links on site structure refused")
 @pytest.mark.parametrize(
     "configured",
     [
@@ -2695,7 +2655,6 @@ def test_keystore_beneath_a_linked_ancestor_is_refused(
         assert not site["out"].exists()
 
 
-@pytest.mark.xfail(strict=True, reason="needs left-out site structure refused")
 @pytest.mark.parametrize(
     ("base", "keystore"),
     [
@@ -2733,7 +2692,6 @@ def test_what_the_import_needs_in_a_path_left_out_is_refused(
         [("extra", "lib"), ("hooks/custom", "../extra/custom.jar")],
     ],
 )
-@pytest.mark.xfail(strict=True, reason="needs links into skipped trees refused")
 def test_links_into_trees_the_import_skips_are_refused(
     site: dict[str, Any], links: list[tuple[str, str]]
 ) -> None:
@@ -2747,7 +2705,6 @@ def test_links_into_trees_the_import_skips_are_refused(
 
 
 @pytest.mark.parametrize("skipped", ["plugins", "lib"])
-@pytest.mark.xfail(strict=True, reason="needs links through skipped trees refused")
 def test_links_through_a_link_the_import_skips_are_refused(
     site: dict[str, Any], skipped: str
 ) -> None:
@@ -2780,7 +2737,6 @@ def import_unpacks(site: dict[str, Any], tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
 
 
-@pytest.mark.xfail(strict=True, reason="needs archive order and drops rechecked")
 @needs_zstd
 @pytest.mark.parametrize(
     ("links", "dropped"),
@@ -2822,7 +2778,6 @@ def test_links_are_checked_as_the_import_unpacks_them(
         ("/usr/local/bin/change-merged", ["hooks/change-merged"]),
     ],
 )
-@pytest.mark.xfail(strict=True, reason="needs absolute links left out of resolving")
 def test_links_through_an_absolute_link_resolve_without_it(
     site: dict[str, Any], tmp_path: Path, target: str, dropped: list[str]
 ) -> None:
@@ -2836,7 +2791,6 @@ def test_links_through_an_absolute_link_resolve_without_it(
 
 
 @needs_zstd
-@pytest.mark.xfail(strict=True, reason="needs links under .lock directories ignored")
 def test_links_through_a_lock_directory_resolve_without_it(
     site: dict[str, Any], tmp_path: Path
 ) -> None:
@@ -2851,7 +2805,6 @@ def test_links_through_a_lock_directory_resolve_without_it(
     import_unpacks(site, tmp_path)
 
 
-@pytest.mark.xfail(strict=True, reason="needs links leaving the site refused")
 @pytest.mark.parametrize("target", ["../../site/data", "../x/../../site/data"])
 def test_links_leaving_the_site_and_coming_back_are_refused(
     site: dict[str, Any], target: str
@@ -2875,14 +2828,15 @@ def test_links_within_trees_the_import_skips_pass(site: dict[str, Any]) -> None:
     assert os.readlink(out / "cache" / "x") == "/opt/cache/x"
 
 
-@pytest.mark.xfail(strict=True, reason="needs --zstd")
 @needs_zstd
 @needs_python_zstd
 def test_python_packs_archives_the_zstd_program_reads(
     site: dict[str, Any], tmp_path: Path
 ) -> None:
     path = tool_path(tmp_path, hide=("zstd",))
-    manifest = export_ok(site, "final", "--zstd", "python", env={"PATH": path})
+    manifest = export_ok(
+        site, "final", "--pack", "--zstd", "python", env={"PATH": path}
+    )
     assert sorted(manifest["archives"]) == ARCHIVES
     for name, digest in manifest["archives"].items():
         archive = site["out"] / name
@@ -2893,7 +2847,6 @@ def test_python_packs_archives_the_zstd_program_reads(
         assert name.split(".")[0] in names
 
 
-@pytest.mark.xfail(strict=True, reason="needs --zstd auto")
 @needs_python_zstd
 @pytest.mark.parametrize("mode", ["final", "backup"])
 def test_auto_packs_with_python_without_the_zstd_program(
@@ -2906,7 +2859,6 @@ def test_auto_packs_with_python_without_the_zstd_program(
     assert sorted(manifest["archives"]) == ARCHIVES
 
 
-@pytest.mark.xfail(strict=True, reason="needs --zstd")
 @pytest.mark.parametrize("choice", [(), ("--zstd", "auto"), ("--zstd", "python")])
 def test_packing_without_zstd_names_both_remedies(
     site: dict[str, Any], tmp_path: Path, choice: tuple[str, ...]
@@ -2926,7 +2878,6 @@ def test_packing_without_zstd_names_both_remedies(
     assert not site["out"].exists()
 
 
-@pytest.mark.xfail(strict=True, reason="needs gerrit_export_host.py")
 @pytest.mark.parametrize("mode", ["seed", "final", "backup"])
 @pytest.mark.parametrize(
     "modules", [(), ("gerrit_export_git",), ("gerrit_export_host",)]

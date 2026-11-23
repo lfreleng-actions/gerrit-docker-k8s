@@ -103,6 +103,7 @@ line-length = 88
 [tool.ruff.per-file-target-version]
 "scripts/gerrit-site-export.py" = "py38"
 "scripts/gerrit_export_git.py" = "py38"
+"scripts/gerrit_export_host.py" = "py38"
 "tests/test_site_export.py" = "py38"
 
 [tool.ruff.lint]
