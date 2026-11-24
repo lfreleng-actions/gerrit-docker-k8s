@@ -65,7 +65,11 @@ updates:
   # base image bump arrives as a single pull request. Updates stay on
   # the 3.13 line: the chart image's plugin catalogue (docker/plugins.lock)
   # pins stable-3.13 builds, and moving Gerrit's minor line means
-  # re-pinning it.
+  # re-pinning it. Major JDK (eclipse-temurin) updates are ignored too:
+  # Gerrit supports Java 21 only, and the Dockerfile pins and checks a
+  # 21.x JDK, so moving to a new Java line is a deliberate change made
+  # alongside that version check. Minor, patch and digest updates on
+  # the 21 line still flow, as they carry the JDK security fixes.
   - package-ecosystem: "docker"
     directory: "/"
     schedule:
@@ -81,6 +85,9 @@ updates:
         update-types:
           - "version-update:semver-major"
           - "version-update:semver-minor"
+      - dependency-name: "eclipse-temurin"
+        update-types:
+          - "version-update:semver-major"
     cooldown:
       default-days: 7
     open-pull-requests-limit: 5
