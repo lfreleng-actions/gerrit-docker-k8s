@@ -38,7 +38,7 @@ ARG GERRIT_VERSION=3.13.10-ubuntu24
 # which carries CVE-2026-114938; 21.0.13.1 fixes it. The full JDK is
 # kept, as the base image ships one with jmods. The digest pins the
 # multi-arch index; Dependabot's docker ecosystem proposes updates.
-FROM eclipse-temurin:21.0.13.1_2-jdk-noble@sha256:4dea56dcfa1a89832caf1ffe082c49b3878388df3ce97b7f0a49f9c4372b718c AS jdk
+FROM eclipse-temurin:24.0.2_12-jdk-noble@sha256:dacac8e9a0df0d2bd24e702b4431132875c249930b70555ebd7ca285b5bee684 AS jdk
 
 FROM gerritcodereview/gerrit:${GERRIT_VERSION}
 
