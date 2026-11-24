@@ -218,6 +218,7 @@ Argo CD; `K8S/docs/DESIGN.md` section 6 explains its settings.
 | `persistence.storageClassName`           | `""`                             | Cluster default when empty                                 |
 | `persistence.size`                       | `20Gi`                           |                                                            |
 | `persistence.volumePermissions.enabled`  | `false`                          | See below                                                  |
+| `seLinux.level`                          | `""`                             | MCS level, such as `s0:c123,c456`, for every pod that mounts the site volume; see [SELinux level](#selinux-level) |
 | `resources`                              | 500m / 2Gi, 4Gi limit            |                                                            |
 | `secrets.admin.existingSecret`           | `""`                             | Pre-created Secret with `username` and `password`          |
 | `secrets.secureConfig.existingSecret`    | `""`                             | Pre-created Secret with `registerEmailPrivateKey`          |
@@ -913,6 +914,54 @@ every capability dropped and no service account token, so it meets the
 runs as root with `CHOWN` and `DAC_OVERRIDE`. That container breaks
 the `restricted` level but stays within `baseline`, so enable it only
 where the namespace allows `baseline` or less, as in local smoke tests.
+
+### SELinux level
+
+Besides the Gerrit pod, the chart starts pods of its own that mount
+the site volume: the [backup](#backups), [git gc](#garbage-collection)
+and [log cleanup](#logs) `CronJob`s, and the
+[admin toolbox](#admin-toolbox). They run on the Gerrit pod's node,
+where the `ReadWriteOnce` volume is attached.
+
+Some nodes enforce SELinux and give each pod its own pair of MCS
+categories, Bottlerocket among them. There the container runtime
+relabels the volume to each pod that mounts it, so when a second pod
+starts, the running Gerrit process loses access to its own site:
+
+- Gerrit's process and the volume carry different categories, such as
+  `container_t:s0:c159,c528` against `data_t:s0:c120,c912`, while
+  ownership and mode stay correct;
+- every access fails with "Permission denied", and JGit logs
+  `AccessDeniedException`, for `All-Users.git` among others;
+- the health check's `jgit` and `changesindex` checks fail, the
+  readiness probe gets 500 and the pod leaves the Service;
+- the Job itself reads the site without trouble, so its log shows
+  nothing.
+
+Only a restart of the Gerrit pod, which relabels the volume back,
+recovers it, and the next scheduled Job breaks it again.
+
+`seLinux.level` prevents this. It gives every pod that mounts the site
+volume the same `securityContext.seLinuxOptions.level`, so the
+runtime labels them alike and none takes the volume from another:
+
+```yaml
+seLinux:
+  level: "s0:c123,c456"
+```
+
+Choose a category pair of your own for each release, so that two
+releases, or two tenants, on one node stay apart. The value is an MCS
+level: `s0`, then optionally categories `c0` to `c1023` separated by
+commas; the chart refuses anything else when it renders. It sets the
+level only, never the SELinux type, user or role, which the
+`restricted` Pod Security level forbids.
+
+Setting or changing the level takes effect as each pod next starts;
+the runtime relabels the volume once, at that start. Platforms that
+already give every pod in a namespace one level, such as OpenShift,
+need nothing set. Left empty, the default, the chart renders no
+`seLinuxOptions`.
 
 ## Replication
 
@@ -1735,8 +1784,10 @@ writes has no date in its name, so the cleanup never touches it. The
 Job runs as the Gerrit UID on the Gerrit pod's node, with the site
 volume mounted, no service account token and, with
 `networkPolicy.enabled`, a `NetworkPolicy` that denies it all traffic,
-as the [git gc CronJob](#garbage-collection) does. With `log.rotate`
-off nothing carries a date, so there is nothing to delete.
+as the [git gc CronJob](#garbage-collection) does, and like it needs
+[`seLinux.level`](#selinux-level) on nodes that give each pod its own
+SELinux categories. With `log.rotate` off nothing carries a date, so
+there is nothing to delete.
 
 ### What to alert on
 
@@ -1801,9 +1852,11 @@ service account token and, with `networkPolicy.enabled`, a
 `NetworkPolicy` that denies it all traffic. It runs only on the node
 the Gerrit pod runs on, where a `ReadWriteOnce` volume is already
 attached; while Gerrit is down the Job waits in `Pending` and starts
-once the Gerrit pod is back. The chart cuts the `<fullname>` prefix of
-the `CronJob` name to 45 characters, within the 52 that Kubernetes
-allows a `CronJob`.
+once the Gerrit pod is back. As it mounts the site volume beside
+Gerrit, nodes that give each pod its own SELinux categories need
+[`seLinux.level`](#selinux-level). The chart cuts the `<fullname>`
+prefix of the `CronJob` name to 45 characters, within the 52 that
+Kubernetes allows a `CronJob`.
 
 ### Cache limits
 
@@ -1851,8 +1904,10 @@ rebuild a version it uses.
 ## Backups
 
 `backup.enabled` adds the `<fullname>-backup` `CronJob`, which backs
-the site up to S3 while Gerrit runs. Each run, on `backup.schedule`,
-02:00 daily by default:
+the site up to S3 while Gerrit runs. Its pod mounts the site volume
+beside Gerrit's, so on nodes that give each pod its own SELinux
+categories set [`seLinux.level`](#selinux-level). Each run, on
+`backup.schedule`, 02:00 daily by default:
 
 1. takes an exclusive lock on `.chart/backup-lock/lock` on the site
    volume and holds it until it exits; a run that finds the lock held
@@ -2085,9 +2140,11 @@ spec:
 
 `toolbox.enabled` adds the `<fullname>-toolbox` `Deployment`, at zero
 replicas, on the Gerrit image. It mounts the site volume at
-`/var/gerrit`, as the Gerrit pod does, and carries the Gerrit
-command-line programs in `bin/gerrit.war`, `git`, `ssh`, the site
-export tool as `gerrit-site-export`, and these helpers on its `PATH`:
+`/var/gerrit`, as the Gerrit pod does, so on nodes that give each pod
+its own SELinux categories set [`seLinux.level`](#selinux-level). It
+carries the Gerrit command-line programs in `bin/gerrit.war`, `git`,
+`ssh`, the site export tool as `gerrit-site-export`, and these helpers
+on its `PATH`:
 
 | Helper               | Does                                                                   |
 | -------------------- | ---------------------------------------------------------------------- |

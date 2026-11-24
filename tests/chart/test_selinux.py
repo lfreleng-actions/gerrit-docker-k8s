@@ -105,7 +105,6 @@ def test_the_site_pods_are_the_five_templates(tmp_path: Path) -> None:
     assert set(site_pods(render(tmp_path))) == SITE_PODS
 
 
-@pytest.mark.xfail(strict=True, reason="seLinux.level not implemented yet")
 @pytest.mark.parametrize("level", [LEVEL, "s0", "s0:c0", "s0:c1023", "s0:c5,c9,c700"])
 def test_every_site_pod_carries_the_level(tmp_path: Path, level: str) -> None:
     pods = site_pods(render(tmp_path, level))
@@ -122,7 +121,6 @@ def test_empty_level_renders_no_selinux_options(tmp_path: Path) -> None:
                 assert not has_key(spec, "seLinuxOptions"), doc["metadata"]["name"]
 
 
-@pytest.mark.xfail(strict=True, reason="seLinux.level not implemented yet")
 @pytest.mark.parametrize(
     "level",
     ["s0:c1024", "c1,c2", "s0:c5,", "s0:c1, c2", "s1:c1", " s0", "user_u"],

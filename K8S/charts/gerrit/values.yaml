@@ -429,6 +429,18 @@ persistence:
   volumePermissions:
     enabled: false
 
+# One SELinux level for every pod that mounts the site volume: Gerrit,
+# the backup, gc and log cleanup CronJobs, and the admin toolbox. On
+# nodes that give each pod its own MCS categories (Bottlerocket, for
+# one), each such pod relabels the volume as it starts and Gerrit loses
+# access to its site. Set an MCS level of your own for each release,
+# such as s0:c123,c456, so two releases on one node stay apart. It
+# takes effect as each pod next starts, when the volume is relabelled
+# once. Leave it "" where the platform already gives a namespace one
+# level (OpenShift). See "SELinux level" in the chart README.
+seLinux:
+  level: ""
+
 # Adopt an existing site before Gerrit starts; see "Site import" in the
 # chart README. The site-import init container keeps its state in
 # .chart/site-state.json on the site volume.

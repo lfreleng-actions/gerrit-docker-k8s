@@ -211,6 +211,27 @@ fsGroup: {{ include "gerrit.uid" . }}
 fsGroupChangePolicy: OnRootMismatch
 seccompProfile:
   type: RuntimeDefault
+{{- with include "gerrit.seLinuxLevel" . }}
+seLinuxOptions:
+  level: {{ . | quote }}
+{{- end }}
+{{- end -}}
+
+{{/*
+The SELinux level every pod that mounts the site volume shares, or ""
+for none. An MCS level: s0, then optionally categories c0 to c1023
+separated by commas. Level only: the restricted Pod Security Standard
+forbids setting the type, user or role.
+*/}}
+{{- define "gerrit.seLinuxLevel" -}}
+{{- $level := dig "level" "" (.Values.seLinux | default dict) | toString -}}
+{{- if $level -}}
+{{- $category := `c(0|[1-9][0-9]{0,2}|10[01][0-9]|102[0-3])` -}}
+{{- if not (regexMatch (printf `^s0(:%s(,%s)*)?$` $category $category) $level) -}}
+{{- fail (printf "seLinux.level %q is not an MCS level such as s0:c123,c456: s0, then optionally categories c0 to c1023 separated by commas" $level) -}}
+{{- end -}}
+{{- $level -}}
+{{- end -}}
 {{- end -}}
 
 {{- define "gerrit.containerSecurityContext" -}}
