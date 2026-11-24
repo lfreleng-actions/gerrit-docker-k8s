@@ -15,10 +15,12 @@ resources the chart gives ``site-init``.
 
 from __future__ import annotations
 
+import fcntl
 import importlib.util
 import json
 import os
 import shutil
+import subprocess
 import sys
 import zipfile
 from pathlib import Path
@@ -26,7 +28,8 @@ from types import ModuleType
 from typing import Any
 
 import pytest
-from chart.test_hooks import helm_fails, run_site_init
+import site_upgrade_release
+from chart.test_hooks import SITE_INIT, helm_fails, run_site_init
 from chart.test_render import CHART
 from chart.test_replication import pod_spec, render, site_init_env
 from chart.test_runtime_overrides import installed, mount_configmap
@@ -36,8 +39,6 @@ RENDERED = "[gerrit]\n\tbasePath = git\n"
 OLD, NEW = "3.12.3", "3.13.4"
 
 needs_helm = pytest.mark.skipif(shutil.which("helm") is None, reason="needs helm")
-# Removed by the commit that adds siteUpgrade
-XFAIL = pytest.mark.xfail(strict=True, reason="siteUpgrade is not implemented yet")
 
 
 @pytest.fixture
@@ -52,7 +53,6 @@ def upgrade() -> ModuleType:
     return module
 
 
-@XFAIL
 @pytest.mark.parametrize(
     ("site", "image", "expected"),
     [
@@ -71,13 +71,10 @@ def upgrade() -> ModuleType:
         ("3.13.4.1", "3.13.4", None),
     ],
 )
-def test_compare_releases(
-    upgrade: ModuleType, site: str | None, image: str, expected: int | None
-) -> None:
-    assert upgrade.compare(site, image) == expected
+def test_compare_releases(site: str | None, image: str, expected: int | None) -> None:
+    assert site_upgrade_release.compare(site, image) == expected
 
 
-@XFAIL
 @pytest.mark.parametrize(
     ("mode", "site", "image", "pending", "action", "words"),
     [
@@ -120,13 +117,11 @@ def test_decide(
         assert word in decision.message
 
 
-@XFAIL
 def test_decide_rejects_an_unknown_mode(upgrade: ModuleType) -> None:
     with pytest.raises(upgrade.UpgradeError, match="siteUpgrade.mode"):
         upgrade.decide("on", OLD, NEW)
 
 
-@XFAIL
 def test_marker_record(upgrade: ModuleType) -> None:
     assert upgrade.marker_record(NEW, OLD, "2026-11-24T00:00:00Z") == {
         "gerritVersion": NEW,
@@ -135,7 +130,6 @@ def test_marker_record(upgrade: ModuleType) -> None:
     }
 
 
-@XFAIL
 @pytest.mark.parametrize(
     ("target", "image", "action", "words"),
     [
@@ -243,7 +237,6 @@ def termination(env: dict[str, str]) -> str:
     return Path(env["GERRIT_TERMINATION_LOG"]).read_text(encoding="utf-8")
 
 
-@XFAIL
 def test_off_warns_and_starts(site: dict[str, str]) -> None:
     proc = run_site_init(site)
     assert proc.returncode == 0, proc.stderr
@@ -277,7 +270,6 @@ def test_off_ignores_a_marker_without_a_version(site: dict[str, str]) -> None:
     assert java_calls(site) == []
 
 
-@XFAIL
 def test_refuse_stops_with_the_message(site: dict[str, str]) -> None:
     proc = run_site_init({**site, "SITE_UPGRADE_MODE": "refuse"})
     assert proc.returncode != 0
@@ -290,7 +282,66 @@ def test_refuse_stops_with_the_message(site: dict[str, str]) -> None:
     assert "backups may run" not in proc.stdout
 
 
-@XFAIL
+def site_war(env: dict[str, str]) -> Path:
+    """Give the site a gerrit.war of OLD and a gerrit.config of its own."""
+    root = Path(env["GERRIT_SITE"])
+    (root / "bin").mkdir()
+    write_war(root / "bin" / "gerrit.war", OLD)
+    (root / "etc" / "gerrit.config").write_text("[site]\n\town = yes\n", "utf-8")
+    return root
+
+
+@pytest.mark.parametrize(("mode", "release"), [("refuse", OLD), ("auto", "3.14.0")])
+def test_refusal_leaves_the_site_untouched(
+    site: dict[str, str], mode: str, release: str
+) -> None:
+    root = site_war(site)
+    write_marker(root, {"gerritVersion": release})
+    before = (root / "bin" / "gerrit.war").read_bytes()
+    proc = run_site_init({**site, "SITE_UPGRADE_MODE": mode})
+    assert proc.returncode != 0
+    assert (root / "bin" / "gerrit.war").read_bytes() == before
+    assert installed(site, "site.own") == ["yes"]
+
+
+def test_upgrade_installs_the_image_under_the_backup_lock(
+    site: dict[str, str],
+) -> None:
+    root = site_war(site)
+    lock = root / ".chart" / "backup-lock" / "lock"
+    lock.parent.mkdir()
+    base = {
+        k: v for k, v in os.environ.items() if not k.startswith(("GERRIT_", "GIT_"))
+    }
+    env = {**base, "HOME": site["GERRIT_SITE"], **site, "SITE_UPGRADE_MODE": "auto"}
+    with lock.open("w") as held:
+        fcntl.flock(held, fcntl.LOCK_EX)
+        proc = subprocess.Popen(
+            ["sh", str(SITE_INIT)],
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            if "waiting for the backup" in line:
+                break
+        else:
+            pytest.fail(f"site-init did not wait for the lock: {proc.wait()}")
+        # Nothing of the new image reaches the site while a backup runs
+        assert installed(site, "site.own") == ["yes"]
+        with zipfile.ZipFile(root / "bin" / "gerrit.war") as war:
+            assert OLD in war.read("META-INF/MANIFEST.MF").decode()
+        fcntl.flock(held, fcntl.LOCK_UN)
+    out, err = proc.communicate(timeout=60)
+    assert proc.returncode == 0, err
+    with zipfile.ZipFile(root / "bin" / "gerrit.war") as war:
+        assert NEW in war.read("META-INF/MANIFEST.MF").decode()
+    assert (marker(site) or {}).get("gerritVersion") == NEW
+    assert "installing the image's binaries and configuration: done" in out
+
+
 def test_auto_refuses_an_older_image(site: dict[str, str]) -> None:
     write_marker(Path(site["GERRIT_SITE"]), {"gerritVersion": "3.14.0"})
     proc = run_site_init({**site, "SITE_UPGRADE_MODE": "auto"})
@@ -301,7 +352,6 @@ def test_auto_refuses_an_older_image(site: dict[str, str]) -> None:
     assert java_calls(site) == []
 
 
-@XFAIL
 def test_auto_upgrades_and_rewrites_the_marker(site: dict[str, str]) -> None:
     env = {
         **site,
@@ -335,7 +385,6 @@ def test_auto_upgrades_and_rewrites_the_marker(site: dict[str, str]) -> None:
     assert "Gerrit site in" in proc.stdout
 
 
-@XFAIL
 def test_auto_without_reindex(site: dict[str, str]) -> None:
     env = {**site, "SITE_UPGRADE_MODE": "auto", "SITE_UPGRADE_REINDEX": "false"}
     proc = run_site_init(env)
@@ -346,7 +395,6 @@ def test_auto_without_reindex(site: dict[str, str]) -> None:
     assert (marker(site) or {}).get("gerritVersion") == NEW
 
 
-@XFAIL
 @pytest.mark.parametrize("failing", ["init", "reindex"])
 def test_failure_leaves_the_marker_absent(site: dict[str, str], failing: str) -> None:
     env = {**site, "SITE_UPGRADE_MODE": "auto", "STUB_FAIL": failing}
@@ -369,7 +417,6 @@ def test_failure_leaves_the_marker_absent(site: dict[str, str], failing: str) ->
     assert not (Path(site["GERRIT_SITE"]) / ".chart" / "upgrade-pending").exists()
 
 
-@XFAIL
 def test_retry_refuses_an_image_older_than_the_target(site: dict[str, str]) -> None:
     war = Path(site["GERRIT_IMAGE_BIN"]) / "gerrit.war"
     pending = Path(site["GERRIT_SITE"]) / ".chart" / "upgrade-pending"
@@ -397,12 +444,7 @@ def test_retry_refuses_an_image_older_than_the_target(site: dict[str, str]) -> N
 
 @pytest.mark.parametrize(
     ("value", "expect"),
-    [
-        pytest.param("refuse", "refuse", marks=XFAIL),
-        pytest.param("auto\n", "auto", marks=XFAIL),
-        ("", "off"),
-        pytest.param("on", "off", marks=XFAIL),
-    ],
+    [("refuse", "refuse"), ("auto\n", "auto"), ("", "off"), ("on", "off")],
 )
 def test_override_sets_the_mode(site: dict[str, str], value: str, expect: str) -> None:
     mount_configmap(site, {"chart.siteUpgrade.mode": value})
@@ -421,7 +463,6 @@ def test_override_sets_the_mode(site: dict[str, str], value: str, expect: str) -
     assert "Runtime override: removed" not in proc.stdout
 
 
-@XFAIL
 @needs_helm
 def test_default_render(tmp_path: Path) -> None:
     docs = render(tmp_path)
@@ -440,7 +481,6 @@ def test_default_render(tmp_path: Path) -> None:
     assert "site-upgrade.py" in scripts[0]["data"]
 
 
-@XFAIL
 @needs_helm
 @pytest.mark.parametrize(("mode", "expected"), [(False, "off"), ("refuse", "refuse")])
 def test_mode_renders(tmp_path: Path, mode: Any, expected: str) -> None:
@@ -448,7 +488,6 @@ def test_mode_renders(tmp_path: Path, mode: Any, expected: str) -> None:
     assert site_init_env(docs)["SITE_UPGRADE_MODE"] == expected
 
 
-@XFAIL
 @needs_helm
 @pytest.mark.parametrize("mode", [True, "on", "force"])
 def test_bad_mode_fails(tmp_path: Path, mode: Any) -> None:
@@ -456,7 +495,6 @@ def test_bad_mode_fails(tmp_path: Path, mode: Any) -> None:
     assert "siteUpgrade.mode must be off, refuse or auto" in error
 
 
-@XFAIL
 @needs_helm
 def test_upgrade_resources(tmp_path: Path) -> None:
     resources = {"limits": {"cpu": "2", "memory": "6Gi"}}

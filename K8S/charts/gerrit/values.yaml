@@ -492,6 +492,22 @@ siteImport:
   # limit, and reindex one thread per core of the CPU limit
   resources: {}
 
+# What site-init does when the image carries a different Gerrit release
+# from the one .chart/initialised records; see "Upgrading Gerrit" in
+# the chart README. runtimeOverrides can set the mode without a values
+# change, as chart.siteUpgrade.mode.
+siteUpgrade:
+  # off:    start as before, logging a warning when the releases differ
+  # refuse: stop the pod before Gerrit starts when they differ
+  # auto:   for a newer image, run init and, with reindex, an offline
+  #         reindex, then record the new release; refuse an older one
+  mode: "off"
+  reindex: true
+  # Resources of site-init, which runs the upgrade; resources when
+  # empty. init and reindex get container.heapLimit, else 70% of the
+  # memory limit, and reindex one thread per core of the CPU limit
+  resources: {}
+
 # A CronJob that backs the site up to S3 while Gerrit runs; see
 # "Backups" in the chart README. Each run writes the export tool's
 # backup archives and manifest.json under s3://<bucket>/<prefix>/<UTC
@@ -663,8 +679,10 @@ podAnnotations: {}
 # <fullname>-overrides) read-only and optional; the chart never renders
 # it, so Helm and Argo CD leave it alone. At each start site-init sets
 # each allowed key the ConfigMap carries in etc/gerrit.config, and an
-# empty value removes the key. A change takes effect at the next pod
-# start. See "Runtime overrides" in the chart README.
+# empty value removes the key; a chart.* key, such as
+# chart.siteUpgrade.mode, sets that chart setting instead. A change
+# takes effect at the next pod start. See "Runtime overrides" in the
+# chart README.
 runtimeOverrides:
   enabled: false
   configMapName: ""

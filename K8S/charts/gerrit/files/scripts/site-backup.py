@@ -16,7 +16,11 @@ Each run:
 1. reads ``<site>/.chart/site-state.json``, the state site-import
    records, and skips the run, exiting 0, unless it records
    ``complete``: a site with no state file, or with an import in
-   progress or failed, is not one to back up;
+   progress or failed, is not one to back up. It skips a site holding
+   ``<site>/.chart/upgrade-pending`` too: site-init's in-place upgrade
+   writes it under the same lock and removes it only once the upgrade
+   finishes, so a failed upgrade's half-upgraded site is never
+   published or pruned for;
 2. runs ``gerrit-site-export.py backup`` on the site volume, mounted
    read-only, into the scratch volume, with ``--git`` naming the git
    store ``gerrit.basePath`` names on that volume and the
@@ -90,6 +94,7 @@ LATEST = "latest"
 MANIFEST = "manifest.json"
 PUBLISHED = "published"
 STATE_FILE = Path(".chart") / "site-state.json"
+UPGRADE_PENDING = Path(".chart") / "upgrade-pending"
 UPLOADS = ("site.tar.zst", "git.tar.zst", MANIFEST)
 RCLONE_FLAGS = ["--stats", "0", "--retries", "5", "--retries-sleep", "3s"]
 RCLONE_FLAGS += ["--low-level-retries", "10"]
@@ -304,6 +309,13 @@ def main(env: Mapping[str, str], argv: Sequence[str] = ()) -> int:
         why = complete(before)
         if why:
             say(f"skipping this run: {state_path} {why}; the next run retries")
+            return 0
+        pending = settings.site / UPGRADE_PENDING
+        if pending.exists():
+            say(
+                f"skipping this run: {pending} records an in-place upgrade "
+                "that did not finish; the next run retries"
+            )
             return 0
         stamp = f"{clock().strftime(STAMP_FORMAT)}-{run_id()}"
         say(f"backing up {settings.site} to {settings.url(stamp)}")

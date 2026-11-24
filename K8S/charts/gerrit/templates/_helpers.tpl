@@ -1414,6 +1414,32 @@ full name when the chart creates one; "" for the namespace default */}}
 {{- toYaml (.Values.siteImport.resources | default .Values.resources) -}}
 {{- end -}}
 
+{{/* site-init's resources, which an in-place upgrade runs within:
+siteUpgrade.resources, or resources when that is empty */}}
+{{- define "gerrit.siteUpgradeResources" -}}
+{{- toYaml (.Values.siteUpgrade.resources | default .Values.resources) -}}
+{{- end -}}
+
+{{/* The heap an in-place upgrade gives init and reindex, by
+gerrit.siteImportHeap's rule applied to site-init's memory limit */}}
+{{- define "gerrit.siteUpgradeHeap" -}}
+{{- if .Values.container.heapLimit -}}
+-Xmx{{ .Values.container.heapLimit }}
+{{- else if dig "limits" "memory" "" (include "gerrit.siteUpgradeResources" . | fromYaml) -}}
+-XX:MaxRAMPercentage=70.0
+{{- end -}}
+{{- end -}}
+
+{{/* siteUpgrade.mode: off, refuse or auto. YAML 1.1 reads an unquoted
+off as false, so false and an empty value mean off */}}
+{{- define "gerrit.siteUpgradeMode" -}}
+{{- $mode := toString (.Values.siteUpgrade.mode | default "off") -}}
+{{- if not (has $mode (list "off" "refuse" "auto")) -}}
+{{- fail (printf "siteUpgrade.mode must be off, refuse or auto, not %s" $mode) -}}
+{{- end -}}
+{{- $mode -}}
+{{- end -}}
+
 {{/* The heap site-import gives init and reindex, as gerrit.javaOptions
 gives Gerrit: container.heapLimit when set, else 70% of site-import's
 memory limit, else the JVM's default */}}

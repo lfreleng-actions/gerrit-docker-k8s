@@ -857,7 +857,6 @@ def test_backup_skips_a_site_not_complete(
     assert (world["prefix"] / "latest").read_text() == "20260105T020000Z\n"
 
 
-@pytest.mark.xfail(strict=True, reason="site-backup ignores upgrade-pending yet")
 def test_backup_skips_a_site_with_an_unfinished_upgrade(
     world: dict[str, Any],
     source: Path,

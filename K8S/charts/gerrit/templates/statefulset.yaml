@@ -181,12 +181,20 @@ spec:
             - name: GERRIT_RUNTIME_OVERRIDES
               value: /runtime-overrides
             {{- end }}
+            - name: SITE_UPGRADE_MODE
+              value: {{ include "gerrit.siteUpgradeMode" . | quote }}
+            - name: SITE_UPGRADE_REINDEX
+              value: {{ .Values.siteUpgrade.reindex | toString | quote }}
+            - name: SITE_UPGRADE_JAVA_HEAP
+              value: {{ include "gerrit.siteUpgradeHeap" . | quote }}
+            - name: SITE_UPGRADE_CPU_LIMIT
+              value: {{ dig "limits" "cpu" "" (include "gerrit.siteUpgradeResources" . | fromYaml) | toString | quote }}
             - name: HOME
               value: /tmp
           securityContext:
             {{- include "gerrit.containerSecurityContext" . | nindent 12 }}
           resources:
-            {{- toYaml .Values.resources | nindent 12 }}
+            {{- include "gerrit.siteUpgradeResources" . | nindent 12 }}
           volumeMounts:
             - name: site
               mountPath: /mnt/site
