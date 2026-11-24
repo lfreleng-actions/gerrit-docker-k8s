@@ -1126,6 +1126,52 @@ empty list renders no key, as gerrit.configKeys does, so it passes. */}}
 {{- end }}
 {{- end -}}
 
+{{/* Regular expression, unanchored and lower case, for an IPv6
+address as RFC 3986 section 3.2.2 spells IPv6address: eight groups,
+one "::" for a run of zero groups, and an IPv4 address in place of
+the last two. */}}
+{{- define "gerrit.ipv6Pattern" -}}
+{{- $h16 := "[0-9a-f]{1,4}" -}}
+{{- $octet := "(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])" -}}
+{{- $ls32 := printf "(%s:%s|%s(\\.%s){3})" $h16 $h16 $octet $octet -}}
+{{- $forms := list (printf "(%s:){6}%s" $h16 $ls32) (printf "::(%s:){5}%s" $h16 $ls32) (printf "(%s)?::(%s:){4}%s" $h16 $h16 $ls32) -}}
+{{- range $i, $tail := list (printf "(%s:){3}%s" $h16 $ls32) (printf "(%s:){2}%s" $h16 $ls32) (printf "%s:%s" $h16 $ls32) $ls32 $h16 "" -}}
+{{- $forms = append $forms (printf "((%s:){0,%d}%s)?::%s" $h16 (add $i 1) $h16 $tail) -}}
+{{- end -}}
+{{- printf "(%s)" (join "|" $forms) -}}
+{{- end -}}
+
+{{/* Fails the render when auth.loginUrl or auth.logoutUrl, in any
+case, is set to anything but an absolute http:// or https:// URL in
+RFC 3986 form: a host, a reg-name or a bracketed IPv6 address,
+optional user info and port, then path, query and fragment, each
+spelt from the characters RFC 3986 allows there, with every "%" the
+start of a two-digit hex escape. null or "" renders no key, as
+gerrit.configKeys does, so it passes. */}}
+{{- define "gerrit.checkAuthUrls" -}}
+{{- $names := dict "loginurl" "auth.loginUrl" "logouturl" "auth.logoutUrl" -}}
+{{- /* unreserved and sub-delims; the leading "-" is literal in a class */ -}}
+{{- $chars := "-a-z0-9._~!$&'()*+,;=" -}}
+{{- $pct := "%[0-9a-f]{2}" -}}
+{{- $userinfo := printf "([%s:]|%s)*@" $chars $pct -}}
+{{- $regName := printf "([%s]|%s)+" $chars $pct -}}
+{{- $tail := printf "([%s:@/?]|%s)*" $chars $pct -}}
+{{- $url := printf "^(?i)https?://(%s)?(%s|\\[%s\\])(:[0-9]*)?(/([%s:@/]|%s)*)?(\\?%s)?(#%s)?$" $userinfo $regName (include "gerrit.ipv6Pattern" .) $chars $pct $tail $tail -}}
+{{- range $key, $value := (default dict .Values.auth) }}
+{{- $name := get $names (lower $key) -}}
+{{- if and $name (not (or (kindIs "invalid" $value) (and (kindIs "string" $value) (eq $value "")))) }}
+{{- if not (and (kindIs "string" $value) (regexMatch $url $value)) }}
+{{- fail (printf "%s must be an absolute http:// or https:// URL" $name) -}}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end -}}
+
+{{/* Name of the operator-owned ConfigMap runtimeOverrides mounts */}}
+{{- define "gerrit.runtimeOverridesConfigMapName" -}}
+{{- default (printf "%s-overrides" (include "gerrit.fullname" .)) .Values.runtimeOverrides.configMapName -}}
+{{- end -}}
+
 {{/* TCP port of auth.saml.metadataUrl when the NetworkPolicy needs a
 rule for it: set, enabled and not 443, which is always allowed; else
 empty */}}

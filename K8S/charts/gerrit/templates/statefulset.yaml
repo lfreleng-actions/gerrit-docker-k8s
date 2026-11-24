@@ -177,6 +177,10 @@ spec:
             - name: GERRIT_G2P_INI
               value: /g2p/gerrit_to_platform.ini
             {{- end }}
+            {{- if .Values.runtimeOverrides.enabled }}
+            - name: GERRIT_RUNTIME_OVERRIDES
+              value: /runtime-overrides
+            {{- end }}
             - name: HOME
               value: /tmp
           securityContext:
@@ -202,6 +206,11 @@ spec:
             {{- if include "gerrit.g2pEnabled" . }}
             - name: g2p
               mountPath: /g2p
+              readOnly: true
+            {{- end }}
+            {{- if .Values.runtimeOverrides.enabled }}
+            - name: runtime-overrides
+              mountPath: /runtime-overrides
               readOnly: true
             {{- end }}
         - name: render-config
@@ -409,6 +418,14 @@ spec:
           secret:
             secretName: {{ include "gerrit.samlSecretName" . }}
             defaultMode: 0400
+        {{- end }}
+        {{- if .Values.runtimeOverrides.enabled }}
+        # Operator-owned and never rendered by the chart; a missing
+        # ConfigMap mounts as an empty directory
+        - name: runtime-overrides
+          configMap:
+            name: {{ include "gerrit.runtimeOverridesConfigMapName" . | quote }}
+            optional: true
         {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:

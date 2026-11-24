@@ -6,7 +6,9 @@
 # replaces etc/gerrit.config, jgit.config, notedb.config,
 # log4j.properties, replication.config, its/actions-its-jira.config,
 # healthcheck.config, events-log.config and lfs.config with the files
-# the chart rendered, refreshes the binaries and enabled plugins from
+# the chart rendered, then applies the allowed keys of the operator's
+# runtime overrides ConfigMap, when mounted, to etc/gerrit.config,
+# refreshes the binaries and enabled plugins from
 # the image, and installs the hooks and gerrit-to-platform
 # configuration. A site without .chart/initialised also gets "gerrit
 # init" on the rendered configuration, then that marker and
@@ -147,7 +149,50 @@ install_config() {
   fi
 }
 
+# Keys an operator may set from the runtime overrides ConfigMap, the
+# one place they are listed; extend it here, and in "Runtime
+# overrides" in the chart README, for later features. Nothing
+# chart-derived belongs here: auth.type, the http*Header keys, [saml],
+# httpd.filterClass and gerrit.serverId stay as the render sets them.
+override_keys="auth.loginUrl auth.logoutUrl auth.loginText"
+
+# Each file in GERRIT_RUNTIME_OVERRIDES, the mounted ConfigMap, names
+# a <section>.<key> or <section>.<subsection>.<key> of gerrit.config:
+# a non-empty value sets that key, an empty one removes it. Any other
+# name is ignored, and only its name is logged. Hidden entries, the
+# kubelet's ..data links, are skipped; an absent or empty directory,
+# as a missing optional ConfigMap mounts, changes nothing.
+apply_overrides() {
+  dir=${GERRIT_RUNTIME_OVERRIDES:-}
+  if [ -z "$dir" ] || [ ! -d "$dir" ]; then
+    return 0
+  fi
+  # git config writes through <file>.lock and fails while one exists
+  rm -f "$config.lock"
+  for file in "$dir"/*; do
+    [ -f "$file" ] || continue
+    key=${file##*/}
+    case " $override_keys " in
+      *" $key "*) ;;
+      *)
+        echo "Runtime override $key is not an allowed key; ignored" >&2
+        continue
+        ;;
+    esac
+    value=$(cat "$file")
+    if [ -n "$value" ]; then
+      git config -f "$config" --replace-all "$key" "$value"
+      echo "Runtime override: set $key = $value"
+    else
+      # Exit status 5: the key was not set
+      git config -f "$config" --unset-all "$key" || [ "$?" -eq 5 ]
+      echo "Runtime override: removed $key"
+    fi
+  done
+}
+
 install_config
+apply_overrides
 
 # site-import runs this far on an imported site before its own
 # "gerrit init", so init and reindex load the image's jars and the
@@ -179,6 +224,7 @@ if [ ! -f "$initialised" ]; then
   gerrit_war init --batch --no-auto-start -d "$site"
   have_id=$(site_id)
   install_config
+  apply_overrides
   version=$(gerrit_war version | sed -n 's/^gerrit version //p')
   (
     umask 077
