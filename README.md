@@ -15,7 +15,6 @@
 
 [![Release](https://github.com/lfreleng-actions/gerrit-docker-k8s/actions/workflows/release.yaml/badge.svg)](https://github.com/lfreleng-actions/gerrit-docker-k8s/actions/workflows/release.yaml)
 [![Tests](https://github.com/lfreleng-actions/gerrit-docker-k8s/actions/workflows/testing.yaml/badge.svg?branch=main)](https://github.com/lfreleng-actions/gerrit-docker-k8s/actions/workflows/testing.yaml)
-[![pre-commit.ci status badge]][pre-commit.ci results page]
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/lfreleng-actions/gerrit-docker-k8s/badge)](https://scorecard.dev/viewer/?uri=github.com/lfreleng-actions/gerrit-docker-k8s)
 
 [![Gerrit Image](https://img.shields.io/badge/ghcr.io-gerrit-blue?logo=docker&logoColor=white)](https://github.com/lfreleng-actions/gerrit-docker-k8s/pkgs/container/gerrit-docker-k8s%2Fgerrit)
@@ -1445,6 +1444,3 @@ Apache-2.0
 ## Support
 
 For issues and questions, please use the GitHub issue tracker.
-
-[pre-commit.ci results page]: https://results.pre-commit.ci/latest/github/lfreleng-actions/gerrit-docker-k8s/main
-[pre-commit.ci status badge]: https://results.pre-commit.ci/badge/github/lfreleng-actions/gerrit-docker-k8s/main.svg
