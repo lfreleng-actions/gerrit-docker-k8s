@@ -2063,6 +2063,11 @@ Credentials work as for an [S3 import](#s3-credentials):
 ServiceAccount and the platform's workload identity, such as IRSA.
 The identity needs `s3:PutObject`, `s3:GetObject` and
 `s3:DeleteObject` on `<prefix>/*` and `s3:ListBucket` on the bucket.
+The Job never checks for or creates the bucket, so the bucket must
+exist before the first run and the identity needs no right to create
+one. Retention and the clean-up of a failed upload log a harmless
+`GetBucketVersioning` 403 and treat the bucket as unversioned; grant
+`s3:GetBucketVersioning` on the bucket to silence it.
 
 The scratch volume holds the copied site and its archives, about
 twice the site's size, plus a bundle of the largest repository while
