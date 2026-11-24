@@ -1552,6 +1552,31 @@ def test_optional_tools_are_not_needed(site: dict[str, Any], tmp_path: Path) -> 
     export_ok(site, "final", env={"PATH": path})
 
 
+@pytest.mark.xfail(strict=True, reason="tool_path fails on an unreadable entry")
+@pytest.mark.skipif(os.geteuid() == 0, reason="root traverses any directory")
+def test_tool_path_skips_entries_it_cannot_inspect(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # As /usr/sbin/weakpass_edit does on macOS, a link into a directory
+    # only root can read raises on stat instead of reading as missing.
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    (tools / "unreadable").symlink_to(locked / "tool")
+    usable = tools / "usable"
+    usable.write_text("#!/bin/sh\n")
+    usable.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tools))
+    locked.chmod(0)
+    try:
+        shadow = Path(tool_path(tmp_path))
+    finally:
+        locked.chmod(0o755)
+    assert sorted(entry.name for entry in shadow.iterdir()) == ["usable"]
+    assert os.readlink(shadow / "usable") == str(usable)
+
+
 def test_failed_rerun_leaves_no_manifest(site: dict[str, Any], tmp_path: Path) -> None:
     path = tool_path(tmp_path, fakes={"zstd": FAKE_ZSTD})
     manifest = export_ok(site, "final", "--pack", env={"PATH": path})
