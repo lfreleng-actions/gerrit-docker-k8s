@@ -857,6 +857,29 @@ def test_backup_skips_a_site_not_complete(
     assert (world["prefix"] / "latest").read_text() == "20260105T020000Z\n"
 
 
+@pytest.mark.xfail(strict=True, reason="site-backup ignores upgrade-pending yet")
+def test_backup_skips_a_site_with_an_unfinished_upgrade(
+    world: dict[str, Any],
+    source: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A failed in-place upgrade leaves the import state complete but
+    the site half-upgraded: never publish it, nor prune for it.
+    """
+    pending = source / ".chart" / "upgrade-pending"
+    pending.write_text(json.dumps({"from": "3.12.3", "to": "3.13.4"}))
+    store(world["prefix"], "20260105T020000Z")
+    (world["prefix"] / "latest").write_text("20260105T020000Z\n")
+    code, _ = backup(world, monkeypatch, "20260106T020000Z")
+    out = capsys.readouterr()
+    assert code == 0, out.err
+    assert f"skipping this run: {pending}" in out.out
+    assert not world["log"].exists()
+    assert not (Path(world["env"]["SITE_BACKUP_SCRATCH"]) / "export").exists()
+    assert (world["prefix"] / "latest").read_text() == "20260105T020000Z\n"
+
+
 @needs_tools
 @pytest.mark.parametrize("value", ["in-progress", "complete"])
 def test_backup_discards_an_export_an_import_overlapped(
