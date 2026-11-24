@@ -245,6 +245,7 @@ def tool_path(
     """Build a PATH offering every current tool but hide, plus fakes.
 
     Each fake is a shell script body standing in for the named tool.
+    An entry or directory on PATH that cannot be inspected is skipped.
     """
     shadow = tmp_path / "bin-shadow"
     shadow.mkdir(exist_ok=True)
@@ -255,12 +256,21 @@ def tool_path(
     for directory in os.environ.get("PATH", "").split(os.pathsep):
         if not os.path.isdir(directory):
             continue
-        for entry in os.scandir(directory):
-            link = shadow / entry.name
-            if entry.name in hide or link.exists() or link.is_symlink():
-                continue
-            if entry.is_file() and os.access(entry.path, os.X_OK):
-                link.symlink_to(entry.path)
+        try:
+            entries = os.scandir(directory)
+        except OSError:
+            continue
+        with entries:
+            for entry in entries:
+                link = shadow / entry.name
+                if entry.name in hide or link.exists() or link.is_symlink():
+                    continue
+                try:
+                    usable = entry.is_file() and os.access(entry.path, os.X_OK)
+                except OSError:
+                    continue
+                if usable:
+                    link.symlink_to(entry.path)
     return str(shadow)
 
 
@@ -1552,7 +1562,6 @@ def test_optional_tools_are_not_needed(site: dict[str, Any], tmp_path: Path) -> 
     export_ok(site, "final", env={"PATH": path})
 
 
-@pytest.mark.xfail(strict=True, reason="tool_path fails on an unreadable entry")
 @pytest.mark.skipif(os.geteuid() == 0, reason="root traverses any directory")
 def test_tool_path_skips_entries_it_cannot_inspect(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
