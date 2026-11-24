@@ -188,6 +188,8 @@ def rclone_env(settings: Settings, base: Mapping[str, str]) -> dict[str, str]:
     env[f"{prefix}TYPE"] = "s3"
     env[f"{prefix}PROVIDER"] = settings.provider
     env[f"{prefix}ENV_AUTH"] = "true"
+    # The operator provisions the bucket; never check for or create it
+    env[f"{prefix}NO_CHECK_BUCKET"] = "true"
     if settings.endpoint:
         env[f"{prefix}ENDPOINT"] = settings.endpoint
     if settings.region:

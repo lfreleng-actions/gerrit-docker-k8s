@@ -41,6 +41,8 @@ pod = test_site_import.pod
 
 # rclone, as the scripts call it, on a bucket directory: <remote>:<path>
 # names $FAKE_BUCKET/<path>. $FAKE_FAIL fails the subcommand it names.
+# Like rclone against a bucket it may not create, it refuses an upload
+# unless the destination remote sets no_check_bucket.
 FAKE_RCLONE = """\
 import filecmp, os, shutil, sys
 from pathlib import Path
@@ -66,6 +68,11 @@ def path(arg):
     remote, sep, rel = arg.partition(":")
     return bucket / rel if sep and not remote.startswith("/") else Path(arg)
 if command == "copyto":
+    remote, sep, _ = args[1].partition(":")
+    if sep and not remote.startswith("/") and os.environ.get(
+        f"RCLONE_CONFIG_{remote.upper()}_NO_CHECK_BUCKET"
+    ) != "true":
+        sys.exit("fake rclone: CreateBucket refused")
     dest = path(args[1])
     dest.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(path(args[0]), dest)
@@ -283,6 +290,7 @@ def test_rclone_environment(world: dict[str, Any]) -> None:
         "RCLONE_CONFIG_SITEBACKUP_TYPE": "s3",
         "RCLONE_CONFIG_SITEBACKUP_PROVIDER": "Minio",
         "RCLONE_CONFIG_SITEBACKUP_ENV_AUTH": "true",
+        "RCLONE_CONFIG_SITEBACKUP_NO_CHECK_BUCKET": "true",
         "RCLONE_CONFIG_SITEBACKUP_ENDPOINT": "http://store.example:9000",
     }
     assert env["AWS_SECRET_ACCESS_KEY"] == SECRET
