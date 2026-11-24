@@ -2302,7 +2302,8 @@ python3 K8S/charts/gerrit/files/scripts/verify-health.py \
 ```
 
 The `chart-smoke` job in `.github/workflows/testing.yaml` runs this
-sequence on every pull request. It then
+sequence on every push to `main`, every manual dispatch, and every pull
+request that changes the chart, images or their inputs. It then
 upgrades the release with `gc.cronJob.enabled`, runs the CronJob once with
 `kubectl create job --from` on a fixture repository of loose objects,
 and checks that the Job succeeds and leaves the objects packed. After
