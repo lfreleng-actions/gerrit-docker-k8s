@@ -968,7 +968,9 @@ jobs:
 
       # Check the archive, not the source tree: what is pushed is what
       # is checked. Rendering turns on every optional workload, so
-      # each pod spec the chart can produce is covered. The chart has
+      # each pod spec the chart can produce is covered, and
+      # scripts/lib/chart_digests.py parses the render as YAML, so a
+      # script line in a ConfigMap is never read as an image. The chart has
       # no default authentication, and helm lint skips a template that
       # fails, so both choose one.
       - name: 'Lint and render the packaged chart'
@@ -988,15 +990,10 @@ jobs:
             --set gc.cronJob.enabled=true \
             --set logs.retentionDays=7 \
             --set toolbox.enabled=true > "${rendered}"
-          uv run --no-dev python scripts/lib/chart_digests.py \
-            --digest "${DIGEST}" "${rendered}"
           want="${IMAGE}@${DIGEST}"
-          mapfile -t images < <(sed -nE \
-            's/^[[:space:]]*image:[[:space:]]*"?([^"[:space:]]+)"?.*$/\1/p' \
-            "${rendered}" | sort -u)
-          if [[ "${#images[@]}" -ne 1 || "${images[0]}" != "${want}" ]]; then
+          if ! uv run --no-dev python scripts/lib/chart_digests.py \
+            --digest "${DIGEST}" --image "${IMAGE}" "${rendered}"; then
             echo "::error::Rendered images are not all ${want} ❌" >&2
-            printf '  %s\n' "${images[@]}" >&2
             exit 1
           fi
           echo "Every rendered image is ${want} ✅"

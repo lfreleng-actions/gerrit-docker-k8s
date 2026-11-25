@@ -178,6 +178,54 @@ def test_empty_documents_are_skipped() -> None:
     assert check_digests(f"---\n---\n{STATEFULSET}---\n", DIGEST) == []
 
 
+CONFIGMAP = """\
+kind: ConfigMap
+metadata:
+  name: scripts
+data:
+  site_upgrade_release.py: |
+    def decide(
+        mode: str,
+        image: str | None,
+    ):
+        pass
+  notes.yaml: |
+    image: something
+    containers:
+      - image: busybox:1
+"""
+
+
+def test_configmap_block_scalar_is_not_an_image() -> None:
+    assert check_digests(_stream(STATEFULSET, CONFIGMAP), DIGEST) == []
+
+
+def test_configmap_block_scalar_is_not_an_image_with_repository() -> None:
+    text = _stream(STATEFULSET, CONFIGMAP)
+    assert check_digests(text, DIGEST, "ghcr.io/example/gerrit") == []
+
+
+def test_repository_matches() -> None:
+    assert check_digests(STATEFULSET, DIGEST, "ghcr.io/example/gerrit") == []
+
+
+def test_other_repository_at_digest_fails() -> None:
+    problems = check_digests(STATEFULSET, DIGEST, "ghcr.io/example/other")
+    assert len(problems) == 2
+    assert problems[0] == (
+        "StatefulSet/gerrit.spec.template.spec.initContainers[0]: "
+        f"{PINNED} is not ghcr.io/example/other@{DIGEST}"
+    )
+
+
+def test_repository_prefix_is_not_a_match() -> None:
+    assert check_digests(STATEFULSET, DIGEST, "example/gerrit")
+
+
+def test_repository_with_wrong_digest_fails() -> None:
+    assert len(check_digests(STATEFULSET, OTHER, "ghcr.io/example/gerrit")) == 2
+
+
 def test_main_exit_codes(tmp_path: Path) -> None:
     good = tmp_path / "good.yaml"
     good.write_text(STATEFULSET, encoding="utf-8")
@@ -191,6 +239,15 @@ def test_main_exit_codes(tmp_path: Path) -> None:
     assert main(["--digest", DIGEST, str(broken)]) == 2
     assert main(["--digest", DIGEST, str(tmp_path / "missing.yaml")]) == 2
     assert main(["--digest", "sha256:short", str(good)]) == 2
+
+
+def test_main_image_option(tmp_path: Path) -> None:
+    good = tmp_path / "good.yaml"
+    good.write_text(STATEFULSET, encoding="utf-8")
+    image = ["--digest", DIGEST, "--image"]
+    assert main([*image, "ghcr.io/example/gerrit", str(good)]) == 0
+    assert main([*image, "ghcr.io/example/other", str(good)]) == 1
+    assert main([*image, "", str(good)]) == 2
 
 
 def test_script_runs_standalone(tmp_path: Path) -> None:
@@ -221,3 +278,25 @@ def test_rendered_chart() -> None:
         check_digests(_helm_template("--set", f"image.digest={DIGEST}"), DIGEST) == []
     )
     assert check_digests(_helm_template("--set", "image.tag=v0.0.0"), DIGEST)
+
+
+@pytest.mark.skipif(shutil.which("helm") is None, reason="helm is not installed")
+def test_rendered_chart_with_every_workload_and_repository() -> None:
+    repository = "ghcr.io/example/gerrit"
+    text = _helm_template(
+        "--set",
+        f"image.repository={repository}",
+        "--set",
+        f"image.digest={DIGEST}",
+        "--set",
+        "persistence.volumePermissions.enabled=true",
+        "--set",
+        "gc.cronJob.enabled=true",
+        "--set",
+        "logs.retentionDays=7",
+        "--set",
+        "toolbox.enabled=true",
+    )
+    assert "image: str | None" in text
+    assert check_digests(text, DIGEST, repository) == []
+    assert check_digests(text, DIGEST, "ghcr.io/example/other")

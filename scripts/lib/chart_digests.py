@@ -15,11 +15,17 @@ the document. That covers bare Pods and the pod templates of
 Deployments, StatefulSets, DaemonSets, Jobs and CronJobs without a
 list of kinds to keep current. Each container in those lists must
 carry an ``image`` ending in ``@<digest>``, where the digest is the one
-the render was given.
+the render was given. With ``--image <repository>``, each image must
+instead equal ``<repository>@<digest>`` exactly, so an image from
+another repository at the right digest fails too.
+
+A line that merely starts with ``image:`` inside a block scalar, such
+as a script a ConfigMap carries, is data and never counts as an image.
 
 Usage::
 
-    python3 scripts/lib/chart_digests.py --digest sha256:<64 hex> FILE...
+    python3 scripts/lib/chart_digests.py --digest sha256:<64 hex> \
+        [--image <repository>] FILE...
 
 Exits 0 when every file holds at least one container and every
 container image carries the digest, 1 when any does not, and 2 on a
@@ -86,19 +92,25 @@ def find_images(text: str) -> list[tuple[str, Any]]:
     return found
 
 
-def check_digests(text: str, digest: str) -> list[str]:
+def check_digests(text: str, digest: str, repository: str | None = None) -> list[str]:
     """Return one problem per container image not pinned to ``digest``.
 
     An empty list means ``text`` holds at least one container and every
-    container image ends in ``@<digest>``.
+    container image ends in ``@<digest>``, or, when ``repository`` is
+    given, equals ``<repository>@<digest>``.
     """
     images = find_images(text)
     if not images:
         return ["no containers found"]
     problems = []
+    want = f"{repository}@{digest}" if repository is not None else None
     for location, image in images:
         if not isinstance(image, str):
             problems.append(f"{location}: no image")
+            continue
+        if want is not None:
+            if image != want:
+                problems.append(f"{location}: {image} is not {want}")
             continue
         match = IMAGE_DIGEST_RE.search(image)
         if match is None or match.group(1) != digest:
@@ -112,16 +124,26 @@ def main(argv: list[str] | None = None) -> int:
         description="Check that every container image carries a digest."
     )
     parser.add_argument("--digest", required=True, help="sha256:<64 hex>")
+    parser.add_argument(
+        "--image",
+        metavar="REPOSITORY",
+        help="also require every image to be REPOSITORY@DIGEST",
+    )
     parser.add_argument("files", nargs="+", type=Path, help="rendered manifests")
     args = parser.parse_args(argv)
     if not DIGEST_RE.fullmatch(args.digest):
         print(f"invalid digest: {args.digest}", file=sys.stderr)
         return 2
+    if args.image is not None and not args.image:
+        print("invalid image repository: empty", file=sys.stderr)
+        return 2
 
     failed = False
     for path in args.files:
         try:
-            problems = check_digests(path.read_text(encoding="utf-8"), args.digest)
+            problems = check_digests(
+                path.read_text(encoding="utf-8"), args.digest, args.image
+            )
         except (OSError, yaml.YAMLError) as exc:
             print(f"{path}: {exc}", file=sys.stderr)
             return 2
