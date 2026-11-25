@@ -245,6 +245,7 @@ def tool_path(
     """Build a PATH offering every current tool but hide, plus fakes.
 
     Each fake is a shell script body standing in for the named tool.
+    An entry or directory on PATH that cannot be inspected is skipped.
     """
     shadow = tmp_path / "bin-shadow"
     shadow.mkdir(exist_ok=True)
@@ -255,12 +256,21 @@ def tool_path(
     for directory in os.environ.get("PATH", "").split(os.pathsep):
         if not os.path.isdir(directory):
             continue
-        for entry in os.scandir(directory):
-            link = shadow / entry.name
-            if entry.name in hide or link.exists() or link.is_symlink():
-                continue
-            if entry.is_file() and os.access(entry.path, os.X_OK):
-                link.symlink_to(entry.path)
+        try:
+            entries = os.scandir(directory)
+        except OSError:
+            continue
+        with entries:
+            for entry in entries:
+                link = shadow / entry.name
+                if entry.name in hide or link.exists() or link.is_symlink():
+                    continue
+                try:
+                    usable = entry.is_file() and os.access(entry.path, os.X_OK)
+                except OSError:
+                    continue
+                if usable:
+                    link.symlink_to(entry.path)
     return str(shadow)
 
 
@@ -1550,6 +1560,30 @@ def test_optional_tools_are_not_needed(site: dict[str, Any], tmp_path: Path) -> 
     path = tool_path(tmp_path, hide=("zstd", "age", "gpg", "aws"))
     export_ok(site, "seed", env={"PATH": path})
     export_ok(site, "final", env={"PATH": path})
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root traverses any directory")
+def test_tool_path_skips_entries_it_cannot_inspect(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # As /usr/sbin/weakpass_edit does on macOS, a link into a directory
+    # only root can read raises on stat instead of reading as missing.
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    (tools / "unreadable").symlink_to(locked / "tool")
+    usable = tools / "usable"
+    usable.write_text("#!/bin/sh\n")
+    usable.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tools))
+    locked.chmod(0)
+    try:
+        shadow = Path(tool_path(tmp_path))
+    finally:
+        locked.chmod(0o755)
+    assert sorted(entry.name for entry in shadow.iterdir()) == ["usable"]
+    assert os.readlink(shadow / "usable") == str(usable)
 
 
 def test_failed_rerun_leaves_no_manifest(site: dict[str, Any], tmp_path: Path) -> None:
