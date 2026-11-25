@@ -162,7 +162,7 @@ The release workflow runs `scripts/pin-chart-images.py` to set
 `image.repository`, `image.tag` and `image.digest` to the image the
 same release published, packages the chart, lints and renders the
 package and checks with `scripts/lib/chart_digests.py` that every
-container image carries that digest. It then pushes the chart, signs
+container image is that repository at that digest. It then pushes the chart, signs
 it with cosign (keyless, through GitHub OIDC) and attests its build
 provenance, as it does the image, and attaches the packaged `.tgz` to
 the GitHub release. The published chart therefore needs no image
@@ -2392,10 +2392,12 @@ third time, checks that it pruned the first and kept the second,
 which it replaced, and restores `latest` into
 a new release through site import. It
 also lints and renders the chart
-with each values file under `examples/`, adding an `image.tag`. With `image.digest` set, it
-parses each render with `scripts/lib/chart_digests.py` and checks
-that every container, init container and ephemeral container image
-ends in that digest.
+with each values file under `examples/`, adding an `image.tag`. With
+`image.repository` and `image.digest` set and the optional workloads
+the release workflow renders turned on, it parses each render with
+`scripts/lib/chart_digests.py` and checks that every container, init
+container and ephemeral container image is that repository at that
+digest.
 
 `tests/chart/` holds golden tests: each values file under `examples/`
 must render the `gerrit.config`, `jgit.config`, `notedb.config`,

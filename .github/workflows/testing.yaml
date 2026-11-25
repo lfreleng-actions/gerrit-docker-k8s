@@ -831,7 +831,10 @@ jobs:
 
       # scripts/lib/chart_digests.py parses the rendered manifests as
       # YAML and requires every container, init container and ephemeral
-      # container image in every pod spec to end in @<digest>
+      # container image in every pod spec to be <repository>@<digest>.
+      # The digest render turns on the optional workloads the release
+      # workflow's check turns on, so a chart that would fail that
+      # check fails here first.
       - name: 'Render the chart and check image digests'
         shell: bash
         run: |
@@ -842,10 +845,11 @@ jobs:
           mkdir -p "$out"
           # Fake, well-formed digest; nothing pulls it
           digest="sha256:$(printf 'chart-smoke' | sha256sum | cut -d' ' -f1)"
+          repository="ghcr.io/example/chart-smoke/gerrit"
 
           check_digest() {
             uv run --no-dev python scripts/lib/chart_digests.py \
-              --digest "$digest" "$1"
+              --digest "$digest" --image "$repository" "$1"
           }
 
           for f in "$CHART/values-local-smoke.yaml" "$CHART"/examples/*.yaml; do
@@ -854,7 +858,12 @@ jobs:
             helm template gerrit "$CHART" --namespace "$SMOKE_NAMESPACE" \
               -f "$f" --set "image.tag=$LINT_TAG" > "$out/$name.yaml"
             helm template gerrit "$CHART" --namespace "$SMOKE_NAMESPACE" \
-              -f "$f" --set "image.digest=$digest" \
+              -f "$f" --set "image.repository=$repository" \
+              --set "image.digest=$digest" \
+              --set persistence.volumePermissions.enabled=true \
+              --set gc.cronJob.enabled=true \
+              --set logs.retentionDays=7 \
+              --set toolbox.enabled=true \
               > "$out/$name-digest.yaml"
             check_digest "$out/$name-digest.yaml"
             # Guard the guard: the undigested render must fail it with
@@ -866,7 +875,7 @@ jobs:
               exit 1
             fi
           done
-          echo "Every render carries the image digest when it is set ✅"
+          echo "Every render carries the image repository and digest ✅"
 
       # Guards the lint steps against passing silently: a chart copy
       # with a broken template must fail both lint and render
