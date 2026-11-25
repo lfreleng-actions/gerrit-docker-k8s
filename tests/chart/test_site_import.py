@@ -107,6 +107,7 @@ def test_shares_the_prepare_environment_with_site_init(tmp_path: Path) -> None:
     init = next(c for c in pod_spec(docs)["initContainers"] if c["name"] == "site-init")
     shared = {k: v for k, v in env_of(init).items() if not k.startswith("GERRIT_HOOK")}
     shared = {k: v for k, v in shared.items() if not k.startswith("GERRIT_G2P")}
+    shared = {k: v for k, v in shared.items() if not k.startswith("SITE_UPGRADE_")}
     env = env_of(importer(docs))
     assert {k: env[k] for k in shared} == shared
     assert env["GERRIT_SITE"] == "/mnt/site"

@@ -124,7 +124,31 @@ must succeed before the next starts:
    (`auth.loginUrl`, `auth.logoutUrl` and `auth.loginText`) with a
    non-empty value is set in `etc/gerrit.config` with `git config`,
    one with an empty value is removed, and any other key is logged by
-   name and ignored; a missing ConfigMap changes nothing. On a site
+   name and ignored; a missing ConfigMap changes nothing. A `chart.`
+   key on the list, `chart.siteUpgrade.mode`, sets one of the chart's
+   own steps instead and never reaches `gerrit.config`. On a site with
+   `.chart/initialised`, or with `.chart/upgrade-pending` from an
+   upgrade that did not finish, `site-upgrade.py` first, before any of
+   these copies, compares the marker's `gerritVersion` with the
+   `Implementation-Version` of the image's `gerrit.war`, as releases,
+   and acts on `siteUpgrade.mode`
+   or its override: `off` logs a warning on a difference; `refuse`
+   fails the container, with the message in its termination message;
+   `auto` refuses an older image, since Gerrit cannot downgrade a site,
+   and upgrades to a newer one. The upgrade holds the backup lock
+   throughout, records itself in `.chart/upgrade-pending`, removes the
+   marker, installs the image's binaries, the rendered files and the
+   overrides through `site-init.sh` in prepare-only mode, runs
+   `gerrit init --batch --no-auto-start`, installs the rendered files
+   and the overrides again the same way, runs an offline reindex with
+   `siteUpgrade.reindex`, and only then writes the marker with the new
+   release and `upgradedFrom`, so a failure leaves no marker and
+   Gerrit never starts on a half-upgraded site. After an upgrade
+   `site-init.sh` skips its own copies, which the upgrade made under
+   the lock, so no write to the site follows its release. A retry needs an
+   image at least as new as the record's target release, as `init`
+   may have migrated the site to it already, and refuses a record
+   that names none. On a site
    without `.chart/initialised` it then runs
    `gerrit init --batch --no-auto-start` on that configuration,
    installs the rendered files and the overrides again over whatever
@@ -532,7 +556,8 @@ python3 K8S/charts/gerrit/files/scripts/verify-import.py \
   pod's node and volume, so the lock covers manual Jobs too, and one
   that finds it held, or missing, skips; a site mid-initialisation has
   no lock yet. It runs only while `.chart/site-state.json` records
-  `complete`, and discards
+  `complete` and no `.chart/upgrade-pending` marks a failed in-place
+  upgrade, both read under the lock, and discards
   an export during which that file changed, so a backup never overlaps
   an import. It runs the export tool's `backup` mode on the site volume,
   mounted read-only, reading the git store `gerrit.basePath` names on

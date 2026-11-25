@@ -757,12 +757,17 @@ helm show values "$chart" --version <new version> | grep -A8 '^image:'
 ```
 
 `site-init` skips `gerrit init` on a site that holds
-`.chart/initialised`, the marker it writes after its first `init`. A
-new image alone starts the new Gerrit on the old site
-without `init`. That works within a release line, but Gerrit refuses
-to start on a site whose NoteDb schema predates the release, so a
-major upgrade has to remove the marker first. The chart has no value
-that does this.
+`.chart/initialised`, the marker it writes after its first `init`,
+and compares the release the marker records with the new image's.
+`siteUpgrade.mode` decides what a difference does; see
+[Upgrading Gerrit](README.md#upgrading-gerrit). With `auto`,
+`site-init` runs `init` and, with `siteUpgrade.reindex`, an offline
+reindex under the backup lock before Gerrit starts. With `refuse` it
+stops the pod until you choose. With `off`, the default, it
+warns, and the new Gerrit starts on the old site without `init`. That
+works within a release line, but Gerrit refuses to start on a site
+whose NoteDb schema predates the release, so under `off` a major
+upgrade has to remove the marker by hand first.
 
 ### Before upgrading
 
@@ -816,8 +821,23 @@ that does this.
 
 ### Upgrade
 
-1. For a major upgrade, or any upgrade whose notes call for `init`,
-   remove the marker with Gerrit stopped, from the
+1. Turn on the upgrade with `siteUpgrade.mode: auto` in the values,
+   with `siteUpgrade.resources` sized for a reindex, or, without a
+   change to the values, with the runtime override, when
+   the values set `runtimeOverrides.enabled`:
+
+   ```sh
+   kubectl -n "$ns" create configmap "$fullname-overrides" \
+     --from-literal=chart.siteUpgrade.mode=auto \
+     --dry-run=client -o yaml | kubectl -n "$ns" apply -f -
+   ```
+
+   The override replaces any other key the ConfigMap holds, so add
+   those keys too, or edit the ConfigMap instead. With `auto`, skip
+   to step 2.
+
+   Under `mode: off`, for a major upgrade, or any upgrade whose notes
+   call for `init`, remove the marker with Gerrit stopped, from the
    [admin toolbox](#admin-toolbox):
 
    ```sh
@@ -846,13 +866,24 @@ that does this.
    kubectl -n "$ns" logs -f "$fullname-0" -c site-init
    ```
 
-   Without the marker, the log shows `Initialising the Gerrit site`
-   and the output of `init`. Gerrit then starts and, by default,
-   upgrades each index in the background when the release brings a new
-   index version.
+   With `auto`, the log shows `upgrading the site from Gerrit <old>
+   to <new>`, then each step, the install of the image's binaries
+   and configuration, `init`, the reinstall of the rendered
+   configuration and the reindex, with the time it took. A failed
+   step stops the pod with the message in its termination message,
+   and the next start retries, with the same image or a newer one:
+   `init` may already have migrated the site, so `site-init` refuses
+   an image older than the release the upgrade was heading for.
+   Backups skip the site until the upgrade finishes. Under `off`,
+   without the marker, the
+   log shows `Initialising the Gerrit site` and the output of `init`.
+   Gerrit then starts and, by default, upgrades each index in the
+   background when the release brings a new index version.
 
 3. [Verify](#verify) the release, and check
-   `<urlPrefix>/config/server/version` reports the new Gerrit.
+   `<urlPrefix>/config/server/version` reports the new Gerrit. Set
+   the mode back, or remove the override, if you keep `auto` for
+   planned upgrades alone.
 
 ### Offline reindex
 

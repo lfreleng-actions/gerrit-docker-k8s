@@ -2,20 +2,25 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: 2026 The Linux Foundation
 
-# Prepare the Gerrit site on the persistent volume. Every start
-# replaces etc/gerrit.config, jgit.config, notedb.config,
-# log4j.properties, replication.config, its/actions-its-jira.config,
-# healthcheck.config, events-log.config and lfs.config with the files
-# the chart rendered, then applies the allowed keys of the operator's
-# runtime overrides ConfigMap, when mounted, to etc/gerrit.config,
-# refreshes the binaries and enabled plugins from
-# the image, and installs the hooks and gerrit-to-platform
-# configuration. A site without .chart/initialised also gets "gerrit
-# init" on the rendered configuration, then that marker and
-# .chart/backup-lock, the backup CronJob's sign that the site is ready.
-# With GERRIT_SITE_PREPARE_ONLY set it stops after the binaries, jars
-# and configuration, for site-import. The volume is mounted at
-# GERRIT_SITE so the image's /var/gerrit stays visible.
+# Prepare the Gerrit site on the persistent volume. A site with
+# .chart/initialised, or an unfinished upgrade, first goes through
+# site-upgrade.py, which compares the site's Gerrit release with the
+# image's and, by siteUpgrade.mode, warns, refuses or upgrades, before
+# the site's binaries or configuration change. Every start but one
+# that upgraded, which installed them under the backup lock, then
+# refreshes the binaries and enabled plugins from the image, replaces
+# etc/gerrit.config, jgit.config, notedb.config, log4j.properties,
+# replication.config, its/actions-its-jira.config, healthcheck.config,
+# events-log.config and lfs.config with the files the chart rendered,
+# applies the allowed keys of the operator's runtime overrides
+# ConfigMap, when mounted, to etc/gerrit.config, and installs the
+# hooks and gerrit-to-platform configuration. A site without
+# .chart/initialised also gets "gerrit init" on the rendered
+# configuration, then that marker and .chart/backup-lock, the backup
+# CronJob's sign that the site is ready. With GERRIT_SITE_PREPARE_ONLY
+# set it skips the release check and stops after the binaries, jars
+# and configuration, for site-import and the upgrade. The volume is
+# mounted at GERRIT_SITE so the image's /var/gerrit stays visible.
 
 set -eu
 
@@ -32,14 +37,6 @@ hook_scripts=${GERRIT_HOOK_SCRIPTS:-/hook-scripts}
 # shellcheck disable=SC2086
 (cd "$site" && mkdir -p bin plugins lib ${GERRIT_SITE_DIRS:-})
 
-cp "$image_bin/gerrit.war" "$image_bin/gerrit.sh" "$site/bin/"
-
-# The site's plugins and libraries are exactly the ones named: clear
-# every entry, hidden ones too, since Gerrit loads a plugin named
-# .jar, then copy each from the image catalogue. An absent catalogue
-# is fine while nothing is named.
-find "$site/plugins" "$site/lib" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
-
 copy_jars() {
   kind=$1
   dest=$2
@@ -54,13 +51,21 @@ copy_jars() {
   done
 }
 
-# The lists are space-separated jar names: split them, never glob
-set -f
-# shellcheck disable=SC2086
-copy_jars plugins "$site/plugins" ${GERRIT_PLUGINS:-}
-# shellcheck disable=SC2086
-copy_jars lib "$site/lib" ${GERRIT_LIBS:-}
-set +f
+# The site's plugins and libraries are exactly the ones named: clear
+# every entry, hidden ones too, since Gerrit loads a plugin named
+# .jar, then copy each from the image catalogue. An absent catalogue
+# is fine while nothing is named. The lists are space-separated jar
+# names: split them, never glob.
+install_binaries() {
+  cp "$image_bin/gerrit.war" "$image_bin/gerrit.sh" "$site/bin/"
+  find "$site/plugins" "$site/lib" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+  set -f
+  # shellcheck disable=SC2086
+  copy_jars plugins "$site/plugins" ${GERRIT_PLUGINS:-}
+  # shellcheck disable=SC2086
+  copy_jars lib "$site/lib" ${GERRIT_LIBS:-}
+  set +f
+}
 
 # Print a key from a config file, or nothing when the key is absent.
 # Any other failure, such as an unreadable or malformed file, stops
@@ -154,7 +159,9 @@ install_config() {
 # overrides" in the chart README, for later features. Nothing
 # chart-derived belongs here: auth.type, the http*Header keys, [saml],
 # httpd.filterClass and gerrit.serverId stay as the render sets them.
-override_keys="auth.loginUrl auth.logoutUrl auth.loginText"
+# A chart.* key is a setting of one of the chart's own steps, which
+# reads it from the ConfigMap; it never reaches gerrit.config.
+override_keys="auth.loginUrl auth.logoutUrl auth.loginText chart.siteUpgrade.mode"
 
 # Each file in GERRIT_RUNTIME_OVERRIDES, the mounted ConfigMap, names
 # a <section>.<key> or <section>.<subsection>.<key> of gerrit.config:
@@ -179,6 +186,9 @@ apply_overrides() {
         continue
         ;;
     esac
+    case $key in
+      chart.*) continue ;;
+    esac
     value=$(cat "$file")
     if [ -n "$value" ]; then
       git config -f "$config" --replace-all "$key" "$value"
@@ -191,8 +201,37 @@ apply_overrides() {
   done
 }
 
-install_config
-apply_overrides
+# .chart/initialised records that "gerrit init" succeeded on this
+# site: site-init writes it after its own init, site-import after an
+# import's init and reindex.
+initialised="$site/.chart/initialised"
+
+# An initialised site, or one an upgrade left without its marker:
+# compare its release with the image's and act on siteUpgrade.mode
+# before the binaries or configuration change, so a refusal leaves
+# the site's binaries and configuration as they were. An accepted
+# upgrade installs them itself, under the backup lock, writes the
+# marker and exits 3, so the installs and the init below then skip:
+# repeating the installs after the lock is released would let a
+# backup copy a site part way through them. site-import's
+# prepare-only run, and the upgrade's own, never get here.
+upgraded=""
+if [ -z "${GERRIT_SITE_PREPARE_ONLY:-}" ] &&
+  { [ -f "$initialised" ] || [ -f "$site/.chart/upgrade-pending" ]; }; then
+  rc=0
+  python3 "$(dirname "$0")/site-upgrade.py" || rc=$?
+  case $rc in
+    0) ;;
+    3) upgraded=1 ;;
+    *) exit "$rc" ;;
+  esac
+fi
+
+if [ -z "$upgraded" ]; then
+  install_binaries
+  install_config
+  apply_overrides
+fi
 
 # site-import runs this far on an imported site before its own
 # "gerrit init", so init and reindex load the image's jars and the
@@ -211,14 +250,11 @@ gerrit_war() {
     -jar "$site/bin/gerrit.war" "$@"
 }
 
-# .chart/initialised records that "gerrit init" succeeded on this
-# site: site-init writes it after its own init, site-import after an
-# import's init and reindex. Without it, init runs, again if an
-# earlier start failed part way: it is idempotent on a partial site,
-# whatever repositories that start left. Init runs on the rendered
+# Without .chart/initialised, init runs, again if an earlier start
+# failed part way: it is idempotent on a partial site, whatever
+# repositories that start left. Init runs on the rendered
 # configuration, so a set serverId becomes the site's ID; the render
 # is then installed again over whatever init added.
-initialised="$site/.chart/initialised"
 if [ ! -f "$initialised" ]; then
   echo "Initialising the Gerrit site in $site"
   gerrit_war init --batch --no-auto-start -d "$site"

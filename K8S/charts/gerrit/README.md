@@ -107,6 +107,9 @@ empty or absent optional key leaves its entry out of `secure.config`.
    With `runtimeOverrides.enabled` it then sets or removes, in
    `etc/gerrit.config`, the allowed keys the operator's overrides
    ConfigMap carries; see [Runtime overrides](#runtime-overrides). On a site
+   with the marker it then compares the site's Gerrit release with the
+   image's and, by `siteUpgrade.mode`, warns, stops the pod or upgrades
+   the site; see [Upgrading Gerrit](#upgrading-gerrit). On a site
    without the `.chart/initialised` marker it then runs
    `gerrit init --batch --no-auto-start` on that configuration,
    installs the rendered files again over whatever init added, then
@@ -307,6 +310,9 @@ Argo CD; `K8S/docs/DESIGN.md` section 6 explains its settings.
 | `siteImport.reindex`, `.verify`          | `true`, `true`                   | Reindex after the import; check repositories, host keys and server ID |
 | `siteImport.scratchSizeLimit`            | `""`                             | `sizeLimit` of the scratch `emptyDir`                      |
 | `siteImport.resources`                   | `{}`                             | Resources of `site-import`; `resources` when empty. Size it for the reindex |
+| `siteUpgrade.mode`                       | `off`                            | `off`, `refuse` or `auto`; see [Upgrading Gerrit](#upgrading-gerrit) |
+| `siteUpgrade.reindex`                    | `true`                           | Reindex offline after an upgrade's init                    |
+| `siteUpgrade.resources`                  | `{}`                             | Resources of `site-init`; `resources` when empty. Size it for the reindex |
 | `backup.enabled`                         | `false`                          | Adds the backup `CronJob`; see [Backups](#backups)         |
 | `backup.schedule`, `.timeZone`           | `0 2 * * *`, `""`                | When it runs; `""` uses the controller's time zone         |
 | `backup.suspend`                         | `false`                          | Pauses scheduled runs, keeping the `CronJob`; see [Backups](#backups) |
@@ -1348,6 +1354,65 @@ refuses a path outside the site, and a path other than
 `etc/samlKeystore.jks` that names no file in the export, since it
 cannot then tell whether the Secret keeps the site's identity.
 
+## Upgrading Gerrit
+
+The site's `.chart/initialised` marker records the Gerrit release that
+initialised or imported it. At each start, `site-init` reads the
+image's release from the `Implementation-Version` of its `gerrit.war`
+and compares the two as releases, major, minor and patch, not as
+strings. `siteUpgrade.mode`, or the `chart.siteUpgrade.mode`
+[runtime override](#runtime-overrides), decides what a difference
+does:
+
+```yaml
+siteUpgrade:
+  mode: "off"     # off, refuse or auto; quote it, as YAML reads off as false
+  reindex: true
+  resources: {}   # resources of site-init; resources when empty
+```
+
+- `off`, the default, logs one warning naming both releases and starts
+  Gerrit as before. A marker without a release, from an older chart,
+  is not a difference.
+- `refuse` stops the pod before Gerrit starts, and before `site-init`
+  replaces the site's binaries or configuration. The message names both
+  releases and the values that resolve the difference, and lands in
+  `site-init`'s termination message, so `kubectl describe pod` shows
+  it.
+- `auto` refuses an image older than the site, since Gerrit cannot
+  downgrade a site; restore a backup taken before the upgrade instead.
+  For a newer image it takes the backup lock, the `flock` the backup
+  `CronJob` holds, for the whole upgrade, so a backup never copies a
+  site part way through. It records the upgrade in
+  `.chart/upgrade-pending`, removes the marker, installs the image's
+  `gerrit.war`, plugins and the rendered configuration, and runs
+  `gerrit init --batch --no-auto-start` on it, then installs the
+  rendered files and runtime overrides again. With
+  `reindex` it then runs the offline reindex, with `--threads` from
+  `site-init`'s CPU limit and the heap `site-import` uses. Only then
+  does it write the marker with the new release, the time and an
+  `upgradedFrom` field, and remove the pending record. Each step logs
+  its own duration. `site-init` then leaves the binaries and
+  configuration as the upgrade installed them, rather than installing
+  them again once the lock is released.
+
+A failure leaves no marker and keeps the pending record, so Gerrit
+never starts on a half-upgraded site, and the backup `CronJob` skips
+the site until the upgrade finishes. The next start under `auto`
+retries, with an image at least as new as the release the pending
+record names as its target, since `init` may already have migrated the
+site to it; it refuses an older image, or a record that names no
+target. Under `off` or `refuse` it stops with a message. In `refuse`
+and `auto`, a marker without a release counts as a difference, and
+`auto` refuses it, since it cannot tell an upgrade from a downgrade;
+add the site's release to the marker as `gerritVersion` first.
+
+`site-init` runs the upgrade within `siteUpgrade.resources`, so size
+them for the reindex, as `siteImport.resources`. The upgrade takes
+the direct path only: for a jump `gerrit init` cannot make, export
+the site and import it into the new release with a forced import. See
+[OPERATIONS.md](OPERATIONS.md#upgrade-gerrit) for the procedure.
+
 ## Runtime overrides
 
 Every other chart setting comes from values, so under Argo CD each
@@ -1376,6 +1441,14 @@ values make. Only these keys are accepted:
 - `auth.loginUrl`
 - `auth.logoutUrl`
 - `auth.loginText`
+- `chart.siteUpgrade.mode`
+
+A `chart.` key is not a `gerrit.config` name: it sets one of the
+chart's own steps and never reaches `gerrit.config`.
+`chart.siteUpgrade.mode` takes `off`, `refuse` or `auto` and replaces
+`siteUpgrade.mode`; see [Upgrading Gerrit](#upgrading-gerrit). An
+empty value leaves `siteUpgrade.mode` in force, and any other value is
+logged, without the value, and ignored.
 
 `site-init` logs each key it sets or removes, with its value. It
 ignores any other key, logging only its name. The chart's derived
@@ -1920,7 +1993,10 @@ categories set [`seLinux.level`](#selinux-level). Each run, on
    site volume, and skips the run, succeeding, unless it records
    `complete`: a volume with no state file, or with an import in
    progress or failed, holds no site to back up, and the next
-   scheduled run retries;
+   scheduled run retries. It skips a site holding
+   `.chart/upgrade-pending` the same way, as an in-place upgrade
+   that did not finish left it half-upgraded
+   ([Upgrading Gerrit](#upgrading-gerrit));
 3. runs the export tool's `backup` mode on the site volume, mounted
    read-only, into a scratch `emptyDir`, with the git store that
    `gerrit.basePath` names on that volume; an absolute `basePath`
