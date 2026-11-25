@@ -194,7 +194,7 @@ repos:
         name: aislop
         entry: aislop ci --human
         language: node
-        additional_dependencies: ["aislop@0.13.1"]
+        additional_dependencies: ["aislop@0.22.1"]
         pass_filenames: false
         always_run: true
 
