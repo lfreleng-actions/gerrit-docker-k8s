@@ -2301,8 +2301,14 @@ def test_backup_ignores_a_shared_repository_setting(site: dict[str, Any]) -> Non
 @needs_zstd
 def test_backup_bundles_privately(site: dict[str, Any], tmp_path: Path) -> None:
     log = tmp_path / "modes.log"
+    # Python, not stat: GNU stat takes -c, BSD stat on macOS -f.
+    modes = (
+        "import os, sys; "
+        "print(*(format(os.stat(p).st_mode & 0o777, 'o') for p in sys.argv[1:]))"
+    )
     record = (
-        'for a; do case $a in */repository.bundle) stat -c "%a" "$a" "${a%/*}"'
+        "for a; do case $a in */repository.bundle)"
+        f' {shlex.quote(sys.executable)} -c {shlex.quote(modes)} "$a" "${{a%/*}}"'
         f" >> {shlex.quote(str(log))} ;; esac; done"
     )
     env = {"PATH": git_shim(tmp_path, after_bundle=record)}
