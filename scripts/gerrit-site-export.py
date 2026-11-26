@@ -256,6 +256,8 @@ def copy(opts: Any, site: str, git_dir: str, names: list[str], out: Path) -> Non
             say("warning: files vanished during the copy; re-run to copy them")
     if not git:  # rsync would race live repositories, so backup uses COMPANION.
         importlib.import_module(COMPANION).copy(git_dir, out, opts.dry_run)
+    # openrsync, macOS's rsync, ignores --chmod; umask 0077 made both parts 0700.
+    step(opts, ["chmod", "-R", "go-rwx", f"{out}/site", f"{out}/git"], "chmod")
 
 
 def pack(opts: Any, out: Path) -> list[Path]:

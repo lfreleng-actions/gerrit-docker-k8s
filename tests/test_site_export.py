@@ -2299,7 +2299,6 @@ exit "$status"
 """
 
 
-@pytest.mark.xfail(strict=True, reason="the export trusts rsync --chmod")
 @pytest.mark.parametrize(
     "mode", ["seed", "final", pytest.param("backup", marks=needs_zstd)]
 )
@@ -2317,7 +2316,6 @@ def test_exports_are_private_under_an_rsync_ignoring_chmod(
     assert [p for p in paths if os.lstat(p).st_mode & 0o077] == []
 
 
-@pytest.mark.xfail(strict=True, reason="the export trusts rsync --chmod")
 @pytest.mark.skipif(os.geteuid() == 0, reason="root reads any directory")
 def test_export_fails_when_a_copy_cannot_be_made_private(
     site: dict[str, Any], tmp_path: Path
