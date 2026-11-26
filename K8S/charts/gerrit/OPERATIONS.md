@@ -465,6 +465,58 @@ adopted site keeps from its source. The
 check clones `All-Projects` anonymously, which fails on a site that
 denies anonymous reads; treat that failure as expected there.
 
+`verify-admin.py` then checks what an administrator alone sees, and
+changes nothing. Over SSH, with your own `ssh` client and an
+administrator's key, it reports the version, the plugins Gerrit
+loaded, the task queue, and the memory, thread and SSH summary. It
+fails when the version differs from `--expect-version`, when a plugin
+named with `--expect-plugin` is absent or disabled, and when a task
+running or waiting entered the queue more than `--task-minutes` ago,
+30 by default. Gerrit gives no time a task became active, so a
+recurring task that woke a moment ago can fail this; run the script
+again to tell it from a stuck one. Gerrit prints task start times in
+its JVM's time zone, and the script reads them in `--server-timezone`,
+UTC by default, so name the zone if `javaOptions` sets
+`-Duser.timezone`. It compares instants, so a daylight saving change
+shifts no task's age, and fails a start time it cannot place on one
+side of the limit, such as one in an hour the clocks repeat, or one
+that could be a day old as Gerrit printed the queue between the two
+reads of the server clock that bracket it. Where
+`gerrit show-caches` gives its clock in a zone other than UTC, that
+zone must be the one `--server-timezone` names. It
+runs `ssh` in batch mode, so accept the host key once with plain `ssh`
+first:
+
+```sh
+kubectl -n "$ns" port-forward "svc/$fullname-ssh" 29418 &
+python3 K8S/charts/gerrit/files/scripts/verify-admin.py \
+  --ssh-host localhost --ssh-user admin \
+  --expect-version 3.10.1 --expect-plugin replication
+kill %1
+```
+
+With a credential it also confirms that the account holds
+`administrateServer` and runs Gerrit's consistency check of accounts,
+external IDs and groups over REST, printing each problem and failing
+on any `ERROR` or `FATAL`. It then lists each index's versions and
+which of them Gerrit searches and writes, and reports that check as
+unavailable on a release without `GET /config/server/indexes/`. It
+reads the HTTP password from the netrc entry `--netrc-machine` names,
+so an entry stored under the site's public host serves a port forward
+too, or from `--password-file` with `--http-user`, and never from the
+command line. It refuses to send the credential over plain HTTP to
+anything but a loopback address:
+
+```sh
+kubectl -n "$ns" port-forward "svc/$fullname-ssh" 29418 &
+kubectl -n "$ns" port-forward "svc/$fullname-http" 8080 &
+python3 K8S/charts/gerrit/files/scripts/verify-admin.py \
+  --ssh-host localhost --ssh-user admin --expect-plugin replication \
+  --url "http://127.0.0.1:8080$url_prefix" \
+  --netrc-machine gerrit.example.org
+kill %1 %2
+```
+
 Then check the invariants of DESIGN section 4 against the source: the
 SSH host key fingerprints, the account, group and project counts, the
 change sequence, and an open change that renders and takes a new
@@ -1360,6 +1412,11 @@ kubectl -n "$ns" port-forward "svc/$fullname-http" 8080 &
 curl -su "admin:$(cat admin-http-password)" \
   "http://localhost:8080$url_prefix/a/config/server/version"
 ```
+
+For Gerrit's consistency check of accounts, external IDs and groups,
+run `verify-admin.py` with a credential, as [Verify](#verify) shows:
+it confirms the account holds `administrateServer` first, prints each
+problem, and changes nothing.
 
 ### End the session
 
