@@ -2377,6 +2377,17 @@ python3 K8S/charts/gerrit/files/scripts/verify-health.py \
   --namespace gerrit-smoke --fullname gerrit --url-prefix /r
 ```
 
+`files/scripts/verify-admin.py` checks, read-only, what only an
+administrator sees. Over SSH, with the operator's own `ssh` client and
+key, it reports the version, the plugins and their status, the task
+queue, and the memory, thread and SSH summary. Given a credential from
+a netrc entry or a password file, it also runs Gerrit's consistency
+check of accounts, external IDs and groups over REST and lists the
+index versions Gerrit searches and writes. It needs only
+python3 and `ssh`, takes no kubectl, and the smoke job below leaves it
+out, since it needs an administrator's key. The runbook's
+[Verify](OPERATIONS.md#verify) step shows both forms.
+
 The `chart-smoke` job in `.github/workflows/testing.yaml` runs this
 sequence on every push to `main`, every manual dispatch, and every pull
 request that changes the chart, images or their inputs. It then
