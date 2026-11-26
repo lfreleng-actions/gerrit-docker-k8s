@@ -2286,6 +2286,55 @@ def test_exports_are_private(site: dict[str, Any], mode: str) -> None:
         tar_path.unlink()
 
 
+# openrsync, macOS's rsync, ignores --chmod and keeps source modes below
+# the top directory; this rsync drops --chmod and widens what it copied.
+OPENRSYNC = """n=$#
+for a; do case $a in --chmod=*) ;; *) set -- "$@" "$a" ;; esac; done
+shift "$n"
+{real} "$@"
+status=$?
+for dest; do :; done
+chmod -R go+rX "$dest" || exit 1
+exit "$status"
+"""
+
+
+@pytest.mark.parametrize(
+    "mode", ["seed", "final", pytest.param("backup", marks=needs_zstd)]
+)
+def test_exports_are_private_under_an_rsync_ignoring_chmod(
+    site: dict[str, Any], tmp_path: Path, mode: str
+) -> None:
+    for path in [site["root"], *map(Path, all_paths(site["root"]))]:
+        path.chmod(0o755 if path.is_dir() else 0o644)
+    real = shlex.quote(str(shutil.which("rsync")))
+    env = {"PATH": tool_path(tmp_path, fakes={"rsync": OPENRSYNC.format(real=real)})}
+
+    export_ok(site, mode, env=env)
+    paths = list(all_paths(site["out"]))
+    assert str(site["out"] / "site" / "etc" / "gerrit.config") in paths
+    assert [p for p in paths if os.lstat(p).st_mode & 0o077] == []
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads any directory")
+def test_export_fails_when_a_copy_cannot_be_made_private(
+    site: dict[str, Any], tmp_path: Path
+) -> None:
+    locked = site["out"] / "site" / ".gerritcodereview"
+    lock = f"chmod 300 {shlex.quote(str(locked))} || exit 1\n"
+    real = shlex.quote(str(shutil.which("rsync")))
+    widen = OPENRSYNC.format(real=real)
+    rsync = widen.replace(
+        'exit "$status"', f'case $dest in */site/) {lock}esac\nexit "$status"'
+    )
+    env = {"PATH": tool_path(tmp_path, fakes={"rsync": rsync})}
+    try:
+        export_fails(site, "chmod failed", "seed", env=env)
+    finally:
+        if locked.exists():
+            locked.chmod(0o700)
+
+
 @needs_zstd
 def test_backup_ignores_a_shared_repository_setting(site: dict[str, Any]) -> None:
     """A source's core.sharedRepository is kept but never widens a copy."""
@@ -2301,8 +2350,14 @@ def test_backup_ignores_a_shared_repository_setting(site: dict[str, Any]) -> Non
 @needs_zstd
 def test_backup_bundles_privately(site: dict[str, Any], tmp_path: Path) -> None:
     log = tmp_path / "modes.log"
+    # Python, not stat: GNU stat takes -c, BSD stat on macOS -f.
+    modes = (
+        "import os, sys; "
+        "print(*(format(os.stat(p).st_mode & 0o777, 'o') for p in sys.argv[1:]))"
+    )
     record = (
-        'for a; do case $a in */repository.bundle) stat -c "%a" "$a" "${a%/*}"'
+        "for a; do case $a in */repository.bundle)"
+        f' {shlex.quote(sys.executable)} -c {shlex.quote(modes)} "$a" "${{a%/*}}"'
         f" >> {shlex.quote(str(log))} ;; esac; done"
     )
     env = {"PATH": git_shim(tmp_path, after_bundle=record)}

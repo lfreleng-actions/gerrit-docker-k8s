@@ -1123,8 +1123,9 @@ or quiesced site, or stop Gerrit and run `final --pack`, whose
 manifest records `"h2": "stopped"`.
 
 Every mode writes its output owner-only: the tool sets umask `0077`
-before it writes anything, `rsync` drops group and other
-permissions, and a backup's git ignores a repository's
+before it writes anything, `chmod -R go-rwx` strips group and other
+permissions from what `rsync` copies (openrsync, the `rsync` macOS
+ships, ignores `--chmod`), and a backup's git ignores a repository's
 `core.sharedRepository` while it writes the copy, so the export
 directory, the copied repositories and the archives give no other
 local user access to the site's history or secrets. The import

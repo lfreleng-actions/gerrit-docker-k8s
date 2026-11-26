@@ -874,7 +874,8 @@ added. A detached `HEAD` stays detached at the same commit, which the
 copy fetches from the source as well, since no ref need reach it; an
 unborn one is left as `git init` makes it. Every mode sets umask `0077` before it writes anything,
 makes the bundle in a `0700` directory from `tempfile.mkdtemp` under
-`--out`, has `rsync` drop group and other permissions, and runs git
+`--out`, runs `chmod -R go-rwx` over what `rsync` copies, since
+openrsync ignores `--chmod`, and runs git
 with `core.sharedRepository=umask`, so a copied `config` that shares a
 repository with a group keeps that setting without widening the copy
 written after it. All its output is owner-only: a bundle or a repository copy holds the full
