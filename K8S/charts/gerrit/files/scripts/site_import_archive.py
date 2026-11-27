@@ -33,6 +33,8 @@ ENCRYPTED = (".age", ".gpg")
 IMPORT_MODES = ("final", "backup")
 # The oldest release whose site the image's init upgrades in one step
 OLDEST_SOURCE = (3, 7, 0)
+# The release that replaces HTTP passwords with access tokens
+TOKENS_RELEASE = (3, 13, 0)
 RELEASE = re.compile(r"v?(\d+)\.(\d+)(?:\.(\d+))?")
 CURL_RETRY = [
     "--retry",
@@ -142,12 +144,18 @@ def load_manifest(path: Path, pin: str) -> tuple[dict[str, Any], str]:
     return data, digest
 
 
+def source_release(manifest: dict[str, Any]) -> tuple[int, ...] | None:
+    """The source's Gerrit release from the manifest, or None if unrecognised."""
+    found = RELEASE.match(str(manifest.get("gerrit_version") or ""))
+    return tuple(int(part or 0) for part in found.groups()) if found else None
+
+
 def check_source_version(manifest: dict[str, Any], allow_unknown: bool) -> None:
     """Refuse an export of a release older than site import supports."""
     version = str(manifest.get("gerrit_version") or "")
-    found = RELEASE.match(version)
+    release = source_release(manifest)
     oldest = ".".join(map(str, OLDEST_SOURCE))
-    if not found:
+    if release is None:
         if allow_unknown:
             return
         raise SiteImportError(
@@ -155,7 +163,6 @@ def check_source_version(manifest: dict[str, Any], allow_unknown: bool) -> None:
             f"if the source ran Gerrit {oldest} or newer, set "
             "siteImport.allowUnknownSourceVersion to import it anyway"
         )
-    release = tuple(int(part or 0) for part in found.groups())
     if release < OLDEST_SOURCE:
         raise SiteImportError(
             f"the export is of Gerrit {version}, older than {oldest}, the oldest "
@@ -360,9 +367,24 @@ def removed_keys_report(names: list[str]) -> list[str]:
     ]
 
 
-def project_config_report(store: Path, all_projects: str) -> list[str]:
+def http_password_report(manifest: dict[str, Any]) -> list[str]:
+    """Note the HTTP passwords a source older than Gerrit 3.13 brings."""
+    release = source_release(manifest)
+    if release is not None and release >= TOKENS_RELEASE:
+        return []
+    return [
+        "the site's accounts keep their HTTP passwords; Gerrit 3.13 accepts them "
+        "while auth.httpPasswordFallbackEnabled is true, its default, and an "
+        "administrator migrates them to tokens with "
+        "POST /a/config/server/passwords.to.tokens"
+    ]
+
+
+def project_config_report(
+    store: Path, all_projects: str, manifest: dict[str, Any]
+) -> list[str]:
     """Report behaviour changes the jump to the image's release brings."""
-    warnings = []
+    warnings = http_password_report(manifest)
     repo = f"--git-dir={store / (all_projects + '.git')}"
     blob = ["config", "--blob", "refs/meta/config:project.config"]
     merges = git(repo, *blob, "--get", "receive.rejectImplicitMerges")

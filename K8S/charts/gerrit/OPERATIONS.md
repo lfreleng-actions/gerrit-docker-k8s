@@ -245,7 +245,14 @@ measures how long the import takes, without touching the source.
    ```
 
 3. Follow [Watch the import](#watch-the-import) and
-   [Verify](#verify), then uninstall the scratch release and delete
+   [Verify](#verify). Read the migration report's
+   `gerrit.config sets auth.` and `gerrit.config sets saml.` lines:
+   each names a key of `[auth]` or `[saml]` that the chart's render
+   sets differently from the source site, which changes who can sign
+   in and as whom. Settle each difference in the values before the
+   cut-over, and rehearse again until no difference remains that you
+   did not choose.
+4. Uninstall the scratch release and delete
    its data as [Destroy a release's data](#destroy-a-releases-data)
    describes, stopping after step 3: the scratch release has no
    backups of its own, and step 4 would delete production's.

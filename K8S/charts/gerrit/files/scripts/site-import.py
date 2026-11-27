@@ -271,7 +271,7 @@ def stage(settings: Settings) -> tuple[Imported, Path]:
         digest=digest,
         server_id=archive_id,
         secure_names=config_names(site / "etc" / "secure.config"),
-        config_report=imported_config_report(site, manifest),
+        config_report=imported_config_report(site, manifest, settings.rendered),
     )
     return imported, unpacked
 
@@ -357,7 +357,7 @@ def run_import(settings: Settings) -> dict[str, Any]:
         {"gerritVersion": gerrit_version(war), "initialisedAt": utc_now()},
     )
     all_projects = config_get(config, "gerrit.allProjects") or "All-Projects"
-    projects = project_config_report(store, all_projects)
+    projects = project_config_report(store, all_projects, imported.manifest)
     secure = secure_config_report(imported.secure_names, settings.secure_keys)
     for line in (*projects, *secure):
         warn(line)

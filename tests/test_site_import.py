@@ -1220,7 +1220,6 @@ def test_removed_keys_report() -> None:
 HTTP_PASSWORD_NOTE = "POST /a/config/server/passwords.to.tokens"
 
 
-@pytest.mark.xfail(strict=True, reason="http_password_report is not written yet")
 @pytest.mark.parametrize(
     ("version", "noted"),
     [
@@ -1254,7 +1253,6 @@ def auth_report(tmp_path: Path, archive: str, render: str) -> list[str]:
     return report
 
 
-@pytest.mark.xfail(strict=True, reason="auth_report is not written yet")
 def test_auth_report_is_empty_for_matching_sections(tmp_path: Path) -> None:
     archive = (
         "[gerrit]\n\tbasePath = git\n[auth]\n\ttype = HTTP\n"
@@ -1269,7 +1267,6 @@ def test_auth_report_is_empty_for_matching_sections(tmp_path: Path) -> None:
     assert auth_report(tmp_path, archive, render) == []
 
 
-@pytest.mark.xfail(strict=True, reason="auth_report is not written yet")
 def test_auth_report_names_each_difference(tmp_path: Path) -> None:
     archive = (
         "[auth]\n\ttype = HTTP\n\tloginUrl = /login\n"
@@ -1289,7 +1286,6 @@ def test_auth_report_names_each_difference(tmp_path: Path) -> None:
     ]
 
 
-@pytest.mark.xfail(strict=True, reason="auth_report is not written yet")
 def test_auth_report_compares_a_repeated_key_as_a_list(tmp_path: Path) -> None:
     archive = "[auth]\n\ttrustedOpenID = a\n\ttrustedOpenID = b\n"
     assert auth_report(tmp_path, archive, archive) == []
@@ -1299,7 +1295,18 @@ def test_auth_report_compares_a_repeated_key_as_a_list(tmp_path: Path) -> None:
     ]
 
 
-@pytest.mark.xfail(strict=True, reason="auth_report is not written yet")
+def test_auth_report_reads_a_value_that_is_not_utf8(tmp_path: Path) -> None:
+    load()
+    module = sys.modules["site_import_report"]
+    imported, rendered = tmp_path / "imported.config", tmp_path / "rendered.config"
+    imported.write_bytes(b"[saml]\n\tuserNameAttr = \xe9\n")
+    rendered.write_text("[saml]\n\tuserNameAttr = uid\n")
+    assert module.auth_report(imported, rendered) == [
+        'gerrit.config sets saml.usernameattr to "\ufffd" in the archive and '
+        '"uid" in the chart\'s render'
+    ]
+
+
 def test_auth_report_never_prints_a_secret(tmp_path: Path) -> None:
     archive = (
         "[saml]\n\tkeystorePassword = keystore-value\n"
@@ -1319,7 +1326,6 @@ def test_auth_report_never_prints_a_secret(tmp_path: Path) -> None:
         assert value not in "\n".join(report)
 
 
-@pytest.mark.xfail(strict=True, reason="auth_report is not written yet")
 @pytest.mark.parametrize(
     ("archive_path", "render_path", "reported"),
     [
@@ -1345,7 +1351,6 @@ def test_auth_report_compares_the_metadata_path_between_urls(
     assert all("saml.metadatapath" in line for line in report)
 
 
-@pytest.mark.xfail(strict=True, reason="auth_report does not hide URL parts")
 @pytest.mark.parametrize(
     ("key", "archive_url", "render_url", "shown"),
     [
@@ -1537,7 +1542,6 @@ def test_auth_report_hides_credentials_in_a_url(
         assert secret not in report[0]
 
 
-@pytest.mark.xfail(strict=True, reason="auth_report is not written yet")
 @pytest.mark.parametrize("side", ["render", "archive"])
 def test_auth_report_names_a_saml_section_on_one_side(
     tmp_path: Path, side: str
@@ -1552,7 +1556,6 @@ def test_auth_report_names_a_saml_section_on_one_side(
     ]
 
 
-@pytest.mark.xfail(strict=True, reason="auth_report is not written yet")
 @pytest.mark.parametrize("value", ["a" * 40000, "a:" * 20000, "/a" * 20000])
 def test_auth_report_formats_a_long_value_in_linear_time(
     tmp_path: Path, value: str
@@ -1831,7 +1834,6 @@ def test_import_of_a_current_export_names_the_lfs_secret(
 
 
 @needs_tools
-@pytest.mark.xfail(strict=True, reason="the auth report is not written yet")
 def test_import_with_auth_differences_completes_and_reports_them(
     pod: dict[str, Any],
     source: Path,
