@@ -23,6 +23,7 @@ import stat
 import subprocess
 import sys
 import tarfile
+import time
 import zipfile
 from datetime import datetime
 from pathlib import Path
@@ -1216,6 +1217,353 @@ def test_removed_keys_report() -> None:
     ]
 
 
+HTTP_PASSWORD_NOTE = "POST /a/config/server/passwords.to.tokens"
+
+
+@pytest.mark.xfail(strict=True, reason="http_password_report is not written yet")
+@pytest.mark.parametrize(
+    ("version", "noted"),
+    [
+        ("3.8.10", True),
+        ("v3.12.4", True),
+        (None, True),
+        ("unknown", True),
+        ("3.13.0", False),
+        ("3.14.1", False),
+    ],
+)
+def test_http_password_report_names_the_token_migration(
+    version: str | None, noted: bool
+) -> None:
+    module = load_archive()
+    warnings = module.http_password_report({"gerrit_version": version})
+    assert len(warnings) == int(noted)
+    if noted:
+        assert "auth.httpPasswordFallbackEnabled is true" in warnings[0]
+        assert HTTP_PASSWORD_NOTE in warnings[0]
+
+
+def auth_report(tmp_path: Path, archive: str, render: str) -> list[str]:
+    """The auth report on an archive's gerrit.config against a render."""
+    load()
+    module = sys.modules["site_import_report"]
+    imported, rendered = tmp_path / "imported.config", tmp_path / "rendered.config"
+    imported.write_text(archive, encoding="utf-8")
+    rendered.write_text(render, encoding="utf-8")
+    report: list[str] = module.auth_report(imported, rendered)
+    return report
+
+
+@pytest.mark.xfail(strict=True, reason="auth_report is not written yet")
+def test_auth_report_is_empty_for_matching_sections(tmp_path: Path) -> None:
+    archive = (
+        "[gerrit]\n\tbasePath = git\n[auth]\n\ttype = HTTP\n"
+        '[saml]\n\tuserNameAttr = uid\n[auth "x"]\n\tkey = archive\n'
+    )
+    # Names compare without regard to case; other sections and
+    # subsections are not compared
+    render = (
+        "[AUTH]\n\tTYPE = HTTP\n[saml]\n\tusernameattr = uid\n"
+        '[gerrit]\n\tbasePath = /var/gerrit/git\n[auth "y"]\n\tkey = render\n'
+    )
+    assert auth_report(tmp_path, archive, render) == []
+
+
+@pytest.mark.xfail(strict=True, reason="auth_report is not written yet")
+def test_auth_report_names_each_difference(tmp_path: Path) -> None:
+    archive = (
+        "[auth]\n\ttype = HTTP\n\tloginUrl = /login\n"
+        "[saml]\n\tmemberOfAttr = memberOf\n\tuserNameAttr = uid\n"
+    )
+    render = (
+        "[auth]\n\ttype = HTTP\n\tlogoutUrl = /logout\n"
+        "[saml]\n\tmemberOfAttr = memberOf\n\tuserNameAttr = UserName\n"
+    )
+    assert auth_report(tmp_path, archive, render) == [
+        'gerrit.config sets auth.loginurl to "/login" in the archive and not '
+        "in the chart's render",
+        'gerrit.config sets auth.logouturl to "/logout" in the chart\'s render '
+        "and not in the archive",
+        'gerrit.config sets saml.usernameattr to "uid" in the archive and '
+        '"UserName" in the chart\'s render',
+    ]
+
+
+@pytest.mark.xfail(strict=True, reason="auth_report is not written yet")
+def test_auth_report_compares_a_repeated_key_as_a_list(tmp_path: Path) -> None:
+    archive = "[auth]\n\ttrustedOpenID = a\n\ttrustedOpenID = b\n"
+    assert auth_report(tmp_path, archive, archive) == []
+    assert auth_report(tmp_path, archive, "[auth]\n\ttrustedOpenID = a\n") == [
+        'gerrit.config sets auth.trustedopenid to ["a", "b"] in the archive '
+        'and "a" in the chart\'s render'
+    ]
+
+
+@pytest.mark.xfail(strict=True, reason="auth_report is not written yet")
+def test_auth_report_never_prints_a_secret(tmp_path: Path) -> None:
+    archive = (
+        "[saml]\n\tkeystorePassword = keystore-value\n"
+        "\tPrivateKeyPASSWORD = private-value\n"
+        "[auth]\n\tregisterEmailPrivateKey = archive-key\n\tcookieSecret = c\n"
+    )
+    render = "[auth]\n\tregisterEmailPrivateKey = render-key\n\tcookieSecret = c\n"
+    report = auth_report(tmp_path, archive, render)
+    assert [line.split(" ")[2] for line in report] == [
+        "auth.registeremailprivatekey",
+        "saml.keystorepassword",
+        "saml.privatekeypassword",
+    ]
+    assert all(line.endswith("the chart takes it from a Secret") for line in report)
+    assert "different values" in report[0]
+    for value in ("keystore-value", "private-value", "archive-key", "render-key"):
+        assert value not in "\n".join(report)
+
+
+@pytest.mark.xfail(strict=True, reason="auth_report is not written yet")
+@pytest.mark.parametrize(
+    ("archive_path", "render_path", "reported"),
+    [
+        ("https://idp.example.invalid/a", "https://idp.example.invalid/b", True),
+        ("https://idp.example.invalid/a", "https://idp.example.invalid/a", False),
+        ("etc/saml-idp-metadata.xml", "https://idp.example.invalid/b", False),
+        ("/srv/gerrit/etc/idp.xml", "etc/saml-idp-metadata.xml", False),
+        (None, "https://idp.example.invalid/b", False),
+    ],
+)
+def test_auth_report_compares_the_metadata_path_between_urls(
+    tmp_path: Path, archive_path: str | None, render_path: str, reported: bool
+) -> None:
+    archive = "[saml]\n\tkeystorePath = /srv/gerrit/etc/source.jks\n"
+    if archive_path:
+        archive += f"\tmetadataPath = {archive_path}\n"
+    render = (
+        "[saml]\n\tkeystorePath = etc/samlKeystore.jks\n"
+        f"\tmetadataPath = {render_path}\n"
+    )
+    report = auth_report(tmp_path, archive, render)
+    assert len(report) == int(reported)
+    assert all("saml.metadatapath" in line for line in report)
+
+
+@pytest.mark.xfail(strict=True, reason="auth_report does not hide URL parts")
+@pytest.mark.parametrize(
+    ("key", "archive_url", "render_url", "shown"),
+    [
+        (
+            "metadataPath",
+            "https://idp.example.invalid/metadata?token=source-secret&raw",
+            "https://idp.example.invalid/b",
+            '"https://idp.example.invalid/metadata?(not shown)"',
+        ),
+        (
+            "loginUrl",
+            # Joined, so the credential-pattern guard does not read a literal
+            "https://user:source-secret"
+            + "@sso.example.invalid:8443/login#source-secret",
+            "https://sso.example.invalid/login",
+            '"https://(not shown)@sso.example.invalid:8443/login#(not shown)"',
+        ),
+        (
+            "metadataPath",
+            "https://idp.example.invalid/a?token=source-secret",
+            "https://idp.example.invalid/a?token=render-secret",
+            "differ in a part of a URL not shown",
+        ),
+        (
+            "metadataPath",
+            "https://idp.example.invalid/metadata?token='source-secret",
+            "https://idp.example.invalid/b",
+            '"https://idp.example.invalid/metadata?(not shown)"',
+        ),
+        (
+            "loginUrl",
+            "https://user:pass'source-secret"
+            + "@sso.example.invalid/login#'source-secret",
+            "https://sso.example.invalid/login",
+            '"https://(not shown)@sso.example.invalid/login#(not shown)"',
+        ),
+        (
+            # Escaped, as git config ends a quoted value at a bare '"'
+            "metadataPath",
+            'https://idp.example.invalid/metadata?token=\\"source-secret',
+            "https://idp.example.invalid/b",
+            '"https://idp.example.invalid/metadata?(not shown)"',
+        ),
+        (
+            # A bare token's Base64 padding is not a field name
+            "metadataPath",
+            "https://idp.example.invalid/metadata?c291cmNlLXNlY3JldA==",
+            "https://idp.example.invalid/b",
+            '"https://idp.example.invalid/metadata?(not shown)"',
+        ),
+        (
+            "loginUrl",
+            "/login?token=source-secret#source-secret",
+            "/login",
+            '"/login?(not shown)#(not shown)"',
+        ),
+        (
+            "loginUrl",
+            "//user:source-secret" + "@sso.example.invalid/login",
+            "/login",
+            '"//(not shown)@sso.example.invalid/login"',
+        ),
+        # A URL ends at whitespace, so a value holding both is hidden
+        # whole: whatever follows the space may continue its query
+        (
+            "loginUrl",
+            "https://idp.example.invalid/login?label=Sign in&token=source-secret",
+            "https://idp.example.invalid/login",
+            "to (value not shown) in the archive and "
+            '"https://idp.example.invalid/login" in',
+        ),
+        (
+            # git config reads '\t' and '\n' in a value as a tab and a newline
+            "loginUrl",
+            "https://idp.example.invalid/login?a=b\\t&token=source-secret",
+            "/login",
+            "to (value not shown) in the archive",
+        ),
+        (
+            "loginUrl",
+            "https://idp.example.invalid/login?a=b\\n&token=source-secret",
+            "/login",
+            "to (value not shown) in the archive",
+        ),
+        (
+            "metadataPath",
+            "https://idp.example.invalid/metadata?a=b\u00a0&token=source-secret",
+            "https://idp.example.invalid/b",
+            "to (value not shown) in the archive",
+        ),
+        (
+            "loginUrl",
+            "https://user:pass source-secret" + "@sso.example.invalid/login",
+            "/login",
+            "to (value not shown) in the archive",
+        ),
+        # A path shown in full must not carry another URL's user-info, so
+        # a value whose URL path holds '//', '@', ':' or '%' is hidden whole
+        (
+            "loginUrl",
+            "https://sso.example.invalid/forward/https://user:source-secret"
+            + "@backend.example.invalid/login",
+            "https://sso.example.invalid/login",
+            "to (value not shown) in the archive",
+        ),
+        (
+            "loginUrl",
+            "https://sso.example.invalid/forward/https%3A%2F%2Fuser%3Asource-secret"
+            + "%40backend.example.invalid",
+            "https://sso.example.invalid/login",
+            "to (value not shown) in the archive",
+        ),
+        (
+            "loginUrl",
+            "/forward/user:source-secret" + "@backend.example.invalid/login?next=a",
+            "/login",
+            "to (value not shown) in the archive",
+        ),
+        (
+            # User-info with a password outside any URL the matcher finds
+            "loginUrl",
+            "/forward/user:source-secret" + "@backend.example.invalid/login",
+            "/login",
+            "to (value not shown) in the archive",
+        ),
+        (
+            # A password holding a space, outside any URL
+            "loginUrl",
+            "/forward/user:pass source-secret" + "@backend.example.invalid/login",
+            "/login",
+            "to (value not shown) in the archive",
+        ),
+        (
+            # A percent-encoded URL in a relative path with no URL marker
+            "loginUrl",
+            "/forward/https%3A%2F%2Fuser%3Asource-secret"
+            + "%40backend.example.invalid/login",
+            "/login",
+            "to (value not shown) in the archive",
+        ),
+        # A '?' or '#' in a password ends the authority early, so a value
+        # whose URL holds an '@' after either is hidden whole
+        (
+            "loginUrl",
+            "https://user:source-secret?tail" + "@sso.example.invalid/login",
+            "https://sso.example.invalid/login",
+            "to (value not shown) in the archive",
+        ),
+        (
+            "loginUrl",
+            "https://user:source-secret#tail" + "@sso.example.invalid/login",
+            "https://sso.example.invalid/login",
+            "to (value not shown) in the archive",
+        ),
+        # A '//' in a password starts a URL the matcher finds, which
+        # splits the user and password from the '@' that ends them
+        (
+            "loginUrl",
+            "/forward/user:source-secret//tail" + "@backend.example.invalid/login",
+            "/login",
+            "to (value not shown) in the archive",
+        ),
+        (
+            "loginUrl",
+            "user:source-secret://tail" + "@backend.example.invalid/login",
+            "/login",
+            "to (value not shown) in the archive",
+        ),
+        (
+            # A URL urlsplit cannot read, which hid the '@' after the password
+            "loginUrl",
+            "/forward/user:source-secret//tail" + "@[backend.example.invalid/login",
+            "/login",
+            "to (value not shown) in the archive",
+        ),
+    ],
+)
+def test_auth_report_hides_credentials_in_a_url(
+    tmp_path: Path, key: str, archive_url: str, render_url: str, shown: str
+) -> None:
+    section = "saml" if key == "metadataPath" else "auth"
+    # Quoted, as git config reads an unquoted '#' as a comment
+    archive = f'[{section}]\n\t{key} = "{archive_url}"\n'
+    render = f'[{section}]\n\t{key} = "{render_url}"\n'
+    report = auth_report(tmp_path, archive, render)
+    assert len(report) == 1
+    assert shown in report[0]
+    for secret in ("source-secret", "render-secret", "c291cmNlLXNlY3JldA"):
+        assert secret not in report[0]
+
+
+@pytest.mark.xfail(strict=True, reason="auth_report is not written yet")
+@pytest.mark.parametrize("side", ["render", "archive"])
+def test_auth_report_names_a_saml_section_on_one_side(
+    tmp_path: Path, side: str
+) -> None:
+    plain = "[auth]\n\ttype = HTTP\n"
+    saml = plain + "[saml]\n\tuserNameAttr = uid\n\tkeystorePath = etc/a.jks\n"
+    archive, render = (plain, saml) if side == "render" else (saml, plain)
+    where = "the chart's render" if side == "render" else "the archive"
+    other = "the archive" if side == "render" else "the chart's render"
+    assert auth_report(tmp_path, archive, render) == [
+        f'gerrit.config sets saml.usernameattr to "uid" in {where} and not in {other}'
+    ]
+
+
+@pytest.mark.xfail(strict=True, reason="auth_report is not written yet")
+@pytest.mark.parametrize("value", ["a" * 40000, "a:" * 20000, "/a" * 20000])
+def test_auth_report_formats_a_long_value_in_linear_time(
+    tmp_path: Path, value: str
+) -> None:
+    # A matcher that rescans each suffix took about 20 seconds here
+    began = time.perf_counter()
+    report = auth_report(tmp_path, f"[auth]\n\tloginUrl = {value}\n", "")
+    assert time.perf_counter() - began < 2
+    assert len(report) == 1
+
+
 @pytest.mark.parametrize(
     ("text", "files", "expected"),
     [
@@ -1480,6 +1828,44 @@ def test_import_of_a_current_export_names_the_lfs_secret(
     assert LFS_KEYS_NOTE in logged.out + logged.err
     assert "lfs secret key" not in logged.out + logged.err
     assert "lfs secret key" not in json.dumps(recorded)
+
+
+@needs_tools
+@pytest.mark.xfail(strict=True, reason="the auth report is not written yet")
+def test_import_with_auth_differences_completes_and_reports_them(
+    pod: dict[str, Any],
+    source: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with (source / "etc" / "gerrit.config").open("a") as config:
+        config.write(
+            "[saml]\n\tmemberOfAttr = memberOf\n"
+            "\tkeystorePassword = source keystore password\n"
+        )
+    export = export_site(source, tmp_path / "export")
+    site: Path = pod["site"]
+    _, code = run_main(import_env(pod, export), monkeypatch)
+    logged = capsys.readouterr()
+    assert code == 0, logged.err
+    recorded = state(site)
+    assert recorded["state"] == "complete"
+    warnings = recorded["warnings"]
+    member_of = (
+        'gerrit.config sets saml.memberofattr to "memberOf" in the archive '
+        "and not in the chart's render"
+    )
+    assert member_of in warnings
+    assert any(
+        w.startswith("gerrit.config sets saml.keystorepassword") for w in warnings
+    )
+    # The 3.10 source's accounts keep HTTP passwords
+    assert sum(HTTP_PASSWORD_NOTE in w for w in warnings) == 1
+    # Logged once, when the archive is checked
+    assert logged.out.count(member_of) == 1
+    assert "source keystore password" not in logged.out + logged.err
+    assert "source keystore password" not in json.dumps(recorded)
 
 
 def test_gerrit_version_reads_the_release_war(tmp_path: Path) -> None:
