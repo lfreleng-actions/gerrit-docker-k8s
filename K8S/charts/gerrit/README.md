@@ -706,7 +706,15 @@ With SAML enabled, `site-import` also refuses an export whose
 keystore differs from the Secret's, before the site changes; see
 [Importing a site that uses SAML](#importing-a-site-that-uses-saml).
 
-`site-import` then logs a migration report: projects that leave
+`site-import` then logs a migration report: each key of the
+unqualified `[auth]` and `[saml]` sections that the archive's
+`gerrit.config` and the chart's render set differently, as described
+below, a note for a source older than Gerrit 3.13, or one whose
+`gerrit_version` the import does not recognise, that its accounts keep
+their HTTP passwords, which Gerrit 3.13 accepts while
+`auth.httpPasswordFallbackEnabled` is `true`, its default, until an
+administrator migrates them to tokens with
+`POST /a/config/server/passwords.to.tokens`, projects that leave
 `receive.rejectImplicitMerges` unset, `commentlink` sections with
 `html`, `rules.pl` files, `auth.cookieSecure`, `secure.config` names
 the chart does not write and so drops, a reminder that a new
@@ -719,9 +727,43 @@ see [Events log](#events-log), and, when the imported
 `etc/lfs.config` uses an S3 backend, that the chart writes the lfs
 plugin's S3 keys, which no archive brings in, from
 `plugins.lfs.existingSecret`. Read it with `kubectl logs <fullname>-0 -c site-import`.
-The removed `gerrit.config` keys and the events-log store are logged
-as soon as the archive is checked, before `site-init` replaces the
-imported files, so a failed init or reindex still shows them.
+The `[auth]` and `[saml]` differences, the removed `gerrit.config`
+keys and the events-log store are logged as soon as the archive is
+checked, before `site-init` replaces the imported files, so a failed
+init or reindex still shows them.
+
+The chart's `gerrit.config` replaces the archive's, so a key left out
+of the values, or given another value, changes who can sign in and as
+whom: without `saml.memberOfAttr` group membership no longer follows
+the identity provider, and another `saml.serviceProviderEntityId`
+makes it refuse every login. The report names each key that only the
+archive sets, that only the render sets, or that both set to different
+values, with the values on each side. Key names compare without regard
+to case, as git reports them in lower case; a repeated key compares as
+the list of its values, and subsections such as `[auth "x"]` are not
+compared. A key whose name ends in `password`, `secret` or
+`privateKey`, in any letter case, is named without its value: the
+chart takes it from a Secret, and a source site may hold
+`saml.keystorePassword` in `gerrit.config` rather than
+`secure.config`. `saml.keystorePath` is left out, as the chart mounts its own
+keystore and compares it with the archive's, and so is
+`saml.metadataPath` unless both sides name an `http://` or `https://`
+URL. A URL in any value, relative and scheme-relative ones included,
+is shown with its user-info, its whole query and its fragment replaced
+by `(not shown)`, as any of them can carry a credential, and a value
+holding both a URL and whitespace is not shown at all, as the text
+after a space may continue the URL's query. Nor is a value whose URL
+path holds `//`, `@`, `:` or `%`, as it may carry another URL with its
+user-info, one whose URL holds an `@` in its query or fragment, as a
+`?` or `#` in a password ends the host early, or one holding, once its
+URLs are hidden, a `:` before an `@` other than a URL's scheme, as
+`user:secret@` does, a `//` in the password included, a `%`, which
+may encode a URL, or a URL it cannot read; the values still compare
+in full, and a line says when two differ only in a part it does not
+show. The comparison is with the rendered file: the
+[runtime overrides](#runtime-overrides) apply later and are not
+considered. These lines are warnings and never fail the import; settle
+each difference in the values before the cut-over.
 
 ### Recovery
 

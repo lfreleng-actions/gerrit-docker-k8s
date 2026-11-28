@@ -249,9 +249,9 @@ Secrets in two stages, as #234 specifies:
 
 A value change therefore takes effect on the next rollout, and nobody
 edits configuration on the volume by hand. Configuration that an
-import brings across is read once, compared with the values and
-reported (section 4); the rendered files replace it, with the one
-exception below.
+import brings across is read once, its `[auth]` and `[saml]` sections
+are compared with the render and reported (section 1.7); the rendered
+files replace it, with the one exception below.
 
 `gerrit.serverId` is not configuration but site identity. Gerrit
 records it in the change notes it writes and refuses to load changes
@@ -543,6 +543,41 @@ python3 K8S/charts/gerrit/files/scripts/verify-import.py \
     --manifest export/manifest.json --expected expected.json \
     --password-file password
 ```
+
+**Authentication differences warn.** The chart's `gerrit.config`
+replaces the archive's, so a key the values miss or mistype in the
+sections that govern sign-in changes who can sign in and as whom
+without a word. When the archive is checked, `site-import` compares
+the unqualified `[auth]` and `[saml]` sections of the archive's
+`gerrit.config` with the rendered one and adds a warning to the
+migration report for each key that only one side sets or that both
+set to different values, with the values on each side. Names compare
+as git reads them, without regard to case; a repeated key compares as
+the list of its values; subsections are not compared. A key whose
+name ends in `password`, `secret` or `privateKey`, in any letter case,
+is named without its value, since the chart takes it from a Secret.
+`saml.keystorePath` is left out, as the keystore check covers it, and
+`saml.metadataPath` is compared only between two `http://` or
+`https://` URLs, since a file path names a file on its own host.
+A URL in any value, relative and scheme-relative ones included, is
+printed with its user-info, its whole query and its fragment hidden,
+as any of them can carry a credential, and a value holding both a URL
+and whitespace is hidden whole, as is one whose URL path holds `//`,
+`@`, `:` or `%`, which may nest another URL with its user-info, one
+whose URL holds an `@` in its query or fragment, as a `?` or `#` in a
+password ends the authority early, or one holding, once its URLs are
+hidden, a `:` before an `@` other than a URL's scheme, as
+`user:secret@` does, a `//` in the password included, a `%`, which
+may encode a URL, or a URL it cannot read; values still compare in
+full. Runtime
+overrides apply after the render and are not compared. The lines are logged with the
+rest of the report on the imported configuration and recorded in
+`warnings`; they never fail the import.
+For a source older than Gerrit 3.13, or one whose version the
+manifest does not name, the report also notes that its accounts keep
+their HTTP passwords, which 3.13 accepts while
+`auth.httpPasswordFallbackEnabled` is `true`, its default, until an
+administrator migrates them to tokens.
 
 ### 1.8 Backup and maintenance CronJobs
 
@@ -1151,12 +1186,17 @@ reference; each updates the section it changes.
 
 Open questions:
 
-- **Configuration drift on import.** Section 1.4 says the import
-  reports differences between the imported `gerrit.config` and the
-  values. A different `gerrit.serverId` always fails the import;
-  whether any other difference fails it or only warns is open.
 - **Maintenance scope.** Which tasks the maintenance CronJob runs, given
   what Gerrit already schedules itself, is open.
+
+Decided:
+
+- **Configuration drift on import.** A different `gerrit.serverId`
+  fails the import, as do the system repositories' names and, with
+  SAML, a keystore other than the Secret's, since each changes the
+  site's identity. Differences in the `[auth]` and `[saml]` sections
+  of `gerrit.config` only warn, one migration report line per key
+  (section 1.7); other sections are not compared.
 
 [gc-listenurl]: https://gerrit-review.googlesource.com/Documentation/config-gerrit.html#httpd.listenUrl
 [gc-serverid]: https://gerrit-review.googlesource.com/Documentation/config-gerrit.html#gerrit.serverId
